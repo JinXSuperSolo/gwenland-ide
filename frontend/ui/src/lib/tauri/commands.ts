@@ -447,6 +447,9 @@ export interface AiSendArgs {
   images?: ImageAttachment[]
   provider?: string | null
   model?: string | null
+  /** Per-workspace persona/system prompt prefix, layered over the base prompt
+   *  (GWEN-334). Empty/omitted → engine default only. */
+  systemPrefix?: string | null
 }
 
 /**
@@ -463,6 +466,7 @@ export function aiSend(args: AiSendArgs): Promise<string> {
     images: args.images ?? [],
     provider: args.provider ?? null,
     model: args.model ?? null,
+    systemPrefix: args.systemPrefix ?? null,
   })
 }
 

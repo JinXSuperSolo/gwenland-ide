@@ -19,6 +19,17 @@ export interface TerminalHandle {
   selectAll(): void
   /** Focus the terminal. */
   focus(): void
+  /** Last `maxLines` non-empty lines of the scrollback (GWEN-332 @terminal). */
+  readBuffer(maxLines: number): string
+}
+
+/** Read the most recent `maxLines` lines from the active session's buffer, or
+ *  '' when no terminal is registered. Trailing blank lines are trimmed. */
+export function readActiveTerminalBuffer(
+  key: string | undefined,
+  maxLines: number
+): string {
+  return getTerminalHandle(key)?.readBuffer(maxLines) ?? ''
 }
 
 const handles = new Map<string, TerminalHandle>()

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
   import { get } from 'svelte/store'
+  import { appActive } from '../stores/app-focus'
   import { tabs, persistTabState, recomputeDirty, isEditorTab } from '../stores/tabs'
   import { setCursorFromState, clearCursor } from '../stores/cursor'
   import { setActiveEditor } from '../editor/active-editor'
@@ -166,7 +167,14 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="editor-host" bind:this={host} oncontextmenu={onEditorContextMenu}></div>
+<!-- Background throttle: `inactive` halts the cursor-blink animation (a
+     repaint loop) while the window is unfocused/hidden. No behavior change. -->
+<div
+  class="editor-host"
+  class:inactive={!$appActive}
+  bind:this={host}
+  oncontextmenu={onEditorContextMenu}
+></div>
 
 <style>
   .editor-host {
@@ -187,6 +195,11 @@
   }
   .editor-host :global(.cm-editor.cm-focused) {
     outline: none;
+  }
+  /* Background throttle: stop the cursor-blink animation while the window is
+     inactive so CodeMirror isn't repainting the caret in the background. */
+  .editor-host.inactive :global(.cm-cursorLayer) {
+    animation: none !important;
   }
   .editor-host :global(.cm-scroller) {
     font-family: var(--font-mono);

@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store'
 import { workspace } from './workspace'
+import { subscribeFocus, isAppActive } from './app-focus'
 import { gitIsRepo, gitStatus, type GitFileStatus } from '../tauri/commands'
 
 /**
@@ -26,8 +27,8 @@ const initial: GitState = { isRepo: false, branch: '', dirtyCount: 0, files: [] 
 
 export const git = writable<GitState>(initial)
 
-/** Poll cadence in ms (GWEN-327: every 4 seconds). */
-const POLL_MS = 4000
+/** Poll cadence in ms. 10s keeps idle cost low; the 4s version was wasteful. */
+const POLL_MS = 10000
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let lastRoot: string | null = null
@@ -59,20 +60,62 @@ export async function refreshGit(): Promise<void> {
   }
 }
 
+/** Whether polling should currently run: a folder is open AND the app is active. */
+function shouldPoll(): boolean {
+  return get(workspace).folderPath !== null && isAppActive()
+}
+
+/** (Re)start the interval if it should run and isn't already. Idempotent. */
+function startPolling(): void {
+  if (pollTimer || !shouldPoll()) return
+  pollTimer = setInterval(() => void refreshGit(), POLL_MS)
+}
+
+/** Stop the interval (no-op if already stopped). */
+function stopPolling(): void {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+let inited = false
+
 /**
- * Start polling. Subscribes to workspace changes so opening/closing a folder
- * refreshes immediately, and runs a 4s interval. Idempotent.
+ * Wire git polling. It runs ONLY while a workspace is open and the window is
+ * active; it pauses on blur/hidden and resumes (with an immediate refresh) on
+ * focus. Idempotent.
  */
 export function initGit(): void {
-  if (pollTimer) return
-  // Refresh on every workspace folder change.
+  if (inited) return
+  inited = true
+
+  // Open/close a folder: refresh immediately and (re)evaluate whether to poll.
+  // This fires synchronously on subscribe, so a folder already open at startup
+  // is handled here too (no separate kick-off needed).
   workspace.subscribe((s) => {
     if (s.folderPath !== lastRoot) {
       lastRoot = s.folderPath
-      void refreshGit()
+      if (s.folderPath) {
+        void refreshGit()
+        startPolling()
+      } else {
+        stopPolling()
+        git.set(initial)
+      }
     }
   })
-  pollTimer = setInterval(() => void refreshGit(), POLL_MS)
+
+  // Background throttle: pause the interval on blur/hidden, resume + refresh
+  // immediately on focus/visible (so a return shows fresh status at once).
+  subscribeFocus((active) => {
+    if (active) {
+      if (get(workspace).folderPath) void refreshGit()
+      startPolling()
+    } else {
+      stopPolling()
+    }
+  })
 }
 
 /** A repo-relative status lookup for the file tree (GWEN-329). Returns the badge

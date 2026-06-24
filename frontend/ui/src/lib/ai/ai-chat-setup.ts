@@ -17,6 +17,7 @@ import {
 } from '../stores/ai-chat'
 import { createThinkParser, splitThinking, type ThinkParser } from './thinking-parser'
 import { detectDiff } from './diff-detection'
+import { activeSystemPrefix } from './persona-setup'
 
 /**
  * AI chat orchestration (Milestone 4). Bridges the `ai-chat` store and the
@@ -393,6 +394,8 @@ export async function sendMessage(
       images,
       provider: state.activeProvider,
       model: state.activeModel,
+      // GWEN-334: per-workspace persona/system prompt, layered over the base.
+      systemPrefix: activeSystemPrefix(),
     })
   } catch (e) {
     // Failure before the stream task started (e.g. duplicate id, bad provider).
