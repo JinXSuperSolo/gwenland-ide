@@ -130,22 +130,22 @@ fn match_ready_line(line: &[u8]) -> Option<DevServerSignal> {
     let mut i = 0;
     while i < bytes.len() {
         for host in HOSTS {
-            if ci_match_at(bytes, i, host) {
-                if let Some(port) = parse_port_after_colon(bytes, i + host.len()) {
-                    // `0.0.0.0` is not browsable; show it as localhost. Other
-                    // markers are emitted as their canonical (lowercase) form.
-                    let host_str = if *host == b"0.0.0.0" {
-                        "localhost"
-                    } else {
-                        // Safe: HOSTS entries are ASCII.
-                        std::str::from_utf8(host).unwrap()
-                    };
-                    let scheme = scheme_before(bytes, i);
-                    return Some(DevServerSignal {
-                        url: format!("{scheme}://{host_str}:{port}"),
-                        port,
-                    });
-                }
+            if ci_match_at(bytes, i, host)
+                && let Some(port) = parse_port_after_colon(bytes, i + host.len())
+            {
+                // `0.0.0.0` is not browsable; show it as localhost. Other
+                // markers are emitted as their canonical (lowercase) form.
+                let host_str = if *host == b"0.0.0.0" {
+                    "localhost"
+                } else {
+                    // Safe: HOSTS entries are ASCII.
+                    std::str::from_utf8(host).unwrap()
+                };
+                let scheme = scheme_before(bytes, i);
+                return Some(DevServerSignal {
+                    url: format!("{scheme}://{host_str}:{port}"),
+                    port,
+                });
             }
         }
         i += 1;

@@ -16,18 +16,14 @@ use crate::ai::diff::{self, DiffLine};
 /// Per-file/per-hunk approval state (Requirement 5.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ApprovalState {
+    #[default]
     Pending,
     Approved,
     Rejected,
     /// Application was attempted and failed (e.g. hunk conflict).
     Failed,
-}
-
-impl Default for ApprovalState {
-    fn default() -> Self {
-        ApprovalState::Pending
-    }
 }
 
 /// The kind of file-level change a proposed file represents.
@@ -153,7 +149,7 @@ pub fn apply_approved_hunks_to_text(
     }
 
     // Apply bottom-to-top so earlier edits do not shift later hunk offsets.
-    hunks.sort_by(|a, b| b.old_start.cmp(&a.old_start));
+    hunks.sort_by_key(|b| std::cmp::Reverse(b.old_start));
 
     let (mut lines, line_ending, trailing_newline) = split_text_lines(content);
     for hunk in hunks {

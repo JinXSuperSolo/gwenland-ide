@@ -580,6 +580,7 @@ Guidelines:
 /// Start a streaming completion. The UI generates `stream_id` and registers its
 /// listeners before calling this. Returns the same `stream_id` once accepted.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn ai_send(
     app: AppHandle,
     manager: State<'_, AiManager>,
@@ -857,10 +858,10 @@ fn transition_session(
     session_id: &str,
     to: AgentPhase,
 ) {
-    if let Ok(mut guard) = sessions.lock() {
-        if let Some(session) = guard.get_mut(session_id) {
-            let _ = session.transition(to);
-        }
+    if let Ok(mut guard) = sessions.lock()
+        && let Some(session) = guard.get_mut(session_id)
+    {
+        let _ = session.transition(to);
     }
 }
 
@@ -920,19 +921,19 @@ fn build_context_preview(root: &std::path::Path, input: &AgentContextInput) -> C
 
     // The selection is the most relevant context; include it first (no file read
     // — the UI supplied the text).
-    if let Some(sel) = &input.selection {
-        if !sel.content.trim().is_empty() {
-            let item = ContextItem::included(
-                next_id(),
-                ContextItemKind::Selection,
-                Some(sel.path.clone()),
-                format!("selection in {}", path_label(&sel.path)),
-                Some(sel.content.clone()),
-                "editor selection",
-            );
-            running += item.byte_len;
-            preview.items.push(item);
-        }
+    if let Some(sel) = &input.selection
+        && !sel.content.trim().is_empty()
+    {
+        let item = ContextItem::included(
+            next_id(),
+            ContextItemKind::Selection,
+            Some(sel.path.clone()),
+            format!("selection in {}", path_label(&sel.path)),
+            Some(sel.content.clone()),
+            "editor selection",
+        );
+        running += item.byte_len;
+        preview.items.push(item);
     }
 
     // Candidate files: active file first, then the rest of the open tabs.
@@ -1092,12 +1093,12 @@ fn normalize_change_set_paths(root: &std::path::Path, mut change_set: ChangeSet)
                 Err(e) => rejected = Some(format!("Skipped `{label}`: {e}")),
             }
         }
-        if rejected.is_none() {
-            if let Some(path) = file.new_path.clone() {
-                match normalize_agent_path(root, &path) {
-                    Ok(path) => file.new_path = Some(path),
-                    Err(e) => rejected = Some(format!("Skipped `{label}`: {e}")),
-                }
+        if rejected.is_none()
+            && let Some(path) = file.new_path.clone()
+        {
+            match normalize_agent_path(root, &path) {
+                Ok(path) => file.new_path = Some(path),
+                Err(e) => rejected = Some(format!("Skipped `{label}`: {e}")),
             }
         }
         if rejected.is_none() && file.old_path.is_none() && file.new_path.is_none() {
@@ -1506,12 +1507,12 @@ async fn run_plan_stream(
             Ok(None) => {
                 let plan = gwenland_engine::agentic::parse_plan(&plan_id, &text);
                 let mut snapshot = None;
-                if let Ok(mut guard) = sessions.lock() {
-                    if let Some(session) = guard.get_mut(&session_id) {
-                        session.plan = Some(plan);
-                        let _ = session.transition(AgentPhase::AwaitingPlanApproval);
-                        snapshot = Some(session.clone());
-                    }
+                if let Ok(mut guard) = sessions.lock()
+                    && let Some(session) = guard.get_mut(&session_id)
+                {
+                    session.plan = Some(plan);
+                    let _ = session.transition(AgentPhase::AwaitingPlanApproval);
+                    snapshot = Some(session.clone());
                 }
                 if let Some(session) = snapshot {
                     let _ = persist_agent_session(&session);
@@ -1621,6 +1622,7 @@ fn agent_request_edits(
 /// Drive one edit stream: emit each token, parse the complete response into a
 /// workspace-safe ChangeSet, then move to review. The streamed raw text remains
 /// visible in the frontend buffer; only parsed ChangeSets become review state.
+#[allow(clippy::too_many_arguments)]
 async fn run_edit_stream(
     app: AppHandle,
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
@@ -1659,12 +1661,12 @@ async fn run_edit_stream(
                 let change_set =
                     normalize_change_set_paths(std::path::Path::new(&project_root), change_set);
                 let mut snapshot = None;
-                if let Ok(mut guard) = sessions.lock() {
-                    if let Some(session) = guard.get_mut(&session_id) {
-                        session.change_sets.push(change_set);
-                        let _ = session.transition(AgentPhase::AwaitingEditApproval);
-                        snapshot = Some(session.clone());
-                    }
+                if let Ok(mut guard) = sessions.lock()
+                    && let Some(session) = guard.get_mut(&session_id)
+                {
+                    session.change_sets.push(change_set);
+                    let _ = session.transition(AgentPhase::AwaitingEditApproval);
+                    snapshot = Some(session.clone());
                 }
                 if let Some(session) = snapshot {
                     let _ = persist_agent_session(&session);
@@ -1926,10 +1928,10 @@ fn agent_approve_validation_command(
             .ok_or_else(|| "validation command not found".to_string())?;
 
         command.risk = gwenland_engine::agentic::classify_command(&command.command);
-        if let Some(note) = size_impact_note {
-            if !note.trim().is_empty() {
-                command.size_impact_note = Some(note);
-            }
+        if let Some(note) = size_impact_note
+            && !note.trim().is_empty()
+        {
+            command.size_impact_note = Some(note);
         }
         resolve_validation_cwd(&root, &command.cwd)?;
         if command.risk.is_blocked() {
@@ -3148,10 +3150,10 @@ fn main() {
     // On exit, gracefully shut down language servers (Requirement 6.8/6.10).
     // ServerProcess::Drop also force-kills, so children are never orphaned.
     app.run(|app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
-            if let Some(manager) = app_handle.try_state::<LspManager>() {
-                manager.shutdown_all();
-            }
+        if let tauri::RunEvent::ExitRequested { .. } = event
+            && let Some(manager) = app_handle.try_state::<LspManager>()
+        {
+            manager.shutdown_all();
         }
     });
 }

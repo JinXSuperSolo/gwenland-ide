@@ -438,10 +438,10 @@ fn for_each_file(
             if *scanned > MAX_WALK_FILES {
                 return false;
             }
-            if let Ok(meta) = entry.metadata() {
-                if meta.len() > MAX_ITEM_BYTES as u64 {
-                    continue;
-                }
+            if let Ok(meta) = entry.metadata()
+                && meta.len() > MAX_ITEM_BYTES as u64
+            {
+                continue;
             }
             let rel = path
                 .strip_prefix(root)

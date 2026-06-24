@@ -184,10 +184,10 @@ impl AiProvider for GeminiAdapter {
         );
 
         let mut body = json!({ "contents": build_contents(&request) });
-        if let Some(s) = &request.system {
-            if !s.is_empty() {
-                body["systemInstruction"] = json!({ "parts": [{ "text": s }] });
-            }
+        if let Some(s) = &request.system
+            && !s.is_empty()
+        {
+            body["systemInstruction"] = json!({ "parts": [{ "text": s }] });
         }
         if let Some(max) = request.max_tokens {
             body["generationConfig"] = json!({ "maxOutputTokens": max });

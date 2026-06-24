@@ -12,9 +12,7 @@ pub enum AppDataError {
 /// Returns the GwenLand IDE app data directory for the current platform,
 /// creating it (and any parents) if it does not already exist.
 pub fn get_app_data_dir() -> Result<PathBuf, AppDataError> {
-    let base_dir = if cfg!(target_os = "windows") {
-        dirs::data_dir()
-    } else if cfg!(target_os = "macos") {
+    let base_dir = if cfg!(target_os = "windows") || cfg!(target_os = "macos") {
         dirs::data_dir()
     } else {
         dirs::config_dir()

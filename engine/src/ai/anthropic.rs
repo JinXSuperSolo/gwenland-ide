@@ -210,10 +210,10 @@ impl AiProvider for AnthropicAdapter {
 
         // Anthropic takes `system` as a top-level field, not a message role.
         let mut system_parts: Vec<String> = Vec::new();
-        if let Some(s) = &request.system {
-            if !s.is_empty() {
-                system_parts.push(s.clone());
-            }
+        if let Some(s) = &request.system
+            && !s.is_empty()
+        {
+            system_parts.push(s.clone());
         }
         let mut messages = Vec::new();
         let last_idx = request.messages.len().saturating_sub(1);

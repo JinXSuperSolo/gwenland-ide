@@ -43,10 +43,10 @@ pub fn parse_plan(plan_id: &str, text: &str) -> AgentPlan {
             match canon {
                 Section::None => {
                     // A "Title:" header — its value is on the same line.
-                    if let Some(v) = inline {
-                        if title.is_empty() {
-                            title = v;
-                        }
+                    if let Some(v) = inline
+                        && title.is_empty()
+                    {
+                        title = v;
                     }
                 }
                 other => {

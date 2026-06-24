@@ -87,7 +87,7 @@ pub fn load_sessions(project_root: Option<&Path>) -> Result<Vec<AgentSession>, S
             .unwrap_or(std::time::UNIX_EPOCH);
         files.push((modified, entry.path()));
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|b| std::cmp::Reverse(b.0));
 
     let root_filter = project_root.and_then(|root| root.canonicalize().ok());
     let mut sessions = Vec::new();

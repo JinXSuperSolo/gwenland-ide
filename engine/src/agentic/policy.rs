@@ -327,17 +327,17 @@ pub fn redact_secrets(text: &str) -> (String, bool) {
     while let Some(begin) = rest.find("-----BEGIN ") {
         let region = &rest[begin..];
         // Confirm this is a private-key header and has a matching END marker.
-        if region.contains("PRIVATE KEY-----") {
-            if let Some(end_rel) = region.find("-----END ") {
-                let after_end_marker = begin + end_rel + "-----END ".len();
-                if let Some(close_rel) = rest[after_end_marker..].find("-----") {
-                    let block_end = after_end_marker + close_rel + "-----".len();
-                    out.push_str(&rest[..begin]);
-                    out.push_str("[REDACTED PRIVATE KEY]");
-                    redacted = true;
-                    rest = &rest[block_end..];
-                    continue;
-                }
+        if region.contains("PRIVATE KEY-----")
+            && let Some(end_rel) = region.find("-----END ")
+        {
+            let after_end_marker = begin + end_rel + "-----END ".len();
+            if let Some(close_rel) = rest[after_end_marker..].find("-----") {
+                let block_end = after_end_marker + close_rel + "-----".len();
+                out.push_str(&rest[..begin]);
+                out.push_str("[REDACTED PRIVATE KEY]");
+                redacted = true;
+                rest = &rest[block_end..];
+                continue;
             }
         }
         // Not a redactable key block — emit through the BEGIN marker and keep

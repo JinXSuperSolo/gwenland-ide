@@ -125,10 +125,10 @@ pub(crate) fn emit_with_thinking(action: ChatAction, in_thinking: &mut bool) -> 
 /// Build the JSON request body shared by OpenAI and Generic adapters.
 pub(crate) fn build_chat_body(model: &str, request: &MessageRequest) -> Value {
     let mut messages: Vec<Value> = Vec::new();
-    if let Some(s) = &request.system {
-        if !s.is_empty() {
-            messages.push(json!({ "role": "system", "content": s }));
-        }
+    if let Some(s) = &request.system
+        && !s.is_empty()
+    {
+        messages.push(json!({ "role": "system", "content": s }));
     }
     let last_idx = request.messages.len().saturating_sub(1);
     for (i, m) in request.messages.iter().enumerate() {

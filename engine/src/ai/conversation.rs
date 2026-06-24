@@ -85,10 +85,10 @@ fn now_rfc3339() -> String {
 
 /// Home base for the global manifest. `GWENLAND_HOME` overrides for tests.
 fn home_base() -> Result<PathBuf, AiError> {
-    if let Ok(custom) = std::env::var("GWENLAND_HOME") {
-        if !custom.is_empty() {
-            return Ok(PathBuf::from(custom));
-        }
+    if let Ok(custom) = std::env::var("GWENLAND_HOME")
+        && !custom.is_empty()
+    {
+        return Ok(PathBuf::from(custom));
     }
     dirs::home_dir()
         .ok_or_else(|| AiError::StorageError("could not determine home directory".into()))

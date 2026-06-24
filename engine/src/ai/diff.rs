@@ -214,10 +214,10 @@ fn consume_body_line(
 }
 
 fn finalize_hunk(cur_file: &mut Option<DiffFile>, cur_hunk: &mut Option<DiffHunk>) {
-    if let Some(hunk) = cur_hunk.take() {
-        if let Some(file) = cur_file.as_mut() {
-            file.hunks.push(hunk);
-        }
+    if let Some(hunk) = cur_hunk.take()
+        && let Some(file) = cur_file.as_mut()
+    {
+        file.hunks.push(hunk);
     }
 }
 

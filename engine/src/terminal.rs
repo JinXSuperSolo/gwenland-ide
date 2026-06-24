@@ -139,10 +139,10 @@ pub struct PtySession {
 /// spawn); the shell then starts in its default directory.
 fn default_shell_command(cwd: Option<&std::path::Path>) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(default_shell());
-    if let Some(dir) = cwd {
-        if dir.is_dir() {
-            cmd.cwd(dir);
-        }
+    if let Some(dir) = cwd
+        && dir.is_dir()
+    {
+        cmd.cwd(dir);
     }
     cmd
 }
