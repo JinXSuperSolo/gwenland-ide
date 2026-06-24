@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
 
+# The default GITHUB_TOKEN is read-only; creating/uploading a Release needs write.
+permissions:
+  contents: write
+
 jobs:
   build-release:
     runs-on: ubuntu-latest
@@ -24,14 +28,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Install musl cross compilation tools
-        run: |
-          sudo apt-get install -y musl-tools
-          # Depending on the runner environment, x86_64-linux-musl-gcc might need to be downloaded or linked.
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          # glibc, not musl: the WebKit/GTK stack Tauri links has no musl build.
+          targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
       - name: Build JS
         working-directory: ./frontend/ui
@@ -39,8 +40,8 @@ jobs:
           pnpm install
           pnpm build
       - name: Build
-        run: cargo build --release --target x86_64-unknown-linux-musl --bin GwenLand-IDE
+        run: cargo build --release --target x86_64-unknown-linux-gnu --bin GwenLand-IDE
       - name: Upload to GH Releases
         uses: softprops/action-gh-release@v2
         with:
-          files: target/x86_64-unknown-linux-musl/release/GwenLand-IDE
+          files: target/x86_64-unknown-linux-gnu/release/GwenLand-IDE
