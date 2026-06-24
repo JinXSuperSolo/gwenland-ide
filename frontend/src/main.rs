@@ -588,6 +588,18 @@ Guidelines:
 - Use real project-relative file paths in the diff headers.
 - For questions that are not code edits, still reason in <think> first, then answer normally without a diff.";
 
+/// Compose the effective system prompt. A per-workspace persona/system prompt
+/// (GWEN-334) is layered ON TOP of `GWENLAND_SYSTEM_PROMPT` — the persona sets
+/// voice/instructions while the base prompt keeps the always-on <think> +
+/// review-first-diff protocol the UI depends on for parsing. An empty/blank
+/// prefix falls back to the base prompt unchanged.
+fn compose_system_prompt(prefix: Option<&str>) -> String {
+    match prefix.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => format!("{p}\n\n---\n\n{GWENLAND_SYSTEM_PROMPT}"),
+        None => GWENLAND_SYSTEM_PROMPT.to_string(),
+    }
+}
+
 /// Start a streaming completion. The UI generates `stream_id` and registers its
 /// listeners before calling this. Returns the same `stream_id` once accepted.
 #[tauri::command]
@@ -602,6 +614,7 @@ fn ai_send(
     images: Vec<gwenland_engine::ai::ImageAttachment>,
     provider: Option<String>,
     model: Option<String>,
+    system_prefix: Option<String>,
 ) -> Result<String, String> {
     // Reject a duplicate active stream id (Requirement 10.5 / 11.7).
     {
@@ -653,7 +666,7 @@ fn ai_send(
     let request = MessageRequest {
         stream_id: stream_id.clone(),
         messages,
-        system: Some(GWENLAND_SYSTEM_PROMPT.to_string()),
+        system: Some(compose_system_prompt(system_prefix.as_deref())),
         attachments,
         images,
         model: model_id.clone(),
@@ -3099,6 +3112,20 @@ mod agent_tests {
                 "session JSON leaked `{needle}`: {json}"
             );
         }
+    }
+
+    #[test]
+    fn compose_system_prompt_layers_persona_over_base() {
+        // No prefix → base prompt unchanged.
+        assert_eq!(compose_system_prompt(None), GWENLAND_SYSTEM_PROMPT);
+        // Blank/whitespace prefix is ignored (falls back to base).
+        assert_eq!(compose_system_prompt(Some("   \n ")), GWENLAND_SYSTEM_PROMPT);
+        // A real persona is layered ON TOP, base protocol still present.
+        let composed = compose_system_prompt(Some("You are Gwen."));
+        assert!(composed.starts_with("You are Gwen."));
+        assert!(composed.contains(GWENLAND_SYSTEM_PROMPT));
+        // The <think> protocol from the base prompt survives.
+        assert!(composed.contains("<think>"));
     }
 
     #[test]

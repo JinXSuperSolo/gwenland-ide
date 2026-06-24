@@ -48,21 +48,26 @@
 <div class="app-shell">
   <MenuBar />
   <div class="shell-main">
-    <!-- Activity rail: switch the left sidebar between Explorer / Source Control. -->
-    <ActivityBar />
+    <!-- The whole left sidebar (activity rail + Explorer/Source Control) only
+         exists once a folder is explicitly opened. A New File with no workspace
+         keeps it hidden — the editor takes the full width. -->
+    {#if $workspace.folderPath}
+      <!-- Activity rail: switch the left sidebar between Explorer / Source Control. -->
+      <ActivityBar />
 
-    <!-- Left sidebar (horizontal resize): Explorer or Source Control. -->
-    {#if $panels.fileTree.collapsed}
-      <RestoreStrip target="fileTree" label="Sidebar" orientation="vertical" />
-    {:else}
-      <div class="panel-slot" style:width={`${$panels.fileTree.size}px`}>
-        {#if $sidebarView === 'git'}
-          <GitPanel />
-        {:else}
-          <FileTree />
-        {/if}
-      </div>
-      <ResizeHandle target="fileTree" edge="left" />
+      <!-- Left sidebar (horizontal resize): Explorer or Source Control. -->
+      {#if $panels.fileTree.collapsed}
+        <RestoreStrip target="fileTree" label="Sidebar" orientation="vertical" />
+      {:else}
+        <div class="panel-slot" style:width={`${$panels.fileTree.size}px`}>
+          {#if $sidebarView === 'git'}
+            <GitPanel />
+          {:else}
+            <FileTree />
+          {/if}
+        </div>
+        <ResizeHandle target="fileTree" edge="left" />
+      {/if}
     {/if}
 
     <!-- Right column: Workspace (top, grows) over Terminal (bottom, vertical resize) -->

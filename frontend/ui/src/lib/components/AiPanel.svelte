@@ -19,7 +19,7 @@
     currentSelectionAttachment,
   } from '../ai/ai-chat-setup'
   import { openSettings } from '../stores/ui'
-  import { openFolder, workspace } from '../stores/workspace'
+  import { workspace } from '../stores/workspace'
   import { openContextMenuSmart } from '../context-menu/globalContextMenu'
   import {
     aiErrorMessage,
@@ -27,11 +27,12 @@
     type ContextAttachment,
     type ImageAttachment,
   } from '../tauri/commands'
-  import { assistantMode, MODE_META } from '../stores/assistant-mode'
+  import { assistantMode } from '../stores/assistant-mode'
   import { agentic } from '../stores/agentic'
   import { startAgentRun, cancelAgentSession } from '../agentic/agentic-setup'
   import AiHistory from './AiHistory.svelte'
   import AiMessage from './AiMessage.svelte'
+  import SlashCommandMenu from './SlashCommandMenu.svelte'
   import Checkbox from './Checkbox.svelte'
   import AgentMessage from './agent/AgentMessage.svelte'
   import AgentTierMenu from './agent/AgentTierMenu.svelte'
@@ -39,9 +40,34 @@
   import ComposerModelMenu from './ComposerModelMenu.svelte'
   import DiffReviewPanel from './DiffReviewPanel.svelte'
   import Icon from './Icon.svelte'
+  import {
+    parseSlashQuery,
+    filterCommands,
+    exactCommand,
+    type SlashCommand,
+  } from '../stores/slash-commands'
+  import { runSlashCommand } from '../ai/slash-command-setup'
+  import { setModel } from '../ai/ai-chat-setup'
+  import { changeAgentTier } from '../agentic/agentic-setup'
+  import type { AgentTier } from '../tauri/commands'
+  import MentionMenu from './MentionMenu.svelte'
+  import MentionPill from './MentionPill.svelte'
+  import {
+    SPECIAL_PROVIDERS,
+    parseMentionQuery,
+    fuzzySearch,
+    parseLineRange,
+    type MentionCandidate,
+    type MentionItem,
+  } from '../stores/mention-providers'
+  import { getWorkspaceIndex, resolveAllMentions } from '../ai/mention-setup'
+  import PersonaPicker from './PersonaPicker.svelte'
+  import SystemPromptEditor from './SystemPromptEditor.svelte'
+  import { persona, loadPersona, resetPersona } from '../stores/workspace-persona'
 
-  // Reactive: re-evaluates when a folder is opened/closed (workspace store),
-  // unlike a one-shot get() which left the empty state stuck on "Open Folder".
+  // Reactive: re-evaluates when a folder is opened/closed. Agent tools and
+  // conversation creation need a project, so sends gate on this silently (no
+  // banner or empty state is shown when there's no workspace).
   const hasProject = $derived($workspace.folderPath !== null)
   const streaming = $derived($aiChat.activeStreamId !== null)
   // The unified assistant mode (chat/agent/explain/plan) lives in a store so it
@@ -69,18 +95,303 @@
       ($aiChat.unsentInput.trim().length > 0 || images.length > 0)
   )
 
+  // --- Slash commands (GWEN-333) --------------------------------------------
+  let slashMenuDismissed = $state(false)
+  let slashActiveIndex = $state(0)
+  // Inline pickers opened by /model, /mode, /persona, /system.
+  let modelPickerOpen = $state(false)
+  let modePickerOpen = $state(false)
+  let personaPickerOpen = $state(false)
+  let systemEditorOpen = $state(false)
+  // The composer text is the agent goal in agent mode, else the chat input.
+  const composerText = $derived(isAgent ? agentGoal : $aiChat.unsentInput)
+  // Parse the current text into a slash query; null = not a slash invocation.
+  const slashQuery = $derived(parseSlashQuery(composerText))
+  // Show the autocomplete while typing the command name (before any space).
+  const slashCommands = $derived<SlashCommand[]>(
+    slashQuery && !slashQuery.hasArgs ? filterCommands(slashQuery.token) : []
+  )
+  const slashOpen = $derived(slashMenuDismissed ? false : slashCommands.length > 0)
+
+  const MODE_TIERS: { id: AgentTier; label: string; hint: string }[] = [
+    { id: 'ask', label: 'Ask', hint: 'Approve every edit & command' },
+    { id: 'accept_for_me', label: 'Accept for Me', hint: 'Auto-approve small, safe changes' },
+    { id: 'full_control', label: 'Full Control', hint: 'Run autonomously; stop at destructive steps' },
+  ]
+
+  // Reset the highlighted row + un-dismiss whenever the filtered set changes.
+  $effect(() => {
+    void slashCommands.length
+    if (slashActiveIndex >= slashCommands.length) slashActiveIndex = 0
+  })
+  // Re-arm the menu when the user clears the line (so retyping `/` reopens it).
+  $effect(() => {
+    if (!composerText.startsWith('/')) slashMenuDismissed = false
+  })
+
+  function setComposerText(text: string): void {
+    if (isAgent) agentGoal = text
+    else setUnsentInput(text)
+  }
+
+  // --- @ mentions (GWEN-332) -------------------------------------------------
+  // Resolved mentions attached to the next message (rendered as pills). One
+  // shared list: only one composer (chat or agent) is active at a time.
+  let mentions = $state<MentionItem[]>([])
+  let mentionCandidates = $state<MentionCandidate[]>([])
+  let mentionActiveIndex = $state(0)
+  // The live `@` query under the caret (drives the dropdown), or null.
+  let mentionQuery = $state<{ at: number; query: string } | null>(null)
+  const mentionOpen = $derived(mentionQuery !== null && mentionCandidates.length > 0)
+
+  /** Recompute the `@` query + candidate list from the caret position. */
+  async function refreshMentions(): Promise<void> {
+    const caret = inputEl?.selectionStart ?? composerText.length
+    const q = parseMentionQuery(composerText, caret)
+    mentionQuery = q
+    if (!q) {
+      mentionCandidates = []
+      return
+    }
+    mentionActiveIndex = 0
+    // `@web <url>` keeps the menu showing just the web row until confirmed.
+    if (/^web\s/i.test(q.query)) {
+      mentionCandidates = SPECIAL_PROVIDERS.filter((p) => p.type === 'web')
+      return
+    }
+    const term = q.query.toLowerCase()
+    const specials = SPECIAL_PROVIDERS.filter((p) => p.insert.trim().startsWith(term))
+    // Fuzzy file/folder results (line-range suffix is ignored for matching).
+    const { path: matchPath } = parseLineRange(q.query)
+    const index = await getWorkspaceIndex()
+    const files = matchPath ? fuzzySearch(matchPath, index, 20) : []
+    mentionCandidates = [...specials, ...files]
+  }
+
+  /** Splice text so the `@query` token is replaced by `replacement`. */
+  function spliceMention(at: number, queryLen: number, replacement: string): void {
+    const text = composerText
+    const before = text.slice(0, at)
+    const after = text.slice(at + 1 + queryLen) // +1 for the `@`
+    const next = before + replacement + after
+    setComposerText(next)
+    // Restore the caret just after the inserted text.
+    const pos = (before + replacement).length
+    void tick().then(() => {
+      if (inputEl) {
+        inputEl.selectionStart = inputEl.selectionEnd = pos
+        inputEl.focus()
+      }
+    })
+  }
+
+  /** Add a resolved mention pill (dedup by identity), clearing the query. */
+  function addMention(m: MentionItem): void {
+    mentions = [...mentions, m]
+    mentionQuery = null
+    mentionCandidates = []
+  }
+
+  /** Confirm a chosen candidate: special/file/folder → pill; @web → stays open. */
+  function selectMention(c: MentionCandidate): void {
+    if (!mentionQuery) return
+    const { at, query } = mentionQuery
+    if (c.type === 'web') {
+      // If a URL was already typed (`@web https://…`), confirm it; else prime it.
+      const m = /^web\s+(\S+)/i.exec(query)
+      if (m) {
+        spliceMention(at, query.length, '')
+        addMention({
+          id: crypto.randomUUID(),
+          type: 'web',
+          url: m[1],
+          label: shortUrl(m[1]),
+        })
+      } else {
+        spliceMention(at, query.length, '@web ')
+        void tick().then(refreshMentions)
+      }
+      return
+    }
+    // Remove the typed token from the text; the pill carries the context.
+    spliceMention(at, query.length, '')
+    if (c.type === 'git' || c.type === 'diagnostics' || c.type === 'terminal') {
+      addMention({ id: crypto.randomUUID(), type: c.type, label: c.label })
+      return
+    }
+    // File or folder: parse a `:start-end` range off the chosen path.
+    const { path: rel, lStart, lEnd } = parseLineRange(c.insert.replace(/\/$/, ''))
+    const label = (rel.split('/').pop() ?? rel) + (lStart !== undefined ? `:${lStart}-${lEnd}` : '')
+    addMention({
+      id: crypto.randomUUID(),
+      type: c.type,
+      path: c.path,
+      lStart,
+      lEnd,
+      label,
+    })
+  }
+
+  function removeMention(id: string): void {
+    mentions = mentions.filter((m) => m.id !== id)
+  }
+
+  /** Trim a URL to host + short path for the pill label. */
+  function shortUrl(url: string): string {
+    try {
+      const u = new URL(url)
+      return u.host + (u.pathname !== '/' ? u.pathname : '')
+    } catch {
+      return url
+    }
+  }
+
+  /** Keydown handling for the mention menu; returns true if it consumed the key. */
+  function handleMentionKeydown(e: KeyboardEvent): boolean {
+    if (!mentionOpen) return false
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        mentionActiveIndex = (mentionActiveIndex + 1) % mentionCandidates.length
+        return true
+      case 'ArrowUp':
+        e.preventDefault()
+        mentionActiveIndex =
+          (mentionActiveIndex - 1 + mentionCandidates.length) % mentionCandidates.length
+        return true
+      case 'Enter':
+        e.preventDefault()
+        selectMention(mentionCandidates[mentionActiveIndex] ?? mentionCandidates[0])
+        return true
+      case 'Tab': {
+        e.preventDefault()
+        selectMention(mentionCandidates[mentionActiveIndex] ?? mentionCandidates[0])
+        return true
+      }
+      case 'Escape':
+        e.preventDefault()
+        mentionQuery = null
+        mentionCandidates = []
+        return true
+      default:
+        return false
+    }
+  }
+
+  /** Close every inline composer picker (model/mode/persona/system). */
+  function closeInlinePickers(): void {
+    modelPickerOpen = false
+    modePickerOpen = false
+    personaPickerOpen = false
+    systemEditorOpen = false
+  }
+
+  /** Execute a chosen command, routing picker commands to their inline UIs. */
+  async function execSlashCommand(command: SlashCommand): Promise<void> {
+    slashMenuDismissed = true
+    const rest = slashQuery?.rest ?? ''
+    const result = await runSlashCommand(command.id, rest)
+    if (result.setInput !== undefined) setComposerText(result.setInput)
+    if (
+      result.openModelPicker ||
+      result.openModePicker ||
+      result.openPersonaPicker ||
+      result.openSystemEditor
+    ) {
+      closeInlinePickers()
+      modelPickerOpen = !!result.openModelPicker
+      modePickerOpen = !!result.openModePicker
+      personaPickerOpen = !!result.openPersonaPicker
+      systemEditorOpen = !!result.openSystemEditor
+    }
+    inputEl?.focus()
+  }
+
+  /** Keydown handling for the slash menu; returns true if it consumed the key. */
+  function handleSlashKeydown(e: KeyboardEvent): boolean {
+    if (!slashOpen) return false
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        slashActiveIndex = (slashActiveIndex + 1) % slashCommands.length
+        return true
+      case 'ArrowUp':
+        e.preventDefault()
+        slashActiveIndex = (slashActiveIndex - 1 + slashCommands.length) % slashCommands.length
+        return true
+      case 'Enter':
+        e.preventDefault()
+        void execSlashCommand(slashCommands[slashActiveIndex] ?? slashCommands[0])
+        return true
+      case 'Tab': {
+        // Tab completes the highlighted command name into the input.
+        e.preventDefault()
+        const c = slashCommands[slashActiveIndex] ?? slashCommands[0]
+        if (c) setComposerText(`${c.name} `)
+        return true
+      }
+      case 'Escape':
+        e.preventDefault()
+        slashMenuDismissed = true
+        return true
+      default:
+        return false
+    }
+  }
+
+  /**
+   * If the composer holds a fully-typed slash command (e.g. `/clear` or
+   * `/get-history 10`), run it instead of sending a message. Returns true when
+   * it handled the submit.
+   */
+  function tryRunTypedCommand(): boolean {
+    const q = parseSlashQuery(composerText)
+    if (!q) return false
+    const command = exactCommand(q.token)
+    if (!command) return false
+    void execSlashCommand(command)
+    return true
+  }
+
+  function pickModel(id: string): void {
+    void setModel(id)
+    modelPickerOpen = false
+    setComposerText('')
+    inputEl?.focus()
+  }
+  function pickTier(tier: AgentTier): void {
+    void changeAgentTier(tier)
+    modePickerOpen = false
+    setComposerText('')
+    inputEl?.focus()
+  }
+
   let listEl = $state<HTMLDivElement | null>(null)
   let inputEl = $state<HTMLTextAreaElement | null>(null)
+  let surfaceEl = $state<HTMLDivElement | null>(null)
   let imageInputEl = $state<HTMLInputElement | null>(null)
+
+  // Close the inline /model + /mode pickers and the @mention menu on an outside
+  // click.
+  $effect(() => {
+    if (!modelPickerOpen && !modePickerOpen && !mentionOpen) return
+    function onPointerDown(e: PointerEvent) {
+      if (surfaceEl && !surfaceEl.contains(e.target as Node)) {
+        modelPickerOpen = false
+        modePickerOpen = false
+        mentionQuery = null
+        mentionCandidates = []
+      }
+    }
+    window.addEventListener('pointerdown', onPointerDown, true)
+    return () => window.removeEventListener('pointerdown', onPointerDown, true)
+  })
   let dragOver = $state(false)
   // GWEN-324: conversation history is a slide-out toggled from the header.
   let historyOpen = $state(false)
   const activeConv = $derived(
     $aiChat.conversations.find((c) => c.id === $aiChat.activeConversationId) ?? null
   )
-
-  // Suggestion chips for the workspace-open empty state (Requirement 3.9).
-  const SUGGESTIONS = ['Explain this file', 'Find bugs', 'Write a test']
 
   /** Cap per image so a huge paste/drop can't bloat the request (~8 MB raw). */
   const MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -109,6 +420,15 @@
     return () => unlisten?.()
   })
 
+  // GWEN-334: load the per-workspace persona/system prompt whenever the open
+  // folder changes (and on first mount). Falls back to defaults when there's no
+  // project or no GwenLand.md. Tracks `folderPath` so it re-runs on open/close.
+  $effect(() => {
+    const root = $workspace.folderPath
+    if (root) void loadPersona()
+    else resetPersona()
+  })
+
   // Auto-scroll to the newest content as it streams in.
   $effect(() => {
     // Touch the reactive deps so this re-runs on new tokens / messages, plus
@@ -127,8 +447,11 @@
 
   function onInput(e: Event) {
     setUnsentInput((e.currentTarget as HTMLTextAreaElement).value)
+    void refreshMentions()
   }
   function onSend() {
+    // A fully-typed slash command runs instead of sending a chat message.
+    if (tryRunTypedCommand()) return
     if (!canSend) return
     let text = $aiChat.unsentInput
     let atts = attachments
@@ -142,9 +465,17 @@
       text =
         `Make the following change. Reply with a single unified diff (\`\`\`diff fenced) for the affected file(s) and a one-line summary — no extra prose:\n\n${text}`
     }
-    void sendMessage(text, atts, images)
+    // Resolve any @mentions into a <context> block prepended to the message.
+    const pending = mentions
+    const pendingImages = images
+    mentions = []
     attachments = []
     images = []
+    setUnsentInput('') // empty the composer immediately while mentions resolve
+    void (async () => {
+      const withContext = await resolveAllMentions(text, pending)
+      await sendMessage(withContext, atts, pendingImages)
+    })()
   }
 
   // --- Image upload (multimodal) ---------------------------------------------
@@ -210,25 +541,34 @@
   }
   // Agent mode: submit the message and run the inline tool loop directly.
   function onSendAgent() {
+    // A fully-typed slash command runs instead of starting an agent run.
+    if (tryRunTypedCommand()) return
     if (!canSendAgent) return
-    void startAgentRun(agentGoal)
+    const goal = agentGoal
+    const pending = mentions
+    mentions = []
     agentGoal = ''
+    void (async () => {
+      const withContext = await resolveAllMentions(goal, pending)
+      await startAgentRun(withContext)
+    })()
   }
   function onKeydown(e: KeyboardEvent) {
+    // Escape closes the inline /model or /mode picker first.
+    if (e.key === 'Escape' && (modelPickerOpen || modePickerOpen)) {
+      e.preventDefault()
+      modelPickerOpen = false
+      modePickerOpen = false
+      return
+    }
+    // The @mention and slash menus claim navigation/commit keys while open.
+    if (handleMentionKeydown(e)) return
+    if (handleSlashKeydown(e)) return
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       if (isAgent) onSendAgent()
       else onSend()
     }
-  }
-
-  // Suggestion chip (Requirement 3.10): ensure a conversation exists so the
-  // composer is enabled, then pre-fill it and focus the input.
-  async function useSuggestion(text: string) {
-    if (hasProject && !$aiChat.activeConversationId) await createConversation()
-    setUnsentInput(text)
-    await tick()
-    inputEl?.focus()
   }
 
   function attachFile() {
@@ -274,7 +614,10 @@
 <aside class="ai-panel" aria-label="AI Chat" oncontextmenu={onAiContextMenu}>
   <header class="ai-header">
     <!-- GWEN-324: sparks glyph only (no redundant "AI" text label). -->
-    <span class="ai-title" aria-label="AI"><Icon name="sparks" size={15} /></span>
+    <span class="ai-title" title={$persona.persona.name}>
+      <Icon name="sparks" size={15} />
+      <span class="ai-name">{$persona.persona.name}</span>
+    </span>
     <div class="ai-header-actions">
       <button
         class="icon-btn"
@@ -318,32 +661,15 @@
   <DiffReviewPanel />
 
   <div class="ai-messages" bind:this={listEl}>
-    <!-- GWEN-324: no blocking empty state — the composer is always live below.
-         When there are no messages we show a light, optional hint + suggestions
-         (chat-like modes only) that never gate the input. -->
-    {#if $aiChat.messages.length === 0}
-      <div class="ai-empty">
-        <span class="empty-icon"><Icon name="sparks" size={28} /></span>
-        <p class="empty-headline">{MODE_META[$assistantMode].hint}</p>
-        {#if !hasProject}
-          <button class="empty-cta" onclick={() => void openFolder()}>Open Folder</button>
-        {:else if isChatLike}
-          <div class="suggestions">
-            {#each SUGGESTIONS as s}
-              <button class="suggestion-chip" onclick={() => void useSuggestion(s)}>{s}</button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {:else}
-      {#each $aiChat.messages as message (message.id)}
-        {#if message.agent}
-          <AgentMessage {message} />
-        {:else}
-          <AiMessage {message} />
-        {/if}
-      {/each}
-    {/if}
+    <!-- No empty state: the composer below is always live. With no messages the
+         list is simply empty. -->
+    {#each $aiChat.messages as message (message.id)}
+      {#if message.agent}
+        <AgentMessage {message} />
+      {:else}
+        <AiMessage {message} />
+      {/if}
+    {/each}
   </div>
 
   <AiHistory open={historyOpen} onClose={() => (historyOpen = false)} />
@@ -382,6 +708,7 @@
       class="composer-surface"
       class:drag-over={dragOver}
       role="group"
+      bind:this={surfaceEl}
       onpaste={onComposerPaste}
       ondragover={(e) => {
         if (e.dataTransfer?.types.includes('Files')) {
@@ -392,6 +719,79 @@
       ondragleave={() => (dragOver = false)}
       ondrop={onComposerDrop}
     >
+      <!-- Slash-command autocomplete (GWEN-333) — floats above the composer. -->
+      {#if slashOpen}
+        <SlashCommandMenu
+          commands={slashCommands}
+          activeIndex={slashActiveIndex}
+          onSelect={execSlashCommand}
+          onHover={(i) => (slashActiveIndex = i)}
+        />
+      {/if}
+
+      <!-- @-mention autocomplete (GWEN-332) — same anchor as the slash menu. -->
+      {#if mentionOpen}
+        <MentionMenu
+          candidates={mentionCandidates}
+          activeIndex={mentionActiveIndex}
+          onSelect={selectMention}
+          onHover={(i) => (mentionActiveIndex = i)}
+        />
+      {/if}
+
+      <!-- Inline /model picker -->
+      {#if modelPickerOpen}
+        <div class="slash-picker" role="listbox" aria-label="Pick model">
+          <div class="slash-picker-title">Model</div>
+          {#if $aiChat.models && $aiChat.models.length > 0}
+            {#each $aiChat.models as m (m.id)}
+              <button
+                type="button"
+                role="option"
+                aria-selected={m.id === $aiChat.activeModel}
+                class="slash-picker-row"
+                class:active={m.id === $aiChat.activeModel}
+                onclick={() => pickModel(m.id)}
+              >
+                {m.display_name || m.id}
+              </button>
+            {/each}
+          {:else}
+            <div class="slash-picker-empty">No model list for {$aiChat.activeProvider}.</div>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Inline /mode (autonomy tier) switcher -->
+      {#if modePickerOpen}
+        <div class="slash-picker" role="listbox" aria-label="Pick mode">
+          <div class="slash-picker-title">Mode</div>
+          {#each MODE_TIERS as t (t.id)}
+            <button
+              type="button"
+              role="option"
+              aria-selected={t.id === $agentic.tier}
+              class="slash-picker-row"
+              class:active={t.id === $agentic.tier}
+              onclick={() => pickTier(t.id)}
+            >
+              <span class="slash-picker-label">{t.label}</span>
+              <span class="slash-picker-hint">{t.hint}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Inline /persona picker (GWEN-334) -->
+      {#if personaPickerOpen}
+        <PersonaPicker onClose={() => (personaPickerOpen = false)} />
+      {/if}
+
+      <!-- Inline /system prompt editor (GWEN-334) -->
+      {#if systemEditorOpen}
+        <SystemPromptEditor onClose={() => (systemEditorOpen = false)} />
+      {/if}
+
       <input
         type="file"
         accept="image/*"
@@ -400,6 +800,15 @@
         onchange={onPickImages}
         style="display:none"
       />
+
+      <!-- Resolved @mention pills (GWEN-332) — both chat-like and agent modes. -->
+      {#if mentions.length > 0}
+        <div class="mention-pills">
+          {#each mentions as m (m.id)}
+            <MentionPill mention={m} onRemove={() => removeMention(m.id)} />
+          {/each}
+        </div>
+      {/if}
 
       {#if isChatLike && attachments.length > 0}
         <div class="attach-chips">
@@ -433,13 +842,16 @@
           class="ai-input"
           rows="3"
           bind:this={inputEl}
-          placeholder={hasProject
-            ? "Describe a goal — I'll plan it first, then wait for approval"
-            : 'Open a folder to use Agent mode…'}
+          placeholder="Ask anything..."
           value={agentGoal}
-          oninput={(e) => (agentGoal = (e.currentTarget as HTMLTextAreaElement).value)}
+          oninput={(e) => {
+            agentGoal = (e.currentTarget as HTMLTextAreaElement).value
+            void refreshMentions()
+          }}
           onkeydown={onKeydown}
-          disabled={!hasProject || agentStreaming}
+          onkeyup={() => void refreshMentions()}
+          onclick={() => void refreshMentions()}
+          disabled={agentStreaming}
         ></textarea>
       {:else}
         <textarea
@@ -450,6 +862,8 @@
           value={$aiChat.unsentInput}
           oninput={onInput}
           onkeydown={onKeydown}
+          onkeyup={() => void refreshMentions()}
+          onclick={() => void refreshMentions()}
         ></textarea>
       {/if}
 
@@ -578,10 +992,18 @@
     display: inline-flex;
     align-items: center;
     gap: 7px;
+    min-width: 0;
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.03em;
     color: var(--ai-text-primary);
+  }
+  /* Persona name in the header (GWEN-334) — truncates rather than pushing the
+     header actions off-screen. */
+  .ai-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .ai-header-actions {
     display: flex;
@@ -619,70 +1041,6 @@
   }
   .ai-messages::-webkit-scrollbar-thumb:hover {
     background-color: color-mix(in srgb, var(--ai-primary) 30%, transparent);
-  }
-  .ai-empty {
-    margin: auto;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    color: var(--ai-text-muted);
-    font-size: 12px;
-    text-align: center;
-    padding: 24px 16px;
-  }
-  .ai-empty p {
-    margin: 0;
-  }
-  .empty-icon {
-    display: inline-flex;
-    margin-bottom: 2px;
-    color: var(--ai-text-muted);
-  }
-  .empty-headline {
-    font-size: 14px;
-    font-weight: 600;
-    color: color-mix(in srgb, var(--ai-text-primary) 80%, transparent);
-  }
-  /* Subtle primary-outline CTA (Req 3.6). */
-  .empty-cta {
-    margin-top: 4px;
-    padding: 6px 16px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--ai-primary-light);
-    background: transparent;
-    border: 1px solid color-mix(in srgb, var(--ai-primary) 40%, transparent);
-    border-radius: 999px;
-    cursor: pointer;
-    transition: background-color 0.12s ease, border-color 0.12s ease;
-  }
-  .empty-cta:hover {
-    background-color: var(--ai-thinking-bg);
-    border-color: var(--ai-primary);
-  }
-  .suggestions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 6px;
-    margin-top: 6px;
-  }
-  /* Pill chips with --ai-border-subtle; primary hover (Req 3.11-3.12). */
-  .suggestion-chip {
-    padding: 5px 12px;
-    font-size: 12px;
-    color: var(--ai-text-muted);
-    background: transparent;
-    border: 1px solid var(--ai-border-subtle);
-    border-radius: 999px;
-    cursor: pointer;
-    transition: color 0.12s ease, background-color 0.12s ease, border-color 0.12s ease;
-  }
-  .suggestion-chip:hover {
-    color: var(--ai-primary-light);
-    background-color: var(--ai-thinking-bg);
-    border-color: color-mix(in srgb, var(--ai-primary) 30%, transparent);
   }
   .ai-banner {
     display: flex;
@@ -742,12 +1100,70 @@
   }
   /* Floating, rounded composer surface (Req 2.9) — borderless/flat. */
   .composer-surface {
+    position: relative;
     background-color: var(--ai-bg-surface);
     border: none;
     border-radius: 16px;
     padding: 8px 8px 6px;
     box-shadow: var(--shadow-sm);
     transition: background-color 0.12s ease;
+  }
+  /* Inline /model + /mode pickers, styled to match the slash menu. */
+  .slash-picker {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 6px);
+    z-index: 40;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 4px;
+    background-color: var(--ai-bg-surface);
+    border: 1px solid var(--ai-border-subtle, transparent);
+    border-radius: 12px;
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.45));
+    scrollbar-width: thin;
+  }
+  .slash-picker-title {
+    padding: 4px 8px 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ai-text-muted);
+  }
+  .slash-picker-row {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    width: 100%;
+    padding: 5px 8px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    cursor: pointer;
+    color: var(--ai-text-primary);
+    font-size: 12px;
+  }
+  .slash-picker-row.active {
+    color: var(--ai-primary-light);
+    background-color: var(--ai-bg-hover);
+  }
+  .slash-picker-row:hover {
+    background-color: var(--ai-bg-hover);
+  }
+  .slash-picker-label {
+    font-weight: 600;
+  }
+  .slash-picker-hint {
+    font-size: 11px;
+    color: var(--ai-text-muted);
+  }
+  .slash-picker-empty {
+    padding: 6px 8px;
+    font-size: 11.5px;
+    color: var(--ai-text-muted);
   }
   .composer-surface.drag-over {
     background-color: var(--ai-thinking-bg);
@@ -855,6 +1271,13 @@
     background-color: var(--ai-bg-hover);
   }
   .attach-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  /* Resolved @mention pills row (GWEN-332). */
+  .mention-pills {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;

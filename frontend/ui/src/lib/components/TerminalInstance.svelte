@@ -16,6 +16,7 @@
   } from '../terminal/xterm-setup'
   import { bindPtyId, terminalSessions } from '../stores/terminal-sessions'
   import { workspace } from '../stores/workspace'
+  import { subscribeFocus, isAppActive } from '../stores/app-focus'
   import { registerTerminalHandle, unregisterTerminalHandle } from '../terminal/terminal-registry'
   import { openContextMenu } from '../context-menu/contextMenuStore'
 
@@ -28,9 +29,41 @@
   let bundle: TerminalBundle | null = null
   let sessionId: string | null = null
   let unlisten: UnlistenFn | null = null
+  let unsubscribeFocus: (() => void) | null = null
   let resizeObserver: ResizeObserver | null = null
   let disposed = false
   const encoder = new TextEncoder()
+
+  // Background throttle: while the window is inactive we keep receiving PTY
+  // output (the process never pauses) but defer WRITING it to XTerm, so the
+  // canvas doesn't repaint in the background. Buffered chunks are flushed in one
+  // write on focus. Cap the buffer so a runaway background process can't grow it
+  // without bound — XTerm's own scrollback would drop the excess anyway.
+  let pendingChunks: Uint8Array[] = []
+  let pendingBytes = 0
+  const MAX_PENDING_BYTES = 1 << 20 // 1 MB
+
+  /** Write a chunk now, or buffer it while inactive. */
+  function renderOutput(bytes: Uint8Array) {
+    if (isAppActive()) {
+      bundle?.term.write(bytes)
+      return
+    }
+    pendingChunks.push(bytes)
+    pendingBytes += bytes.length
+    // Keep only the most recent ~1 MB so the flush stays bounded.
+    while (pendingBytes > MAX_PENDING_BYTES && pendingChunks.length > 1) {
+      pendingBytes -= pendingChunks.shift()!.length
+    }
+  }
+
+  /** Flush buffered output to XTerm in one repaint (called on focus). */
+  function flushPending() {
+    if (!bundle || pendingChunks.length === 0) return
+    for (const chunk of pendingChunks) bundle.term.write(chunk)
+    pendingChunks = []
+    pendingBytes = 0
+  }
 
   function refit() {
     if (!bundle || !sessionId) return
@@ -77,6 +110,21 @@
       clear: () => bundle?.term.clear(),
       selectAll: () => bundle?.term.selectAll(),
       focus: () => bundle?.term.focus(),
+      readBuffer: (maxLines: number) => {
+        const term = bundle?.term
+        if (!term) return ''
+        // Read the active buffer bottom-up so we keep the most recent lines,
+        // including scrollback above the viewport (baseY + visible rows).
+        const buf = term.buffer.active
+        const last = buf.baseY + term.rows
+        const lines: string[] = []
+        for (let y = last - 1; y >= 0 && lines.length < maxLines; y--) {
+          const line = buf.getLine(y)
+          if (line) lines.unshift(line.translateToString(true))
+        }
+        // Drop leading/trailing blank lines so the injected block is compact.
+        return lines.join('\n').replace(/^\s*\n/, '').replace(/\n\s*$/, '')
+      },
     })
   }
 
@@ -109,7 +157,9 @@
         sessionId = id
         bindPtyId(key, id)
 
-        unlisten = await onTerminalOutput(id, (bytes) => bundle?.term.write(bytes))
+        // Render via the throttle gate: written immediately while active,
+        // buffered while the window is in the background (PTY keeps streaming).
+        unlisten = await onTerminalOutput(id, (bytes) => renderOutput(bytes))
         bundle!.term.onData((data: string) => {
           void terminalWrite(id, encoder.encode(data)).catch(() => {})
         })
@@ -124,6 +174,15 @@
     resizeObserver = new ResizeObserver(() => refit())
     resizeObserver.observe(host)
 
+    // On focus, flush whatever streamed in while we were in the background and
+    // re-fit (size may have changed). The PTY never stopped, so this catches up.
+    unsubscribeFocus = subscribeFocus((active) => {
+      if (active && bundle) {
+        flushPending()
+        if (visible) refit()
+      }
+    })
+
     return () => {
       disposed = true
     }
@@ -133,6 +192,10 @@
     unregisterTerminalHandle(key)
     resizeObserver?.disconnect()
     resizeObserver = null
+    unsubscribeFocus?.()
+    unsubscribeFocus = null
+    pendingChunks = []
+    pendingBytes = 0
     if (unlisten) {
       unlisten()
       unlisten = null

@@ -123,6 +123,23 @@ export function revealLine(lineNo: number): void {
 }
 
 /**
+ * Select a 1-based line range in the active editor and scroll it into view
+ * (GWEN-332 — clicking an @mention pill jumps to its source lines). Clamps to
+ * the document bounds; a single line selects just that line. No-op when no
+ * editor is active.
+ */
+export function selectRange(startLine: number, endLine: number): void {
+  if (!active) return
+  const lines = active.state.doc.lines
+  const a = Math.min(Math.max(startLine, 1), lines)
+  const b = Math.min(Math.max(endLine, a), lines)
+  const from = active.state.doc.line(a).from
+  const to = active.state.doc.line(b).to
+  active.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true })
+  active.focus()
+}
+
+/**
  * Insert `text` at the active editor's cursor (replacing any selection), then
  * place the caret after it and focus. Returns false when no editor is active
  * (M4 AiCodeBlock "Insert into Editor"). The caller passes raw code including
