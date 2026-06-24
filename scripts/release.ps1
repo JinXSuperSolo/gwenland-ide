@@ -93,14 +93,14 @@ try {
 }
 
 # --- 4. Binary budget check ------------------------------------------------
-$exe = Join-Path $RepoRoot 'target/release/gwenland.exe'
+$exe = Join-Path $RepoRoot 'target/release/GwenLand-IDE.exe'
 if (Test-Path $exe) {
     $size = (Get-Item $exe).Length
     $sizeMb = [math]::Round($size / 1MB, 2)
     if ($size -gt $BudgetBytes) {
-        Write-Host "WARN gwenland.exe is $sizeMb MB, over the 6.5 MB budget" -ForegroundColor Yellow
+        Write-Host "WARN GwenLand-IDE.exe is $sizeMb MB, over the 6.5 MB budget" -ForegroundColor Yellow
     } else {
-        Ok "gwenland.exe is $sizeMb MB (under the 6.5 MB budget)"
+        Ok "GwenLand-IDE.exe is $sizeMb MB (under the 6.5 MB budget)"
     }
 }
 

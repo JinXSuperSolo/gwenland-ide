@@ -35,8 +35,8 @@ jobs:
           pnpm install
           pnpm build
       - name: Build
-        run: cargo build --release --target aarch64-unknown-linux-musl --bin gwenland
+        run: cargo build --release --target aarch64-unknown-linux-musl --bin GwenLand-IDE
       - name: Upload to GH Releases
         uses: softprops/action-gh-release@v2
         with:
-          files: target/aarch64-unknown-linux-musl/release/gwenland
+          files: target/aarch64-unknown-linux-musl/release/GwenLand-IDE

@@ -7,7 +7,7 @@ This project splits its pipeline in two:
 
 ## Why CD is local, not in GitHub Workflows
 
-The `cargo tauri build` bundle step needs the platform's native installer toolchain (WiX/NSIS on Windows, etc.) and produces large signed artifacts. We keep that off hosted GitHub runners and run it locally instead. The tag-triggered workflows under `.github/workflows/*.yml` (e.g. `windows-x64.yml`) only ever uploaded the bare `gwenland.exe`, **not** the installers — so the canonical, distributable release is the one these scripts build.
+The `cargo tauri build` bundle step needs the platform's native installer toolchain (WiX/NSIS on Windows, etc.) and produces large signed artifacts. We keep that off hosted GitHub runners and run it locally instead. The tag-triggered workflows under `.github/workflows/*.yml` (e.g. `windows-x64.yml`) only ever uploaded the bare `GwenLand-IDE.exe`, **not** the installers — so the canonical, distributable release is the one these scripts build.
 
 > If you ever want to move CD onto your own hardware, point those workflows at a **self-hosted runner** (`runs-on: self-hosted`) and have it invoke the same `cargo tauri build`. The scripts here are the source of truth for the steps.
 
@@ -54,7 +54,7 @@ The scripts verify all of these and fail early with a clear message if one is mi
 ## Output locations
 
 - Installers: `target/release/bundle/msi/*.msi` and `target/release/bundle/nsis/*-setup.exe`
-- Bare executable: `target/release/gwenland.exe` (Windows) / `target/release/gwenland`
+- Bare executable: `target/release/GwenLand-IDE.exe` (Windows) / `target/release/GwenLand-IDE`
 
 ## Publishing manually (without `gh`)
 

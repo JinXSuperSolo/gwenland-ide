@@ -31,16 +31,16 @@ jobs:
           pnpm install
           pnpm build
       - name: Build x86_64
-        run: cargo build --release --target x86_64-apple-darwin --bin gwenland
+        run: cargo build --release --target x86_64-apple-darwin --bin GwenLand-IDE
       - name: Build arm64
-        run: cargo build --release --target aarch64-apple-darwin --bin gwenland
+        run: cargo build --release --target aarch64-apple-darwin --bin GwenLand-IDE
       - name: Create Universal Binary
         run: |
           mkdir -p target/universal/release
-          lipo -create -output target/universal/release/gwenland \
-            target/x86_64-apple-darwin/release/gwenland \
-            target/aarch64-apple-darwin/release/gwenland
+          lipo -create -output target/universal/release/GwenLand-IDE \
+            target/x86_64-apple-darwin/release/GwenLand-IDE \
+            target/aarch64-apple-darwin/release/GwenLand-IDE
       - name: Upload to GH Releases
         uses: softprops/action-gh-release@v2
         with:
-          files: target/universal/release/gwenland
+          files: target/universal/release/GwenLand-IDE

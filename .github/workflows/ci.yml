@@ -42,10 +42,10 @@ jobs:
       - name: Test
         run: cargo test --workspace
       - name: Build release (for size check)
-        run: cargo build --release --bin gwenland
+        run: cargo build --release --bin GwenLand-IDE
       - name: Binary size check
         run: |
-          SIZE=$(stat -c%s target/release/gwenland)
+          SIZE=$(stat -c%s "target/release/GwenLand-IDE")
           SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
           echo "Binary size is $SIZE_MB MB"
           if (( $(echo "$SIZE > 20971520" | bc -l) )); then

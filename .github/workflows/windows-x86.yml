@@ -31,8 +31,8 @@ jobs:
           pnpm install
           pnpm build
       - name: Build
-        run: cargo build --release --target i686-pc-windows-msvc --bin gwenland
+        run: cargo build --release --target i686-pc-windows-msvc --bin GwenLand-IDE
       - name: Upload to GH Releases
         uses: softprops/action-gh-release@v2
         with:
-          files: target/i686-pc-windows-msvc/release/gwenland.exe
+          files: target/i686-pc-windows-msvc/release/GwenLand-IDE.exe

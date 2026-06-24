@@ -24,7 +24,7 @@ If you've noticed a bug or have a feature request, make sure to check our [Issue
    ```bash
    # Make sure you run Tauri dev from the frontend/ui or frontend root directory
    # depending on your setup. Typically, you can use Cargo directly:
-   cargo run --bin gwenland
+   cargo run --bin GwenLand-IDE
    ```
    *Note: SvelteKit should be running in dev mode. You can start it via `pnpm dev` inside `frontend/ui`.*
 

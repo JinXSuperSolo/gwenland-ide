@@ -68,14 +68,14 @@ info 'Building release bundle (cargo tauri build) — this runs pnpm build first
 ( cd "$FRONTEND_DIR" && cargo tauri build ) || fail 'cargo tauri build failed'
 
 # --- 4. Binary budget check ------------------------------------------------
-EXE="$REPO_ROOT/target/release/gwenland"
+EXE="$REPO_ROOT/target/release/GwenLand-IDE"
 if [[ -f "$EXE" ]]; then
   SIZE="$(stat -c%s "$EXE" 2>/dev/null || stat -f%z "$EXE")"
   SIZE_MB="$(awk "BEGIN{printf \"%.2f\", $SIZE/1048576}")"
   if [[ "$SIZE" -gt "$BUDGET_BYTES" ]]; then
-    printf '\033[33mWARN gwenland is %s MB, over the 6.5 MB budget\033[0m\n' "$SIZE_MB"
+    printf '\033[33mWARN GwenLand-IDE is %s MB, over the 6.5 MB budget\033[0m\n' "$SIZE_MB"
   else
-    ok "gwenland is $SIZE_MB MB (under the 6.5 MB budget)"
+    ok "GwenLand-IDE is $SIZE_MB MB (under the 6.5 MB budget)"
   fi
 fi
 
