@@ -3,10 +3,12 @@
   import { aiChat, toggleAiChat } from '../stores/ai-chat'
   import Icon from './Icon.svelte'
   import LspStatusIndicator from './LspStatusIndicator.svelte'
+  import GitStatusBar from './GitStatusBar.svelte'
 </script>
 
 <footer class="status-bar" aria-label="Status Bar">
   <div class="status-left">
+    <GitStatusBar />
     {#if $cursor}
       <span class="status-item">Ln {$cursor.line}, Col {$cursor.col}</span>
       <span class="status-item">UTF-8</span>

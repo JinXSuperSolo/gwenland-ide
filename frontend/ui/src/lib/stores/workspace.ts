@@ -75,6 +75,9 @@ export async function openFolderPath(path: string): Promise<void> {
     workspace.update((s) => ({ ...s, rootEntries, loading: false }))
     // Best-effort: don't fail the open if recording recents errors.
     addRecentProject(path).catch(() => {})
+    // GWEN-325: any terminal already open should follow the new workspace root.
+    // Dynamic import keeps the workspace store free of a Tauri/terminal cycle.
+    void import('../terminal/terminal-sync').then((m) => m.autoCdSessions(path))
   } catch (e) {
     workspace.update((s) => ({ ...s, loading: false, error: String(e) }))
   }

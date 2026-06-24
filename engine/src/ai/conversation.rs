@@ -259,6 +259,41 @@ pub fn append_turn(conversation_id: &str, turn: &ConversationTurn) -> Result<(),
     })
 }
 
+/// Truncate a conversation to its first `keep_count` turns, rewriting the JSONL
+/// (GWEN-326 — message edit/rollback). Used when the user edits an earlier turn:
+/// every turn at/after the edited one is discarded before the edited message is
+/// re-sent. `keep_count == 0` empties the file. Returns the surviving turns.
+/// Rewritten atomically (tmp + rename) so a crash can't leave a partial file.
+pub fn truncate_turns(
+    conversation_id: &str,
+    keep_count: usize,
+) -> Result<Vec<ConversationTurn>, AiError> {
+    let meta = meta_for(conversation_id)?;
+    let turns = load_turns(conversation_id)?;
+    let kept: Vec<ConversationTurn> = turns.into_iter().take(keep_count).collect();
+
+    let mut body = String::new();
+    for turn in &kept {
+        let line = serde_json::to_string(turn).map_err(io_err)?;
+        body.push_str(&line);
+        body.push('\n');
+    }
+
+    let path = Path::new(&meta.jsonl_path);
+    let tmp = path.with_extension("jsonl.tmp");
+    fs::write(&tmp, body.as_bytes()).map_err(io_err)?;
+    fs::rename(&tmp, path).map_err(io_err)?;
+
+    let id = conversation_id.to_string();
+    let now = now_rfc3339();
+    with_manifest(move |m| {
+        if let Some(e) = m.entries.iter_mut().find(|e| e.id == id) {
+            e.updated_at = now;
+        }
+    })?;
+    Ok(kept)
+}
+
 /// Convenience: build a completed user+assistant turn (stamping the current
 /// time) and append it. Used by the streaming command on `ai://done`.
 pub fn record_turn(
@@ -441,6 +476,34 @@ mod tests {
         let raw = fs::read_to_string(&meta.jsonl_path).unwrap();
         assert_eq!(raw.lines().filter(|l| !l.trim().is_empty()).count(), 2);
         assert!(raw.ends_with('\n'));
+    }
+
+    #[test]
+    fn truncate_keeps_first_n_turns() {
+        let env = TestEnv::new();
+        let meta = new_conversation(env.root(), "t", "openai", "gpt-4o").unwrap();
+        append_turn(&meta.id, &turn("q1", "a1")).unwrap();
+        append_turn(&meta.id, &turn("q2", "a2")).unwrap();
+        append_turn(&meta.id, &turn("q3", "a3")).unwrap();
+
+        let kept = truncate_turns(&meta.id, 1).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].messages[0].content, "q1");
+
+        // The file on disk reflects the truncation too.
+        let reloaded = load_turns(&meta.id).unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].messages[1].content, "a1");
+    }
+
+    #[test]
+    fn truncate_to_zero_empties_file() {
+        let env = TestEnv::new();
+        let meta = new_conversation(env.root(), "t", "openai", "gpt-4o").unwrap();
+        append_turn(&meta.id, &turn("q", "a")).unwrap();
+        let kept = truncate_turns(&meta.id, 0).unwrap();
+        assert!(kept.is_empty());
+        assert!(load_turns(&meta.id).unwrap().is_empty());
     }
 
     #[test]

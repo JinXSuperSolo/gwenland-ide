@@ -12,7 +12,7 @@ import { lspOpenPath, lspClosePath } from './lsp'
  * (`id`, `name`) live on every tab; kind-specific state hangs off the variant.
  * Narrow with [`isEditorTab`] / [`isPreviewTab`] before touching variant fields.
  */
-export type TabKind = 'editor' | 'preview'
+export type TabKind = 'editor' | 'preview' | 'diff'
 
 /**
  * Where a preview tab points (mirrors the engine's `PreviewSource`, M5):
@@ -53,7 +53,21 @@ export interface PreviewTab extends TabCommon {
   source: PreviewSource
 }
 
-export type Tab = EditorTab | PreviewTab
+/**
+ * A read-only git diff tab (GWEN-330). Renders a unified diff for one file; has
+ * no editor state and never affects git state. Closeable like any tab.
+ */
+export interface DiffTab extends TabCommon {
+  kind: 'diff'
+  /** Repo-relative path of the file being diffed. */
+  path: string
+  /** Absolute workspace root (for re-fetching the diff). */
+  root: string
+  /** Whether the file is untracked (changes the diff base). */
+  untracked: boolean
+}
+
+export type Tab = EditorTab | PreviewTab | DiffTab
 
 /** Narrowing guard: true (and refines the type) for file-editor tabs. */
 export function isEditorTab(tab: Tab): tab is EditorTab {
@@ -63,6 +77,11 @@ export function isEditorTab(tab: Tab): tab is EditorTab {
 /** Narrowing guard: true (and refines the type) for web-preview tabs. */
 export function isPreviewTab(tab: Tab): tab is PreviewTab {
   return tab.kind === 'preview'
+}
+
+/** Narrowing guard: true (and refines the type) for git diff tabs. */
+export function isDiffTab(tab: Tab): tab is DiffTab {
+  return tab.kind === 'diff'
 }
 
 export interface TabsState {
@@ -186,6 +205,31 @@ export function openPreview(source: PreviewSource): string {
   }
   const id = genId()
   const tab: PreviewTab = { id, kind: 'preview', name: previewName(source), source }
+  tabs.update((s) => ({ tabs: [...s.tabs, tab], activeId: id }))
+  return id
+}
+
+/**
+ * Open (or focus) a read-only git diff tab for `path` (GWEN-330). Dedup is by
+ * `root + path`. Title is `filename.ext (diff)`. Returns the tab id.
+ */
+export function openDiff(root: string, path: string, untracked: boolean): string {
+  const existing = get(tabs).tabs.find(
+    (t) => isDiffTab(t) && t.root === root && t.path === path,
+  )
+  if (existing) {
+    activateTab(existing.id)
+    return existing.id
+  }
+  const id = genId()
+  const tab: DiffTab = {
+    id,
+    kind: 'diff',
+    path,
+    root,
+    untracked,
+    name: `${basename(path)} (diff)`,
+  }
   tabs.update((s) => ({ tabs: [...s.tabs, tab], activeId: id }))
   return id
 }

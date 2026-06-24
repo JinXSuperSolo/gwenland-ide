@@ -216,6 +216,45 @@ export async function renameConversation(id: string, title: string): Promise<voi
   await loadConversations()
 }
 
+/** A conversation still carrying its default title (never user-renamed). */
+function hasDefaultTitle(id: string): boolean {
+  const meta = get(aiChat).conversations.find((c) => c.id === id)
+  return !meta || meta.title === 'New Conversation' || meta.title.trim() === ''
+}
+
+/** Clean a model-proposed title: strip quotes/trailing punctuation, cap length. */
+function cleanTitle(raw: string): string {
+  let t = raw.split('\n')[0].trim()
+  t = t.replace(/^["'`]+|["'`]+$/g, '').replace(/[.!?]+$/, '').trim()
+  if (t.length > 48) t = t.slice(0, 48).trim() + '…'
+  return t
+}
+
+/**
+ * GWEN-324: after the first AI response, auto-name an as-yet-unnamed
+ * conversation via a short side-prompt to the model. Best-effort — any failure
+ * leaves the default title untouched (no banner). Skipped if the user already
+ * renamed it.
+ */
+async function autoNameConversation(id: string, firstUserMessage: string): Promise<void> {
+  if (!hasDefaultTitle(id)) return
+  const msg = firstUserMessage.trim()
+  if (!msg) return
+  const { activeProvider, activeModel } = get(aiChat)
+  try {
+    const raw = await cmd.aiComplete(
+      `Give a 3-5 word title for this conversation (no quotes, no punctuation): ${msg}`,
+      activeProvider,
+      activeModel
+    )
+    const title = cleanTitle(raw)
+    // Re-check: the user may have renamed it while the side-prompt was in flight.
+    if (title && hasDefaultTitle(id)) await renameConversation(id, title)
+  } catch {
+    /* keep default title */
+  }
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   await cmd.conversationDelete(id)
   aiChat.update((s) => {
@@ -272,12 +311,24 @@ export async function sendMessage(
   attachments: ContextAttachment[] = [],
   images: ImageAttachment[] = []
 ): Promise<void> {
-  const state = get(aiChat)
-  if (!state.activeConversationId || state.activeStreamId) return
+  let state = get(aiChat)
+  if (state.activeStreamId) return
 
   const trimmed = message.trim()
   // Allow an image-only turn (no text) for multimodal models.
   if (!trimmed && images.length === 0) return
+
+  // GWEN-324: the empty-state CTA is gone, so the composer is always live. If no
+  // conversation exists yet (and a project is open), create one on first send.
+  if (!state.activeConversationId) {
+    await createConversation()
+    state = get(aiChat)
+    if (!state.activeConversationId) return // no project open / create failed
+  }
+
+  // Whether this is the first user turn — drives post-response auto-naming.
+  const isFirstTurn = state.messages.length === 0
+  const conversationId = state.activeConversationId
 
   const userMsgId = crypto.randomUUID()
   const asstMsgId = crypto.randomUUID()
@@ -320,8 +371,11 @@ export async function sendMessage(
     if (tail?.answer) appendToken(streamId, tail.answer)
     finaliseStream(streamId)
     teardownListeners()
-    // Refresh the manifest so updated_at ordering reflects this turn.
-    loadConversations()
+    // Refresh the manifest so updated_at ordering reflects this turn, then
+    // auto-name the conversation from the first turn (GWEN-324).
+    loadConversations().then(() => {
+      if (isFirstTurn) void autoNameConversation(conversationId, trimmed)
+    })
     // Detect a reviewable diff in the final answer (non-blocking; Req 10.4-10.7).
     void runDiffDetection(asstMsgId)
   })
@@ -333,7 +387,7 @@ export async function sendMessage(
   try {
     await cmd.aiSend({
       streamId,
-      conversationId: state.activeConversationId,
+      conversationId,
       message: trimmed,
       attachments,
       images,
@@ -351,6 +405,54 @@ export async function sendMessage(
     }))
     teardownListeners()
   }
+}
+
+/**
+ * GWEN-326: edit a user message and roll the conversation back to that point,
+ * then re-submit the new text. Every message at/after the edited one is dropped
+ * (in the UI) and the JSONL is truncated to the turns that precede it, so history
+ * stays consistent. No-op while a stream is active.
+ *
+ * A "turn" in the JSONL is one user+assistant exchange, so the number of turns to
+ * keep equals the count of completed assistant messages before the edited one.
+ */
+export async function editAndResubmit(messageId: string, newText: string): Promise<void> {
+  const state = get(aiChat)
+  if (state.activeStreamId) return
+  const idx = state.messages.findIndex((m) => m.id === messageId)
+  if (idx < 0) return
+  const conversationId = state.activeConversationId
+  const trimmed = newText.trim()
+  if (!trimmed) return
+
+  // Carry over any attachments/images the original turn had.
+  const original = state.messages[idx]
+  const attachments = original.attachments ?? []
+  const images = original.images ?? []
+
+  // Completed assistant turns strictly before the edited message → keep_count.
+  const keepCount = state.messages
+    .slice(0, idx)
+    .filter((m) => m.role === 'assistant' && !m.streaming).length
+
+  // Drop the edited message and everything after it from the UI.
+  aiChat.update((s) => ({
+    ...s,
+    messages: s.messages.slice(0, idx),
+    lastError: null,
+  }))
+
+  // Truncate the persisted history to match (best-effort; UI rollback already
+  // happened, so a storage hiccup only desyncs the file, not the screen).
+  if (conversationId) {
+    try {
+      await cmd.conversationTruncate(conversationId, keepCount)
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  await sendMessage(trimmed, attachments, images)
 }
 
 /** Cancel the in-flight stream (keeps partial text, no red banner). */

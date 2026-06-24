@@ -42,20 +42,23 @@
 </button>
 
 <style>
-  /* Icon-free rows: label left, muted shortcut right (VS Code-style). */
+  /* GWEN-322: VS Code-compact rows. Label left, muted shortcut right. 22-24px
+     tall, no bold, square corners (the container owns the rounding). Hover is a
+     subtle dark surface lift, NOT a full accent block. */
   .cm-item {
     display: flex;
     align-items: center;
     gap: 32px;
     width: 100%;
-    min-height: 28px;
-    padding: 0 14px;
+    height: 24px;
+    padding: 0 8px;
     background: transparent;
     border: none;
-    border-radius: 4px;
+    border-radius: 0;
     color: var(--cm-text);
     font-family: var(--font-sans);
     font-size: 13px;
+    font-weight: 400;
     text-align: left;
     cursor: pointer;
     white-space: nowrap;
@@ -68,7 +71,6 @@
   }
   .cm-item:active:not(:disabled) {
     background-color: var(--cm-item-active);
-    color: var(--cm-item-hover-text);
   }
   .cm-item:disabled {
     color: var(--cm-text-muted);
@@ -82,12 +84,7 @@
   }
   .cm-item-shortcut {
     flex-shrink: 0;
-    font-size: 12px;
+    font-size: 11px;
     color: var(--cm-shortcut-text);
-  }
-  /* On the accent highlight the shortcut stays readable. */
-  .cm-item:hover:not(:disabled) .cm-item-shortcut,
-  .cm-item:focus-visible:not(:disabled) .cm-item-shortcut {
-    color: var(--cm-item-hover-text);
   }
 </style>

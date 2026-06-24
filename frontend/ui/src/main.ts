@@ -7,6 +7,7 @@ import { initSettings } from './lib/stores/settings'
 import { registerCommands } from './lib/actions'
 import { registerContextActions } from './lib/context-menu/registerActions'
 import { initLsp } from './lib/stores/lsp'
+import { initGit } from './lib/stores/git'
 import App from './App.svelte'
 
 // Apply persisted theme before first paint; register the command/shortcut set
@@ -16,6 +17,7 @@ initSettings()
 registerCommands()
 registerContextActions()
 initLsp()
+initGit()
 
 const app = mount(App, {
   target: document.getElementById('app')!,

@@ -471,6 +471,24 @@ export function aiCancel(streamId: string): Promise<void> {
   return invoke<void>('ai_cancel', { streamId })
 }
 
+/**
+ * One-shot, non-streaming, non-persisted completion (GWEN-324). Used for short
+ * side-prompts (e.g. auto-naming a conversation). Resolves to the trimmed
+ * assistant text; rejects with a stringified error on failure. Does NOT touch
+ * conversation history. Falls back to the active provider/model when omitted.
+ */
+export function aiComplete(
+  prompt: string,
+  provider?: string | null,
+  model?: string | null
+): Promise<string> {
+  return invoke<string>('ai_complete', {
+    prompt,
+    provider: provider ?? null,
+    model: model ?? null,
+  })
+}
+
 // --- Conversations ---------------------------------------------------------
 
 /** Create a new conversation under `projectRoot` and register it. */
@@ -501,6 +519,18 @@ export function conversationLoad(conversationId: string): Promise<ConversationTu
 /** Rename a conversation (manifest title only). */
 export function conversationRename(conversationId: string, title: string): Promise<void> {
   return invoke<void>('conversation_rename', { conversationId, title })
+}
+
+/**
+ * Truncate a conversation to its first `keepCount` turns (GWEN-326 message
+ * edit/rollback). Resolves to the surviving turns. Each turn is one
+ * user+assistant exchange.
+ */
+export function conversationTruncate(
+  conversationId: string,
+  keepCount: number
+): Promise<ConversationTurn[]> {
+  return invoke<ConversationTurn[]>('conversation_truncate', { conversationId, keepCount })
 }
 
 /** Delete a conversation (JSONL + manifest entry). */
@@ -589,6 +619,97 @@ export function aiErrorMessage(error: AiError): string {
     default:
       return typeof error.data === 'string' ? error.data : 'The provider returned an error.'
   }
+}
+
+// ===========================================================================
+// Git integration (Wave 2 — GWEN-327..331)
+//
+// Typed wrappers over the engine-backed `git_*` commands, which shell out to the
+// system `git` binary. Every call takes the workspace `root`.
+// ===========================================================================
+
+/** One changed file (mirrors `gwenland_engine::git::GitFileStatus`). */
+export interface GitFileStatus {
+  /** Repo-relative path (forward slashes). */
+  path: string
+  /** Single-letter badge: M/A/D/U/R/C. */
+  status: string
+  /** Whether the change (or part of it) is staged. */
+  staged: boolean
+  /** Whether the file is untracked. */
+  untracked: boolean
+}
+
+/** Branch + dirty summary + file list (mirrors `gwenland_engine::git::GitStatus`). */
+export interface GitStatus {
+  branch: string
+  dirty_count: number
+  files: GitFileStatus[]
+}
+
+/** Whether `root` is inside a git work tree. */
+export function gitIsRepo(root: string): Promise<boolean> {
+  return invoke<boolean>('git_is_repo', { root })
+}
+
+/** Full status snapshot (branch, dirty count, per-file list). */
+export function gitStatus(root: string): Promise<GitStatus> {
+  return invoke<GitStatus>('git_status', { root })
+}
+
+/** Stage one path, or everything when `all` is true. */
+export function gitStage(root: string, path: string, all = false): Promise<void> {
+  return invoke<void>('git_stage', { root, path, all })
+}
+
+/** Unstage one path, or everything when `all` is true. */
+export function gitUnstage(root: string, path: string, all = false): Promise<void> {
+  return invoke<void>('git_unstage', { root, path, all })
+}
+
+/** Discard local changes to a path (deletes untracked files). */
+export function gitDiscard(root: string, path: string, untracked: boolean): Promise<void> {
+  return invoke<void>('git_discard', { root, path, untracked })
+}
+
+/** Commit the staged index with `message`. */
+export function gitCommit(root: string, message: string): Promise<void> {
+  return invoke<void>('git_commit', { root, message })
+}
+
+/** Push the current branch. Resolves to git's output. */
+export function gitPush(root: string): Promise<string> {
+  return invoke<string>('git_push', { root })
+}
+
+/** Pull. Resolves to git's output. */
+export function gitPull(root: string): Promise<string> {
+  return invoke<string>('git_pull', { root })
+}
+
+/** Unified diff for one path (synthesized for untracked files). */
+export function gitDiffFile(root: string, path: string, untracked: boolean): Promise<string> {
+  return invoke<string>('git_diff_file', { root, path, untracked })
+}
+
+/** All local branch names. */
+export function gitListBranches(root: string): Promise<string[]> {
+  return invoke<string[]>('git_list_branches', { root })
+}
+
+/** Switch to an existing branch. */
+export function gitCheckout(root: string, branch: string): Promise<void> {
+  return invoke<void>('git_checkout', { root, branch })
+}
+
+/** Create + switch to a new branch (name is slugified). Resolves to the slug. */
+export function gitCreateBranch(root: string, name: string): Promise<string> {
+  return invoke<string>('git_create_branch', { root, name })
+}
+
+/** Delete a local branch. */
+export function gitDeleteBranch(root: string, branch: string): Promise<void> {
+  return invoke<void>('git_delete_branch', { root, branch })
 }
 
 // ===========================================================================

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { get } from 'svelte/store'
-  import { tabs, closeTab, isEditorTab, isPreviewTab } from '../stores/tabs'
+  import { tabs, closeTab, isEditorTab, isPreviewTab, isDiffTab } from '../stores/tabs'
   import { workspace } from '../stores/workspace'
   import { openContextMenu } from '../context-menu/contextMenuStore'
   import Tabs from './Tabs.svelte'
   import Editor from './Editor.svelte'
   import PreviewPane from './PreviewPane.svelte'
+  import GitDiffViewer from './GitDiffViewer.svelte'
 
   // The active tab drives which surface fills the workspace below the tab strip.
   const activeTab = $derived($tabs.tabs.find((t) => t.id === $tabs.activeId) ?? null)
@@ -35,6 +36,8 @@
     <Editor />
   {:else if activeTab && isPreviewTab(activeTab)}
     <PreviewPane source={activeTab.source} />
+  {:else if activeTab && isDiffTab(activeTab)}
+    <GitDiffViewer root={activeTab.root} path={activeTab.path} untracked={activeTab.untracked} />
   {:else}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="empty-state gw-anim-fade" oncontextmenu={onEmptyContextMenu}>

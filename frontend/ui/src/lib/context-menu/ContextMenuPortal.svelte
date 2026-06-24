@@ -116,24 +116,25 @@
 
 <style>
   .cm-menu {
-    /* Visual tokens, scoped to the menu subtree (design §Visual Tokens).
-       Hover/focus uses the brand accent as a solid highlight (VS Code-style). */
+    /* GWEN-322: VS Code-compact tokens. Hover is a subtle dark surface lift
+       (NOT a solid accent block). 4px container padding/radius, 1px muted
+       separators. */
     --cm-bg: #1f1d1c;
-    --cm-item-hover: var(--primary);
-    --cm-item-hover-text: var(--primary-foreground);
-    --cm-item-active: color-mix(in srgb, var(--primary) 85%, #000);
+    --cm-item-hover: rgba(255, 255, 255, 0.07);
+    --cm-item-hover-text: var(--cm-text);
+    --cm-item-active: rgba(255, 255, 255, 0.11);
     --cm-text: #e8e0d8;
-    --cm-text-muted: rgba(232, 224, 216, 0.45);
+    --cm-text-muted: rgba(232, 224, 216, 0.4);
     --cm-separator: rgba(255, 255, 255, 0.08);
-    --cm-radius: 8px;
+    --cm-radius: 4px;
     --cm-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
     --cm-shortcut-text: rgba(232, 224, 216, 0.42);
 
     position: fixed;
     z-index: 1000;
-    min-width: 220px;
+    min-width: 200px;
     max-width: 320px;
-    padding: 6px;
+    padding: 4px;
     border: 1px solid rgba(255, 255, 255, 0.06);
     background-color: var(--cm-bg);
     border-radius: var(--cm-radius);

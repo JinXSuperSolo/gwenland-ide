@@ -5,6 +5,7 @@
   import { workspace } from '../stores/workspace'
   import { refreshSignal, collapseSignal, revealSignal } from '../stores/file-tree'
   import { openContextMenu } from '../context-menu/contextMenuStore'
+  import { git } from '../stores/git'
   import Icon from './Icon.svelte'
   import FileIcon from './FileIcon.svelte'
 
@@ -93,6 +94,39 @@
   // Indent each level; base padding keeps the first level off the edge.
   const indent = $derived(8 + depth * 14)
 
+  // GWEN-329: git status color for this node. Files get their own badge letter;
+  // folders go amber when any child below them is dirty. Hidden when not a repo.
+  const gitClass = $derived.by(() => {
+    const state = $git
+    if (!state.isRepo) return ''
+    const root = $workspace.folderPath
+    if (!root) return ''
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
+    const rootN = norm(root)
+    const selfRel = norm(entry.path).startsWith(rootN + '/')
+      ? norm(entry.path).slice(rootN.length + 1)
+      : norm(entry.path)
+    if (entry.is_dir) {
+      // Amber if any changed file lives under this folder.
+      const prefix = selfRel + '/'
+      return state.files.some((f) => f.path.startsWith(prefix)) ? 'git-dir-dirty' : ''
+    }
+    const f = state.files.find((x) => x.path === selfRel)
+    if (!f) return ''
+    switch (f.status) {
+      case 'M':
+      case 'R':
+        return 'git-modified'
+      case 'D':
+        return 'git-deleted'
+      case 'U':
+      case 'A':
+        return 'git-added'
+      default:
+        return 'git-modified'
+    }
+  })
+
   // Right-click opens the registry-driven context menu (M9). It only sends the
   // node's context; the registry decides which actions apply.
   function onContextMenu(e: MouseEvent) {
@@ -131,7 +165,7 @@
     <span class="chevron spacer"></span>
     <FileIcon name={entry.name} size={16} />
   {/if}
-  <span class="node-name">{entry.name}</span>
+  <span class={`node-name ${gitClass}`}>{entry.name}</span>
 </div>
 
 {#if entry.is_dir && expanded}
@@ -190,6 +224,18 @@
   }
   .is-dir .node-name {
     font-weight: 500;
+  }
+  /* GWEN-329: git status colors (VS Code palette). */
+  .node-name.git-modified,
+  .node-name.git-dir-dirty {
+    color: #e2c08d;
+  }
+  .node-name.git-added {
+    color: #89d185;
+  }
+  .node-name.git-deleted {
+    color: #f14c4c;
+    text-decoration: line-through;
   }
   .node-info {
     height: 22px;

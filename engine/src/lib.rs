@@ -4,6 +4,7 @@ pub mod app_data;
 pub mod devserver_detect;
 pub mod error_detect;
 pub mod fs;
+pub mod git;
 pub mod lsp;
 pub mod recent_projects;
 pub mod ring_buffer;

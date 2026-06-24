@@ -14,27 +14,77 @@
   const presetEntries = Object.entries(THEME_PRESETS)
   const fontNames = Object.keys(FONT_OPTIONS)
 
+  // GWEN-323: search filters which sections are visible. Each section declares a
+  // title + keyword string; an empty query shows everything.
+  let query = $state('')
+  let searchInput = $state<HTMLInputElement>()
+
+  // Section visibility keyed by a stable id. `keywords` is matched (with the
+  // title) case-insensitively against the query.
+  const SECTIONS = [
+    { id: 'theme', title: 'Appearance — Theme', keywords: 'appearance theme preset accent color dark swatch' },
+    { id: 'font', title: 'Editor — Font', keywords: 'editor font monospace family typeface code' },
+    { id: 'ai', title: 'AI', keywords: 'ai provider model api key anthropic openai assistant training' },
+    { id: 'lsp', title: 'Language Servers', keywords: 'lsp language server rust typescript python diagnostics completion' },
+  ] as const
+
+  function matches(id: string): boolean {
+    const q = query.trim().toLowerCase()
+    if (!q) return true
+    const sec = SECTIONS.find((s) => s.id === id)
+    if (!sec) return true
+    return (sec.title + ' ' + sec.keywords).toLowerCase().includes(q)
+  }
+  const anyMatch = $derived(SECTIONS.some((s) => matches(s.id)))
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault()
       closeSettings()
     }
   }
+
+  // Focus the search box and reset the query whenever the panel opens.
+  $effect(() => {
+    if ($settingsOpen) {
+      query = ''
+      queueMicrotask(() => searchInput?.focus())
+    }
+  })
 </script>
 
 <svelte:window onkeydown={(e) => $settingsOpen && onKeydown(e)} />
 
 {#if $settingsOpen}
-  <div class="settings-overlay gw-anim-overlay" role="dialog" aria-modal="true" aria-label="Settings">
-    <div class="settings-panel gw-anim-pop">
-      <header class="settings-header">
-        <h2>Settings</h2>
-        <button class="close-btn" aria-label="Close Settings" onclick={closeSettings}>
-          <Icon name="xmark" size={18} />
-        </button>
-      </header>
+  <!-- Scrim: click outside the panel dismisses (GWEN-323). -->
+  <div
+    class="settings-scrim gw-anim-overlay"
+    role="presentation"
+    onclick={closeSettings}
+  ></div>
+  <div class="settings-panel" role="dialog" aria-modal="true" aria-label="Settings">
+    <header class="settings-header">
+      <h2>Settings</h2>
+      <button class="close-btn" aria-label="Close Settings" onclick={closeSettings}>
+        <Icon name="xmark" size={18} />
+      </button>
+    </header>
 
-      <div class="settings-body">
+    <div class="settings-search">
+      <Icon name="search" size={14} class="search-icon" />
+      <input
+        bind:this={searchInput}
+        bind:value={query}
+        type="text"
+        class="search-input"
+        placeholder="Search settings..."
+        aria-label="Search settings"
+        spellcheck="false"
+      />
+    </div>
+
+    <div class="settings-body">
+      {#if matches('theme')}
         <section class="settings-section">
           <div class="settings-section-title">Appearance — Theme</div>
 
@@ -83,7 +133,9 @@
             </div>
           </div>
         </section>
+      {/if}
 
+      {#if matches('font')}
         <section class="settings-section">
           <div class="settings-section-title">Editor — Font</div>
           <div class="settings-row">
@@ -102,46 +154,67 @@
             </div>
           </div>
         </section>
+      {/if}
 
+      {#if matches('ai')}
         <section class="settings-section">
           <AiSettingsSection />
         </section>
+      {/if}
 
+      {#if matches('lsp')}
         <section class="settings-section">
           <LspSettingsSection />
         </section>
-      </div>
+      {/if}
+
+      {#if !anyMatch}
+        <div class="settings-empty">No settings match “{query}”.</div>
+      {/if}
     </div>
   </div>
 {/if}
 
 <style>
-  .settings-overlay {
+  .settings-scrim {
     position: fixed;
     inset: 0;
     z-index: 90;
-    display: flex;
-    justify-content: center;
-    align-items: flex-start;
-    padding: 8vh 16px;
-    background-color: rgba(0, 0, 0, 0.45);
-    overflow-y: auto;
+    background-color: rgba(0, 0, 0, 0.35);
   }
+  /* GWEN-323: docked to the right edge, slides in. */
   .settings-panel {
-    width: 600px;
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 91;
+    width: 460px;
     max-width: 100%;
     background-color: var(--card);
-    border: none;
-    border-radius: var(--radius-lg);
+    border-left: 1px solid var(--border);
     box-shadow: var(--shadow-xl);
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
+    animation: settings-slide-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
-  /* Minimalist: no divider line — spacing alone separates the title. */
+  @keyframes settings-slide-in {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .settings-panel {
+      animation: none;
+    }
+  }
+
   .settings-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 20px 20px 4px;
+    padding: 18px 20px 10px;
+    flex-shrink: 0;
   }
   .settings-header h2 {
     font-size: 15px;
@@ -166,19 +239,61 @@
     color: var(--foreground);
     background-color: var(--secondary);
   }
+
+  /* Search bar (sticky at the top of the scroll area's header region). */
+  .settings-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 20px 8px;
+    padding: 8px 12px;
+    background-color: var(--secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    flex-shrink: 0;
+  }
+  .settings-search :global(.search-icon) {
+    color: var(--muted-foreground);
+  }
+  .search-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+  }
+  .search-input::placeholder {
+    color: var(--muted-foreground);
+  }
+
   .settings-body {
-    padding: 12px 20px 24px;
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 20px 24px;
     display: flex;
     flex-direction: column;
     gap: 26px;
   }
+  /* GWEN-323: sticky section headers on scroll. */
   .settings-section-title {
+    position: sticky;
+    top: 0;
+    z-index: 1;
     font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: var(--tracking-wider);
     color: var(--muted-foreground);
     margin-bottom: 14px;
+    padding: 8px 0 6px;
+    background-color: var(--card);
+  }
+  .settings-empty {
+    font-size: 13px;
+    color: var(--muted-foreground);
+    padding: 12px 0;
   }
   .settings-row {
     display: flex;

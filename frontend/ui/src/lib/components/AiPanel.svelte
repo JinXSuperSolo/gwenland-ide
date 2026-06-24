@@ -14,6 +14,7 @@
     sendMessage,
     cancelStream,
     createConversation,
+    setTrainingOptIn,
     currentFileAttachment,
     currentSelectionAttachment,
   } from '../ai/ai-chat-setup'
@@ -29,8 +30,9 @@
   import { assistantMode, MODE_META } from '../stores/assistant-mode'
   import { agentic } from '../stores/agentic'
   import { startAgentRun, cancelAgentSession } from '../agentic/agentic-setup'
-  import AiConversation from './AiConversation.svelte'
+  import AiHistory from './AiHistory.svelte'
   import AiMessage from './AiMessage.svelte'
+  import Checkbox from './Checkbox.svelte'
   import AgentMessage from './agent/AgentMessage.svelte'
   import AgentTierMenu from './agent/AgentTierMenu.svelte'
   import AssistantModeMenu from './AssistantModeMenu.svelte'
@@ -56,10 +58,13 @@
   )
   // Pending images for the next (multimodal) message.
   let images = $state<ImageAttachment[]>([])
+  // GWEN-324: no longer requires an existing conversation — sendMessage creates
+  // one on first send. Still requires a project (conversations are per-project),
+  // a key, and a model.
   const canSend = $derived(
-    $aiChat.hasKey &&
+    hasProject &&
+      $aiChat.hasKey &&
       !!$aiChat.activeModel &&
-      !!$aiChat.activeConversationId &&
       !streaming &&
       ($aiChat.unsentInput.trim().length > 0 || images.length > 0)
   )
@@ -68,6 +73,11 @@
   let inputEl = $state<HTMLTextAreaElement | null>(null)
   let imageInputEl = $state<HTMLInputElement | null>(null)
   let dragOver = $state(false)
+  // GWEN-324: conversation history is a slide-out toggled from the header.
+  let historyOpen = $state(false)
+  const activeConv = $derived(
+    $aiChat.conversations.find((c) => c.id === $aiChat.activeConversationId) ?? null
+  )
 
   // Suggestion chips for the workspace-open empty state (Requirement 3.9).
   const SUGGESTIONS = ['Explain this file', 'Find bugs', 'Write a test']
@@ -215,7 +225,7 @@
   // Suggestion chip (Requirement 3.10): ensure a conversation exists so the
   // composer is enabled, then pre-fill it and focus the input.
   async function useSuggestion(text: string) {
-    if (!$aiChat.activeConversationId) await createConversation()
+    if (hasProject && !$aiChat.activeConversationId) await createConversation()
     setUnsentInput(text)
     await tick()
     inputEl?.focus()
@@ -263,9 +273,9 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <aside class="ai-panel" aria-label="AI Chat" oncontextmenu={onAiContextMenu}>
   <header class="ai-header">
-    <span class="ai-title"><Icon name="sparks" size={14} /> AI</span>
+    <!-- GWEN-324: sparks glyph only (no redundant "AI" text label). -->
+    <span class="ai-title" aria-label="AI"><Icon name="sparks" size={15} /></span>
     <div class="ai-header-actions">
-      <!-- TODO(Wave 3): history button slot — wire when the conversation history view lands. -->
       <button
         class="icon-btn"
         title="New conversation"
@@ -274,6 +284,14 @@
         onclick={createConversation}
       >
         <Icon name="plus" size={16} />
+      </button>
+      <button
+        class="icon-btn"
+        title="History"
+        aria-label="Conversation history"
+        onclick={() => (historyOpen = true)}
+      >
+        <Icon name="clock-rotate-right" size={16} />
       </button>
       <button class="icon-btn" title="Settings" aria-label="Open settings" onclick={openSettings}>
         <Icon name="settings" size={16} />
@@ -284,22 +302,32 @@
     </div>
   </header>
 
-  <AiConversation />
+  {#if activeConv}
+    <div class="conv-bar">
+      <span class="conv-name" title={activeConv.title}>{activeConv.title}</span>
+      <Checkbox
+        checked={activeConv.training_opt_in}
+        onCheck={(c) => void setTrainingOptIn(activeConv.id, c)}
+        title="Allow this conversation to be used as training data"
+      >
+        Training
+      </Checkbox>
+    </div>
+  {/if}
+
   <DiffReviewPanel />
 
   <div class="ai-messages" bind:this={listEl}>
-    {#if !hasProject}
+    <!-- GWEN-324: no blocking empty state — the composer is always live below.
+         When there are no messages we show a light, optional hint + suggestions
+         (chat-like modes only) that never gate the input. -->
+    {#if $aiChat.messages.length === 0}
       <div class="ai-empty">
-        <span class="empty-icon"><Icon name="sparks" size={32} /></span>
-        <p class="empty-headline">Open a folder to start</p>
-        <p class="empty-subtext">GwenLand AI works best with a project open</p>
-        <button class="empty-cta" onclick={() => void openFolder()}>Open Folder</button>
-      </div>
-    {:else if !$aiChat.activeConversationId || $aiChat.messages.length === 0}
-      <div class="ai-empty">
-        <span class="empty-icon"><Icon name="chat-bubble" size={32} /></span>
+        <span class="empty-icon"><Icon name="sparks" size={28} /></span>
         <p class="empty-headline">{MODE_META[$assistantMode].hint}</p>
-        {#if isChatLike}
+        {#if !hasProject}
+          <button class="empty-cta" onclick={() => void openFolder()}>Open Folder</button>
+        {:else if isChatLike}
           <div class="suggestions">
             {#each SUGGESTIONS as s}
               <button class="suggestion-chip" onclick={() => void useSuggestion(s)}>{s}</button>
@@ -317,6 +345,8 @@
       {/each}
     {/if}
   </div>
+
+  <AiHistory open={historyOpen} onClose={() => (historyOpen = false)} />
 
   <!-- Terminal-error explain offer (Requirement 15.3) — chat-like only -->
   {#if isChatLike && $aiChat.pendingTerminalError}
@@ -416,13 +446,10 @@
           class="ai-input"
           rows="3"
           bind:this={inputEl}
-          placeholder={$aiChat.activeConversationId
-            ? `${MODE_META[$assistantMode].label}: Enter to send, Shift+Enter for newline`
-            : `${MODE_META[$assistantMode].hint}…`}
+          placeholder="Ask anything..."
           value={$aiChat.unsentInput}
           oninput={onInput}
           onkeydown={onKeydown}
-          disabled={!$aiChat.activeConversationId}
         ></textarea>
       {/if}
 
@@ -433,7 +460,7 @@
               class="icon-btn"
               title="Attach context"
               aria-label="Attach context"
-              disabled={!$aiChat.activeConversationId || streaming}
+              disabled={!hasProject || streaming}
               onclick={() => (attachMenuOpen = !attachMenuOpen)}
             >
               <Icon name="attachment" size={15} />
@@ -519,6 +546,25 @@
     color: var(--ai-text-primary);
     font-family: var(--font-sans);
     overflow: hidden;
+    /* Positioning context for the history slide-out (GWEN-324). */
+    position: relative;
+  }
+  /* Active-conversation strip: title + per-conversation training toggle. */
+  .conv-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 2px 16px 8px;
+    flex-shrink: 0;
+  }
+  .conv-name {
+    font-size: 12px;
+    color: var(--ai-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
   .ai-header {
     display: flex;
@@ -597,11 +643,6 @@
     font-size: 14px;
     font-weight: 600;
     color: color-mix(in srgb, var(--ai-text-primary) 80%, transparent);
-  }
-  .empty-subtext {
-    font-size: 12px;
-    color: var(--ai-text-muted);
-    max-width: 240px;
   }
   /* Subtle primary-outline CTA (Req 3.6). */
   .empty-cta {

@@ -10,7 +10,8 @@
   const GRAPH_LANGS = new Set(['mermaid', 'graph', 'flowchart'])
   const isGraphLang = (l: string) => GRAPH_LANGS.has((l || '').toLowerCase())
   import { startReview, diffReview } from '../stores/diff-review'
-  import { projectRoot } from '../ai/ai-chat-setup'
+  import { projectRoot, editAndResubmit } from '../ai/ai-chat-setup'
+  import { aiChat } from '../stores/ai-chat'
 
   function reviewThis() {
     if (message.diff) startReview(message.id, message.diff.files, projectRoot())
@@ -25,6 +26,45 @@
 
   const isUser = $derived(message.role === 'user')
   const segments = $derived(parseSegments(message.content))
+
+  // GWEN-326: per-bubble copy + (user-only) edit/rollback.
+  const streaming = $derived($aiChat.activeStreamId !== null)
+  let copied = $state(false)
+  let editing = $state(false)
+  let editValue = $state('')
+
+  async function copyMessage() {
+    // User → plain text; AI → raw markdown (both are `content` verbatim).
+    try {
+      await navigator.clipboard.writeText(message.content)
+      copied = true
+      setTimeout(() => (copied = false), 1200)
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+
+  function startEdit() {
+    editValue = message.content
+    editing = true
+  }
+  function cancelEdit() {
+    editing = false
+  }
+  async function confirmEdit() {
+    const text = editValue
+    editing = false
+    await editAndResubmit(message.id, text)
+  }
+  function onEditKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      void confirmEdit()
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      cancelEdit()
+    }
+  }
 
   // Per-file +added / −removed stats for the proposal card (Codex-style).
   let filesOpen = $state(true)
@@ -49,7 +89,47 @@
 </script>
 
 <div class="ai-msg" class:user={isUser} class:assistant={!isUser}>
-  <div class="ai-msg-role">{isUser ? 'You' : 'Assistant'}</div>
+  <div class="ai-msg-top">
+    <div class="ai-msg-role">{isUser ? 'You' : 'Assistant'}</div>
+    {#if !message.streaming && !editing}
+      <div class="ai-msg-actions">
+        {#if isUser}
+          <button
+            class="msg-act"
+            title="Edit"
+            aria-label="Edit message"
+            disabled={streaming}
+            onclick={startEdit}
+          >
+            <Icon name="edit-pencil" size={13} />
+          </button>
+        {/if}
+        <button class="msg-act" title="Copy" aria-label="Copy message" onclick={copyMessage}>
+          <Icon name={copied ? 'check' : 'copy'} size={13} />
+        </button>
+        {#if copied}<span class="copied-tip" role="status">Copied!</span>{/if}
+      </div>
+    {/if}
+  </div>
+
+  {#if editing}
+    <div class="ai-msg-edit">
+      <textarea
+        class="edit-area"
+        bind:value={editValue}
+        onkeydown={onEditKeydown}
+        rows="3"
+        aria-label="Edit message"
+      ></textarea>
+      <p class="edit-hint">Editing will rollback conversation to this point</p>
+      <div class="edit-actions">
+        <button class="edit-btn ghost" onclick={cancelEdit}>Cancel</button>
+        <button class="edit-btn primary" onclick={confirmEdit} disabled={!editValue.trim()}>
+          Save &amp; resubmit
+        </button>
+      </div>
+    </div>
+  {:else}
   {#if message.attachments && message.attachments.length > 0}
     <div class="ai-msg-attachments">
       {#each message.attachments as att}
@@ -132,6 +212,7 @@
       <span>This looked like a diff but couldn't be parsed for review.</span>
     </div>
   {/if}
+  {/if}
 </div>
 
 <style>
@@ -156,6 +237,107 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--ai-text-muted, var(--muted-foreground));
+  }
+  /* GWEN-326: role line + hover action bar (copy / edit). */
+  .ai-msg-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 16px;
+  }
+  .ai-msg-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .ai-msg:hover .ai-msg-actions {
+    opacity: 1;
+  }
+  .msg-act {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ai-text-muted, var(--muted-foreground));
+    cursor: pointer;
+    transition: color 0.12s ease, background-color 0.12s ease;
+  }
+  .msg-act:hover:not(:disabled) {
+    color: var(--ai-text-primary, var(--foreground));
+    background-color: var(--ai-bg-hover, rgba(255, 255, 255, 0.06));
+  }
+  .msg-act:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .copied-tip {
+    font-size: 10px;
+    color: var(--ai-text-muted, var(--muted-foreground));
+    padding-left: 2px;
+  }
+  /* Inline edit mode for user messages. */
+  .ai-msg-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .edit-area {
+    width: 100%;
+    resize: vertical;
+    min-height: 56px;
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--ai-text-primary, var(--foreground));
+    background-color: var(--ai-bg-base, var(--background));
+    border: 1px solid var(--primary);
+    border-radius: 8px;
+    padding: 8px;
+    box-sizing: border-box;
+  }
+  .edit-area:focus {
+    outline: none;
+  }
+  .edit-hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--ai-text-muted, var(--muted-foreground));
+  }
+  .edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .edit-btn {
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .edit-btn.ghost {
+    background: transparent;
+    color: var(--ai-text-muted, var(--muted-foreground));
+    border-color: var(--ai-border-subtle, var(--border));
+  }
+  .edit-btn.ghost:hover {
+    color: var(--ai-text-primary, var(--foreground));
+  }
+  .edit-btn.primary {
+    background-color: var(--ai-primary, var(--primary));
+    color: var(--ai-bg-base, #1f1e1e);
+    border: none;
+  }
+  .edit-btn.primary:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .ai-msg-content {
     display: flex;

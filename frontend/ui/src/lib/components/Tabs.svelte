@@ -8,9 +8,11 @@
   // confirm before discarding. We just emit the intent.
   let { onClose }: { onClose: (id: string) => void } = $props()
 
-  // Hover tooltip: an editor tab's on-disk path, or a preview's source target.
+  // Hover tooltip: an editor tab's on-disk path, a diff tab's path, or a
+  // preview's source target.
   function tabTitle(tab: Tab): string {
     if (tab.kind === 'editor') return tab.path
+    if (tab.kind === 'diff') return `${tab.path} (diff)`
     return tab.source.kind === 'static-file' ? tab.source.path : tab.source.url
   }
 

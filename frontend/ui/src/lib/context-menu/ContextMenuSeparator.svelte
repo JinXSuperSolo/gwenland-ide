@@ -3,9 +3,10 @@
 <hr class="cm-separator" />
 
 <style>
+  /* GWEN-322: 1px muted line, 4px vertical margin. */
   .cm-separator {
     height: 0;
-    margin: 5px 8px;
+    margin: 4px 4px;
     border: none;
     border-top: 1px solid var(--cm-separator);
   }

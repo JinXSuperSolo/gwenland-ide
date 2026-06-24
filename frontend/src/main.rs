@@ -477,6 +477,17 @@ fn conversation_load(
     gwenland_engine::ai::conversation::load_turns(&conversation_id).map_err(|e| e.to_string())
 }
 
+/// Truncate a conversation to its first `keep_count` turns (GWEN-326 message
+/// edit/rollback). Returns the surviving turns so the UI can re-sync.
+#[tauri::command]
+fn conversation_truncate(
+    conversation_id: String,
+    keep_count: usize,
+) -> Result<Vec<gwenland_engine::ai::conversation::ConversationTurn>, String> {
+    gwenland_engine::ai::conversation::truncate_turns(&conversation_id, keep_count)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn conversation_rename(conversation_id: String, title: String) -> Result<(), String> {
     gwenland_engine::ai::conversation::rename_conversation(&conversation_id, &title)
@@ -703,6 +714,49 @@ fn ai_cancel(
         emit_ai_error(&app, &stream_id, AiError::Cancelled);
     }
     Ok(())
+}
+
+/// One-shot, non-streaming, non-persisted completion (GWEN-324). Drains a
+/// provider stream into a single string. Used for short side-prompts like
+/// auto-naming a conversation — it does NOT touch conversation history. Returns
+/// the trimmed assistant text, or a stringified `AiError` on failure.
+#[tauri::command]
+async fn ai_complete(
+    prompt: String,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<String, String> {
+    let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
+    let provider_id = provider
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| settings.ai.active_provider.clone());
+    let model_id = model
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| settings.ai.active_model.clone());
+
+    let adapter = gwenland_engine::ai::registry::resolve_provider(&provider_id, &settings.ai)
+        .map_err(|e| e.to_string())?;
+
+    let request = MessageRequest {
+        stream_id: format!("oneshot-{}", gwenland_engine::agentic::new_id()),
+        messages: vec![ChatMessage::user(prompt)],
+        system: None,
+        attachments: Vec::new(),
+        images: Vec::new(),
+        model: model_id,
+        // Titles are tiny; cap the response so a misbehaving model can't run on.
+        max_tokens: Some(64),
+    };
+
+    let mut stream = adapter
+        .send_message(request)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    while let Some(chunk) = stream.next_chunk().await.map_err(|e| e.to_string())? {
+        text.push_str(&chunk.text);
+    }
+    Ok(text.trim().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -3063,6 +3117,94 @@ mod agent_tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Git integration (Wave 2 — GWEN-327..331)
+//
+// Thin wrappers over the tauri-free `gwenland_engine::git` module, which shells
+// out to the system `git` binary. Every command takes the workspace `root`.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn git_is_repo(root: String) -> bool {
+    gwenland_engine::git::is_git_repo(std::path::Path::new(&root))
+}
+
+#[tauri::command]
+fn git_status(root: String) -> Result<gwenland_engine::git::GitStatus, String> {
+    gwenland_engine::git::status(std::path::Path::new(&root)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_stage(root: String, path: String, all: bool) -> Result<(), String> {
+    let r = std::path::Path::new(&root);
+    if all {
+        gwenland_engine::git::stage_all(r)
+    } else {
+        gwenland_engine::git::stage(r, &path)
+    }
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_unstage(root: String, path: String, all: bool) -> Result<(), String> {
+    let r = std::path::Path::new(&root);
+    if all {
+        gwenland_engine::git::unstage_all(r)
+    } else {
+        gwenland_engine::git::unstage(r, &path)
+    }
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_discard(root: String, path: String, untracked: bool) -> Result<(), String> {
+    gwenland_engine::git::discard(std::path::Path::new(&root), &path, untracked)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_commit(root: String, message: String) -> Result<(), String> {
+    gwenland_engine::git::commit(std::path::Path::new(&root), &message).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_push(root: String) -> Result<String, String> {
+    gwenland_engine::git::push(std::path::Path::new(&root)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_pull(root: String) -> Result<String, String> {
+    gwenland_engine::git::pull(std::path::Path::new(&root)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_diff_file(root: String, path: String, untracked: bool) -> Result<String, String> {
+    gwenland_engine::git::diff_file(std::path::Path::new(&root), &path, untracked)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_list_branches(root: String) -> Result<Vec<String>, String> {
+    gwenland_engine::git::list_branches(std::path::Path::new(&root)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_checkout(root: String, branch: String) -> Result<(), String> {
+    gwenland_engine::git::checkout(std::path::Path::new(&root), &branch).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_create_branch(root: String, name: String) -> Result<String, String> {
+    gwenland_engine::git::create_branch(std::path::Path::new(&root), &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn git_delete_branch(root: String, branch: String) -> Result<(), String> {
+    gwenland_engine::git::delete_branch(std::path::Path::new(&root), &branch)
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -3112,6 +3254,7 @@ fn main() {
             ai_list_models,
             ai_send,
             ai_cancel,
+            ai_complete,
             agent_create_session,
             agent_set_tier,
             agent_context_preview,
@@ -3134,6 +3277,7 @@ fn main() {
             conversation_new,
             conversation_list,
             conversation_load,
+            conversation_truncate,
             conversation_rename,
             conversation_delete,
             conversation_set_training_opt_in,
@@ -3142,7 +3286,20 @@ fn main() {
             lsp_open_document,
             lsp_change_document,
             lsp_close_document,
-            lsp_completion
+            lsp_completion,
+            git_is_repo,
+            git_status,
+            git_stage,
+            git_unstage,
+            git_discard,
+            git_commit,
+            git_push,
+            git_pull,
+            git_diff_file,
+            git_list_branches,
+            git_checkout,
+            git_create_branch,
+            git_delete_branch
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");

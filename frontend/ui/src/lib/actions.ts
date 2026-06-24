@@ -4,8 +4,10 @@
  * stubs/disabled in the legacy version stay stubs here — Wave 5 ports behavior,
  * it does not grow scope.
  */
+import { get } from 'svelte/store'
 import { registerCommand } from './stores/commands'
-import { openFolder } from './stores/workspace'
+import { registerGitCommands } from './actions/gitActions'
+import { openFolder, workspace } from './stores/workspace'
 import { saveActiveTab, closeActiveTab, cycleTab, newUntitledFile } from './stores/tabs'
 import { togglePanel } from './stores/panels'
 import { openPalette, openSettings } from './stores/ui'
@@ -44,12 +46,17 @@ export function registerCommands(): void {
   registerCommand('panel.explorer', 'Toggle Explorer', ['Ctrl+B', 'Meta+B'], () =>
     togglePanel('fileTree'),
   )
-  registerCommand('panel.terminal', 'Toggle Terminal', ['Ctrl+J'], () =>
-    togglePanel('terminal'),
-  )
-  registerCommand('settings.open', 'Open Settings', ['Ctrl+Shift+,', 'Meta+Shift+,'], () =>
+  // GWEN-325: the terminal needs a workspace (its CWD). With no folder open,
+  // Ctrl+J / the menu item is a no-op rather than spawning a shell in a stray dir.
+  registerCommand('panel.terminal', 'Toggle Terminal', ['Ctrl+J'], () => {
+    if (!get(workspace).folderPath) return
+    togglePanel('terminal')
+  })
+  registerCommand('settings.open', 'Open Settings', ['Ctrl+,', 'Meta+,'], () =>
     openSettings(),
   )
+  // Git palette commands (GWEN-331).
+  registerGitCommands()
 }
 
 // Edit/Selection actions guard on an editor being open (matches legacy withEditor).
