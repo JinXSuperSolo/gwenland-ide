@@ -1,0 +1,36 @@
+[package]
+name = "gwenland-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+dirs = { workspace = true }
+thiserror = { workspace = true }
+# Cross-platform PTY (ConPTY on Windows, openpty on Unix) via wezterm's crate.
+# Runtime backend selection via native_pty_system(); MIT-licensed.
+portable-pty = "0.9"
+
+# --- M4 AI System ---------------------------------------------------------
+# HTTP client for provider calls. default-features=false keeps us off
+# native-tls/OpenSSL; rustls-tls is pure-Rust. `stream` enables incremental
+# body reads (Response::chunk) for SSE; `json` for request bodies.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# OS keychain (Windows Credential Manager / macOS Keychain / Linux Secret
+# Service). The ONLY place API keys are ever stored.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Async runtime. The frontend (Tauri) drives the runtime in production; engine
+# tests use #[tokio::test]. reqwest itself requires a tokio context.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Object-safe async trait methods so `dyn AiProvider` / `dyn ChunkSource` work.
+async-trait = "0.1"
+futures-core = "0.3"
+bytes = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }

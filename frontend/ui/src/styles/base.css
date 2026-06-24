@@ -1,0 +1,45 @@
+/* Global base + reset, ported from the legacy monolith's base block. */
+html {
+  font-family: var(--font-sans);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  border-color: var(--border);
+  outline-color: rgba(var(--ring-rgb), 0.5);
+  font-family: inherit;
+}
+
+body {
+  color: var(--foreground);
+  background-color: var(--background);
+  height: 100vh;
+  overflow: hidden;
+  letter-spacing: var(--tracking-normal);
+}
+
+#app {
+  height: 100vh;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+  background-clip: padding-box;
+}

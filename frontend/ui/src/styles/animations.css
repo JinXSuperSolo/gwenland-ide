@@ -1,0 +1,73 @@
+/* ══════════════════════════════════════════════════════════════
+   ANIMATIONS — subtle, functional motion (no Tailwind runtime).
+   Plain CSS keyframes + helper classes used across components.
+   Honors prefers-reduced-motion.
+   ══════════════════════════════════════════════════════════════ */
+
+@keyframes gw-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes gw-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Pop + slight rise for centered dialogs (palette, settings). */
+@keyframes gw-pop-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Slide down for menu dropdowns / submenus. */
+@keyframes gw-slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Gentle rise for list rows / tabs appearing. */
+@keyframes gw-rise-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.gw-anim-overlay {
+  animation: gw-overlay-in 0.16s ease-out;
+}
+.gw-anim-pop {
+  animation: gw-pop-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.gw-anim-slide-down {
+  animation: gw-slide-down 0.14s ease-out;
+}
+.gw-anim-fade {
+  animation: gw-fade-in 0.15s ease-out;
+}
+.gw-anim-rise {
+  animation: gw-rise-in 0.18s ease-out;
+}
+
+/* A shared snappy transition for interactive chrome. */
+.gw-transition {
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.12s ease,
+    opacity 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gw-anim-overlay,
+  .gw-anim-pop,
+  .gw-anim-slide-down,
+  .gw-anim-fade,
+  .gw-anim-rise {
+    animation: none;
+  }
+  .gw-transition {
+    transition: none;
+  }
+}

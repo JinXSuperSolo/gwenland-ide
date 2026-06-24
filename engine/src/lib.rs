@@ -1,0 +1,11 @@
+pub mod agentic;
+pub mod ai;
+pub mod app_data;
+pub mod devserver_detect;
+pub mod error_detect;
+pub mod fs;
+pub mod lsp;
+pub mod recent_projects;
+pub mod ring_buffer;
+pub mod settings;
+pub mod terminal;

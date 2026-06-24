@@ -1,0 +1,66 @@
+# Milestone 10 (Agentic Workflow): inline tool-calling agent, autonomy tiers, one unified chat stream, and a Codex-style activity display
+
+- **Date:** 2026-06-24
+- **Issue:** GWEN-330 ... GWEN-338 (Milestone 10 follow-ups, Waves 7 to 9 plus the chat-pane unification, from live testing)
+- **Milestone:** Milestone 10: Agentic Coding Workflow (tool loop, tiers, unified chat)
+
+## Problem / Context
+
+Milestone 10 built a human-gated agent (plan, approve, edit, validate, summarize) and, on top of it, a ReAct tool-calling loop (Waves 1 to 6 plus the Wave 7 backend and the Wave 9 mode picker). What was missing was the UI half, and then a series of usability problems surfaced once it was driven by hand:
+
+1. The Wave 7 tool loop had a working engine, gates, and a Tauri bridge, but no UI: no way to run it, no activity, no approval controls, no ask picker.
+2. There were no autonomy tiers, so every edit and every command always required a manual approval, even tiny safe ones.
+3. The agent surface looked nothing like the chat: a dense workflow form with a step indicator, bordered cards, and a separate bottom button bar, while the user wanted it to feel native to the chat pane.
+4. Chat and the agent lived in two separate worlds with two histories. Switching modes felt like switching apps.
+5. `edit_file` failed with OS error 3 when the model guessed a path, blocking the run instead of finding the real file.
+6. The agent pane did not scroll reliably, and raw tool calls were dumped verbatim with no calm "thinking" treatment.
+
+The constraints from earlier milestones held throughout: keep the engine, Tauri, and UI split (pure provider-neutral logic in `engine/`, the command bridge in `frontend/src/main.rs`, Svelte state and UI in `frontend/ui/src/lib/`), dark theme only, no new dependencies (Rust or frontend), no secrets in frontend state, and a lean release binary. The frontend crate carries `serde_json` as a dev dependency only, so the Tauri layer must never name `serde_json::Value`.
+
+## Change
+
+### 1. Wave 7 tool loop, wired into the UI
+
+`runAgentTools` registers the chunk, tool_call, tool_result, ask, and error listeners on one shared stream id, then `driveToolLoop` calls `agent_tool_step` in a loop: it continues while the engine auto-runs a non-gated read tool, finishes on a final answer or the iteration cap, and parks on a gated tool. `resolveToolGate('approve' | 'confirm' | 'reject')` and `answerToolAsk(selection)` clear the pending state, call the backend, then resume the loop. Listeners survive a gate pause and tear down only on final, exhausted, error, or cancel. A module-level `toolLoopAbort` flag lets Stop halt the re-entrant loop between steps (best effort, since an in-flight step still completes). All of this lives in `agentic-setup.ts`; the store stays Tauri-free.
+
+### 2. Wave 8 autonomy tiers with a hard safety floor
+
+`engine/src/agentic/tier.rs` adds `AgentTier { Ask, AcceptForMe, FullControl }`, an `ActionConfidence` heuristic (`mutation_confidence` from change size plus path safety, `command_confidence` from the command risk), and `requires_user_approval(side, risk, confidence, tier)`. The hard floor is encoded first: Destructive, DependencyChanging, and Blocked actions always require an explicit confirmation in every tier, and `delete_file` enters as a destructive mutation so it hits that floor too. Ask gates everything (the Wave 7 behaviour), Accept for Me auto-approves only high-confidence low-risk actions, and Full Control auto-approves safe and file-mutating actions while still stopping at the floor. The tier is stored on the session (with a serde default so old persisted sessions still load) and can change only between iterations. The Tauri loop honours it: when approval is not required it runs the tool inline and reports `Ran` instead of parking `Awaiting`. A composer `AgentTierMenu` shows the current tier and is disabled while the agent is working.
+
+### 3. One chat-style agent surface, not a workflow form
+
+The agent panel was rebuilt as an inline chat stream. The goal is typed in the same composer as chat, and the run renders as messages: tool calls as subtle indented lines, the proposed diff inline with small Accept and Reject controls, command approvals as `$ command` with Run and Skip, and ask_user as A, B, C choices. Each gate collapses to a single status line once decided. The pane is borderless (the shared `--ai-border-subtle` token is transparent, with scrollbars kept on a dedicated `--ai-scrollbar` token), and the mode picker moved out of the top bar into the composer next to the model and tier menus.
+
+### 4. Ask, Edit, Agent modes in one history
+
+The mode set became `ask`, `edit`, `agent` (old `chat`, `explain`, `plan` values migrate to `ask` on load). `aiChat.messages` is now the single source of truth for every mode. An agent run is an assistant message carrying `agent: { runId, snapshot }`: it renders live from the `agentic` engine while it is the active run, and from a frozen snapshot once a newer run starts, so past runs stay in the stream. `startAgentRun` ensures a conversation exists, freezes the previous run, appends the goal as a user turn and an agent turn, then runs the loop. `AiPanel` renders one message list for all modes (`AgentMessage` for an agent turn, `AiMessage` otherwise); switching modes never resets the conversation. The old workflow components (plan card, change review, validation panel, summary card, context preview, approval bar, goal composer, step indicator) were deleted.
+
+### 5. Edit-path preflight: find the file before the gate
+
+The model would guess a path like `src/components/Layout.tsx`, and `edit_file` would then try to write it directly and fail with OS error 3. The engine now resolves the path before any gate. `resolve_workspace_file` returns Exact, Corrected, Ambiguous, or NotFound by matching the basename across the workspace (the same walk `file_search` uses, skipping secret and excluded paths). `preflight_mutation_path` rewrites the call to the real file on a unique match, or returns a rejection that asks the model to call `file_search`. `agent_tool_step` runs this right after parsing the call: a unique match silently corrects the path so the Apply Gate shows the real file, and a missing or ambiguous path is fed straight back as a failed observation so the model self-corrects without a doomed write. `apply_mutation_tool` also errors clearly now when an edit target is missing, instead of silently editing empty content. The system prompt gained a rule: never guess a path, confirm with `file_search` before editing, and retry with the correct path on a not-found result. All of the JSON mutation stays in the engine to respect the dev-only `serde_json` constraint.
+
+### 6. Codex-style activity display: shimmer plus timeline
+
+`lib/agent-activity.ts` is a provider-independent typed model: `ActivityKind` (thinking, read_file, search, edit_file, write_file, run_command, approval, done, error), `ActivityStatus`, `RunState` (idle, active, completed, failed, cancelled), and pure derivers that translate the engine's tool log and gate state into safe, user-facing summaries (never raw reasoning). `ThinkingDisclosure` shows a compact active row that shimmers left to right while the agent works ("Reading src/main.rs", "Running npm test", "Waiting for approval"), reads "Thought, N steps" when idle, and expands to a dense `ActivityRow` timeline of file paths and short result summaries. The header height is fixed so toggling never shifts layout, every line ellipsizes so nothing overflows a narrow panel, and the shimmer and spinner both respect `prefers-reduced-motion`. A dev-only mock (`lib/agentic/mock-activity.ts`, exposed as `window.__gwenMockAgent` behind `import.meta.env.DEV`) drives the real store through a full read, search, edit-with-approval, run-command, done run, so the display can be verified with no provider.
+
+### Also
+
+- Fixed the agent pane scroll: `.ai-messages` is a flex column, and flex children default to `min-width: auto` and will not shrink, so a wide tool path or diff block forced horizontal overflow and broke the vertical scroll. Added `overflow-x: hidden` plus a `min-width: 0; max-width: 100%` rule on its children.
+- The agent's tool calls use a text protocol (the model emits a fenced `tool` JSON block) rather than provider-native function calling, so the same loop works across every bring-your-own provider.
+
+## Why this approach
+
+The loop is UI-driven and re-entrant, one `agent_tool_step` per call, so there is no long-lived task to manage and the gates are just store state the UI renders. Encoding the hard floor before any tier logic is what makes Full Control safe: the autonomy setting can never lower the bar on a destructive, dependency-changing, or blocked action, and a delete is treated as destructive by construction. Folding agent runs into the existing `aiChat.messages` array, rather than building a second history, is what delivers the single-chat feel: one scroll, one conversation, and a mode that only changes what the composer's submit does. The live-or-snapshot split keeps the active run cheap (it reads the live engine) while past runs stay in the stream as frozen data. The edit-path preflight reflects how models actually reply, with a guessed path, so a unique basename match is corrected quietly and anything uncertain is handed back with guidance instead of failing at the gate. The activity model is deliberately decoupled from the current text tool protocol, so if a provider later emits structured tool events they map onto the same `AgentActivity` and the UI does not change. Math and models were never in scope here: the whole feature is plain Svelte and Rust with zero new dependencies, so the binary stays lean.
+
+## Impact
+
+- The agent is now a usable inline chat experience: type a goal, watch a calm shimmering activity row and an expandable timeline, approve or reject edits and commands inline, pick an autonomy tier, and read the final answer, all in the same conversation as chat with no reset on a mode switch. Wrong-path edits self-correct instead of blocking.
+- **New (engine):** `engine/src/agentic/tier.rs`. **Changed (engine):** `agentic/tools.rs` (path resolution plus mutation preflight and tests), `agentic/session.rs` (tier field plus `set_tier`), `agentic/prompts.rs` (the no-guessing path rule), `agentic/mod.rs` (re-exports). `frontend/src/main.rs` (tier-aware `agent_tool_step`, `agent_set_tier`, the preflight call, `apply_mutation_tool` hardening, `agent_create_session` tier parameter). `engine/Cargo.toml` and the frontend crate manifest are unchanged, no new Rust dependencies.
+- **New (frontend):** `lib/agent-activity.ts` (and its test), `lib/agentic/mock-activity.ts`; `components/chat/ActivityRow.svelte`, `ThinkingDisclosure.svelte`, `DiffInline.svelte`, `CommandGate.svelte`, `AskUserInline.svelte`; `components/agent/AgentMessage.svelte`, `AgentTierMenu.svelte`. **Changed (frontend):** `components/AiPanel.svelte` (one unified message list, composer-driven mode submit, mode picker in the composer, borderless pane, scroll fix, dev mock hook), `stores/assistant-mode.ts` (ask, edit, agent plus migration), `stores/ai-chat.ts` (agent-run reference plus turn helpers), `stores/agentic.ts` (tool-loop state, tier, run id), `agentic/agentic-setup.ts` (the whole tool-loop driver plus `startAgentRun` and `changeAgentTier`), `tauri/commands.ts` (tool-step, resolve, tier, open browser, agent events). **Removed (frontend):** `AgentWorkflowPanel`, `AgentApprovalBar`, `AgentGoalComposer`, `AgentStepIndicator`, `AgentToolLoop`, `AgentToolActivity`, `AgentToolGateBar`, `AgentAskPicker`, `AgentPlanCard`, `AgentChangeReview`, `AgentValidationPanel`, `AgentSummaryCard`, `AgentContextPreview`, `ToolCallLine`. No new frontend dependencies.
+- **Verification:** `cargo test -p gwenland-engine agentic` is **79 passing** (the tier matrix and the path-resolution plus preflight tests included); `cargo check --workspace` is clean; `svelte-check` is 0 errors and 0 warnings (238 files); `vitest run` is **20 passing** (5 new agent-activity model tests); `vite build` succeeds. The engine `agentic` module still has no Tauri imports.
+- **Things to keep in mind:**
+  - **Agent runs are not persisted** to the conversation JSONL yet, so they vanish on a reload or when a conversation is reselected (chat turns still reload), and creating a new conversation clears the unified history.
+  - **Stop is best effort.** It halts the loop between steps, but an in-flight `agent_tool_step` still completes, since the engine has no mid-step abort token. This matters most for the Full Control tier.
+  - **The dev mock auto-resolves the approval pause.** Clicking Accept or Reject during that window calls the real backend with a fake session id and produces a harmless error banner. It is dev only.
+  - **Within agent mode, each submit starts a fresh session and run.** Continuing a prior run inside the same session is not wired yet.
+  - **Verified by tests, type-check, and build, not yet by a full GUI pass.** The remaining manual smoke: run `__gwenMockAgent()` with the pane open, then a real run with each tier, an inline edit accept and reject, a command run and skip, and an ask choice.

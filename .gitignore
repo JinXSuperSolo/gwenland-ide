@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / JS
+node_modules/
+/frontend/ui/dist/
+/frontend/ui/.svelte-kit/
+/frontend/gen/
+
+# Editor / IDE / OS / Agents
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.agents/
+.claude/
+.codex/
+.cargo/
+.kiro/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# CM6 bundle build deps (the built codemirror.bundle.js IS committed)
+/frontend/editor/node_modules/
+/frontend/editor/package-lock.json

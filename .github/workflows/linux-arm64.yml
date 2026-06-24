@@ -1,0 +1,42 @@
+name: Release Linux arm64
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+          cache-dependency-path: 'frontend/ui/pnpm-lock.yaml'
+      - name: Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf gcc-aarch64-linux-gnu
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Build JS
+        working-directory: ./frontend/ui
+        run: |
+          pnpm install
+          pnpm build
+      - name: Build
+        run: cargo build --release --target aarch64-unknown-linux-musl --bin gwenland
+      - name: Upload to GH Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/aarch64-unknown-linux-musl/release/gwenland

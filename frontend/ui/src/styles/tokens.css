@@ -1,0 +1,87 @@
+/* ══════════════════════════════════════════════════════════════
+   DESIGN TOKENS — dark theme (warm-sand hex palette).
+   Dark is the only theme; these live on :root so the app renders dark
+   regardless of any data-theme attribute. Colors are layered live by
+   the settings store (preset + accent), so keep the "Gwen Dark" preset
+   in stores/settings.ts in sync with these baseline values.
+   ══════════════════════════════════════════════════════════════ */
+:root {
+  /* Color tokens — dark (warm-sand hex palette) */
+  --background: #1f1e1e;
+  --foreground: #fafafa;
+  --card: #252323;
+  --card-foreground: #fafafa;
+  --popover: #1f1e1e;
+  --popover-foreground: #fafafa;
+  --primary: #c28a64;
+  --primary-foreground: #1f1e1e;
+  --secondary: #211e1d;
+  --secondary-foreground: #fafafa;
+  --muted: #211e1d;
+  --muted-foreground: #a39e9a;
+  --accent: #c28a64;
+  --accent-foreground: #1f1e1e;
+  --destructive: #af5d5d;
+  --destructive-foreground: #ffffff;
+  --border: #282625;
+  --input: #282625;
+  --ring: #c28a64;
+
+  --chart-1: #c28a64;
+  --chart-2: #989fa8;
+  --chart-3: #af8d5d;
+  --chart-4: #b6aaa1;
+  --chart-5: #867670;
+
+  --sidebar: #1f1e1e;
+  --sidebar-foreground: #e6e6e6;
+  --sidebar-primary: #c28a64;
+  --sidebar-primary-foreground: #1f1e1e;
+  --sidebar-accent: #242220;
+  --sidebar-accent-foreground: #c28a64;
+  --sidebar-border: #282524;
+  --sidebar-ring: #c28a64;
+
+  /* Fonts */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Merriweather', serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  /* Radius scale (derived from base --radius: 1rem) */
+  --radius: 1rem;
+  --radius-sm: calc(var(--radius) - 4px); /* 12px */
+  --radius-md: calc(var(--radius) - 2px); /* 14px */
+  --radius-lg: var(--radius);             /* 16px */
+  --radius-xl: calc(var(--radius) + 4px); /* 20px */
+
+  /* Shadow scale — dark (heavier) */
+  --shadow-2xs: 0px 6px 16px 0px hsl(0 0% 10.1961% / 0.15);
+  --shadow-xs: 0px 6px 16px 0px hsl(0 0% 10.1961% / 0.15);
+  --shadow-sm: 0px 6px 16px 0px hsl(0 0% 10.1961% / 0.30), 0px 1px 2px -1px hsl(0 0% 10.1961% / 0.30);
+  --shadow: 0px 6px 16px 0px hsl(0 0% 10.1961% / 0.30), 0px 1px 2px -1px hsl(0 0% 10.1961% / 0.30);
+  --shadow-md: 0px 6px 16px 0px hsl(0 0% 10.1961% / 0.30), 0px 2px 4px -1px hsl(0 0% 10.1961% / 0.30);
+  --shadow-lg: 0px 6px 16px 0px hsl(0 0% 10.1961% / 0.30), 0px 4px 6px -1px hsl(0 0% 10.1961% / 0.30);
+  --shadow-xl: 0px 6px 16px 0px hsl(0 0% 10.1961% / 0.30), 0px 8px 10px -1px hsl(0 0% 10.1961% / 0.30);
+  --shadow-2xl: 0px 6px 16px 0px hsl(0 0% 10.1961% / 0.75);
+
+  /* Tracking */
+  --tracking-normal: -0.02em;
+  --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
+  --tracking-tight: calc(var(--tracking-normal) - 0.025em);
+  --tracking-wide: calc(var(--tracking-normal) + 0.025em);
+  --tracking-wider: calc(var(--tracking-normal) + 0.05em);
+  --tracking-widest: calc(var(--tracking-normal) + 0.1em);
+
+  --spacing: 0.25rem;
+
+  /* Ring color as an rgb triplet for translucent focus rings / resize handles.
+     Matches the primary #c28a64 (rgb 194 138 100); the settings store overrides
+     this live to match the chosen accent. */
+  --ring-rgb: 194 138 100;
+
+  /* Layout geometry */
+  --titlebar-height: 36px;
+  --explorer-width: 260px;
+  --ai-dock-width: 360px;
+  --status-height: 24px;
+}

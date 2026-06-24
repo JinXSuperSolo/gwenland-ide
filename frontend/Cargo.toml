@@ -1,0 +1,25 @@
+[package]
+name = "GwenLand-IDE"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "gwenland"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2", default-features = false, features = ["wry", "protocol-asset"] }
+tauri-plugin-dialog = "2"
+# `rt` provides task::AbortHandle, used by AiManager to cancel active AI streams.
+tokio = { version = "1", features = ["sync", "rt"] }
+gwenland-engine = { path = "../engine" }
+serde = { workspace = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# Dev-only: agent runtime tests assert session/error state never serializes key
+# material. `serde_json` is already a workspace dep; as a dev-dependency it adds
+# ZERO release-binary size (test code is not linked into the app).
+[dev-dependencies]
+serde_json = { workspace = true }
