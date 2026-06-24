@@ -138,7 +138,11 @@ mod tests {
     #[test]
     fn ask_tier_gates_every_mutation_and_command() {
         // No matter the confidence/risk, Ask always pauses for mutations + terminal.
-        for risk in [None, Some(CommandRisk::SafeCheck), Some(CommandRisk::FileMutating)] {
+        for risk in [
+            None,
+            Some(CommandRisk::SafeCheck),
+            Some(CommandRisk::FileMutating),
+        ] {
             assert!(requires_user_approval(
                 ToolSide::Mutating,
                 risk,
@@ -156,7 +160,11 @@ mod tests {
 
     #[test]
     fn hard_floor_always_requires_confirmation_in_every_tier() {
-        for tier in [AgentTier::Ask, AgentTier::AcceptForMe, AgentTier::FullControl] {
+        for tier in [
+            AgentTier::Ask,
+            AgentTier::AcceptForMe,
+            AgentTier::FullControl,
+        ] {
             for risk in [
                 CommandRisk::Destructive,
                 CommandRisk::DependencyChanging,

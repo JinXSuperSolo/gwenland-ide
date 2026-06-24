@@ -207,11 +207,21 @@ pub struct ToolResult {
 
 impl ToolResult {
     pub fn ok(id: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { id: id.into(), ok: true, content: content.into(), error: None }
+        Self {
+            id: id.into(),
+            ok: true,
+            content: content.into(),
+            error: None,
+        }
     }
     pub fn err(id: impl Into<String>, error: impl Into<String>) -> Self {
         let error = error.into();
-        Self { id: id.into(), ok: false, content: String::new(), error: Some(error) }
+        Self {
+            id: id.into(),
+            ok: false,
+            content: String::new(),
+            error: Some(error),
+        }
     }
 }
 
@@ -233,7 +243,10 @@ const MAX_MATCHES: usize = 100;
 const MAX_LISTING: usize = 300;
 
 fn arg_str(call: &ToolCall, key: &str) -> Option<String> {
-    call.args.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+    call.args
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn truncate_bytes(s: String, max: usize) -> (String, bool) {
@@ -301,7 +314,9 @@ fn exec_read_file(root: &Path, call: &ToolCall) -> ToolResult {
 }
 
 fn exec_list_dir(root: &Path, call: &ToolCall) -> ToolResult {
-    let path = arg_str(call, "path").filter(|p| !p.trim().is_empty()).unwrap_or_else(|| ".".into());
+    let path = arg_str(call, "path")
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| ".".into());
     let canon = match read_canonical(root, &path) {
         Ok(c) => c,
         Err(e) => return ToolResult::err(&call.id, format!("refused: {e}")),
@@ -313,13 +328,21 @@ fn exec_list_dir(root: &Path, call: &ToolCall) -> ToolResult {
                 if is_excluded_path(&e.name) || is_secret_path(&e.name) {
                     continue;
                 }
-                lines.push(if e.is_dir { format!("{}/", e.name) } else { e.name });
+                lines.push(if e.is_dir {
+                    format!("{}/", e.name)
+                } else {
+                    e.name
+                });
                 if lines.len() >= MAX_LISTING {
                     lines.push("…(more)".into());
                     break;
                 }
             }
-            let body = if lines.is_empty() { "(empty)".into() } else { lines.join("\n") };
+            let body = if lines.is_empty() {
+                "(empty)".into()
+            } else {
+                lines.join("\n")
+            };
             ToolResult::ok(&call.id, format!("{path}\n{body}"))
         }
         Err(e) => ToolResult::err(&call.id, format!("list failed: {e}")),
@@ -454,17 +477,28 @@ pub enum PathResolution {
 /// `NotFound`. Secret/excluded paths are never matched.
 pub fn resolve_workspace_file(root: &Path, rel: &str) -> PathResolution {
     let rel_norm = rel.replace('\\', "/");
-    if !is_secret_path(&rel_norm) && read_canonical(root, &rel_norm).is_ok() && root.join(&rel_norm).is_file() {
+    if !is_secret_path(&rel_norm)
+        && read_canonical(root, &rel_norm).is_ok()
+        && root.join(&rel_norm).is_file()
+    {
         return PathResolution::Exact(rel_norm);
     }
-    let base = rel_norm.rsplit('/').next().unwrap_or(&rel_norm).to_ascii_lowercase();
+    let base = rel_norm
+        .rsplit('/')
+        .next()
+        .unwrap_or(&rel_norm)
+        .to_ascii_lowercase();
     if base.is_empty() {
         return PathResolution::NotFound;
     }
     let mut hits: Vec<String> = Vec::new();
     let mut scanned = 0usize;
     for_each_file(root, root, &mut scanned, &mut |rel_found, _abs| {
-        let name = rel_found.rsplit('/').next().unwrap_or(rel_found).to_ascii_lowercase();
+        let name = rel_found
+            .rsplit('/')
+            .next()
+            .unwrap_or(rel_found)
+            .to_ascii_lowercase();
         if name == base && !is_secret_path(rel_found) {
             hits.push(rel_found.to_string());
             if hits.len() > 8 {
@@ -532,7 +566,11 @@ mod tests {
     use tempfile::tempdir;
 
     fn call(tool: ToolKind, args: Value) -> ToolCall {
-        ToolCall { id: "t1".into(), tool, args }
+        ToolCall {
+            id: "t1".into(),
+            tool,
+            args,
+        }
     }
 
     #[test]
@@ -555,7 +593,11 @@ mod tests {
     fn read_file_reads_within_workspace() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "hello world").unwrap();
-        let res = execute_local_tool(dir.path(), &call(ToolKind::ReadFile, json!({"path": "a.txt"}))).unwrap();
+        let res = execute_local_tool(
+            dir.path(),
+            &call(ToolKind::ReadFile, json!({"path": "a.txt"})),
+        )
+        .unwrap();
         assert!(res.ok);
         assert!(res.content.contains("hello world"));
     }
@@ -564,10 +606,18 @@ mod tests {
     fn read_file_rejects_secret_and_outside() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join(".env"), "SECRET=1").unwrap();
-        let secret = execute_local_tool(dir.path(), &call(ToolKind::ReadFile, json!({"path": ".env"}))).unwrap();
+        let secret = execute_local_tool(
+            dir.path(),
+            &call(ToolKind::ReadFile, json!({"path": ".env"})),
+        )
+        .unwrap();
         assert!(!secret.ok);
 
-        let outside = execute_local_tool(dir.path(), &call(ToolKind::ReadFile, json!({"path": "../escape.txt"}))).unwrap();
+        let outside = execute_local_tool(
+            dir.path(),
+            &call(ToolKind::ReadFile, json!({"path": "../escape.txt"})),
+        )
+        .unwrap();
         assert!(!outside.ok);
     }
 
@@ -578,7 +628,8 @@ mod tests {
         fs::create_dir(dir.path().join("node_modules")).unwrap();
         fs::write(dir.path().join(".env"), "x").unwrap();
         fs::write(dir.path().join("readme.md"), "x").unwrap();
-        let res = execute_local_tool(dir.path(), &call(ToolKind::ListDir, json!({"path": "."}))).unwrap();
+        let res =
+            execute_local_tool(dir.path(), &call(ToolKind::ListDir, json!({"path": "."}))).unwrap();
         assert!(res.ok);
         assert!(res.content.contains("src/"));
         assert!(res.content.contains("readme.md"));
@@ -592,7 +643,11 @@ mod tests {
         fs::write(dir.path().join("a.rs"), "fn needle() {}\nother\n").unwrap();
         fs::create_dir(dir.path().join("target")).unwrap();
         fs::write(dir.path().join("target/b.rs"), "needle in build output").unwrap();
-        let res = execute_local_tool(dir.path(), &call(ToolKind::GrepSearch, json!({"query": "needle"}))).unwrap();
+        let res = execute_local_tool(
+            dir.path(),
+            &call(ToolKind::GrepSearch, json!({"query": "needle"})),
+        )
+        .unwrap();
         assert!(res.ok);
         assert!(res.content.contains("a.rs:1"));
         assert!(!res.content.contains("target")); // excluded dir not scanned
@@ -603,7 +658,11 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/widget.ts"), "x").unwrap();
-        let res = execute_local_tool(dir.path(), &call(ToolKind::FileSearch, json!({"query": "widget"}))).unwrap();
+        let res = execute_local_tool(
+            dir.path(),
+            &call(ToolKind::FileSearch, json!({"query": "widget"})),
+        )
+        .unwrap();
         assert!(res.ok);
         assert!(res.content.contains("src/widget.ts"));
     }
@@ -611,7 +670,9 @@ mod tests {
     #[test]
     fn non_local_tools_return_none() {
         let dir = tempdir().unwrap();
-        assert!(execute_local_tool(dir.path(), &call(ToolKind::RunTerminalCmd, json!({}))).is_none());
+        assert!(
+            execute_local_tool(dir.path(), &call(ToolKind::RunTerminalCmd, json!({}))).is_none()
+        );
         assert!(execute_local_tool(dir.path(), &call(ToolKind::EditFile, json!({}))).is_none());
     }
 
@@ -657,20 +718,29 @@ mod tests {
         fs::create_dir_all(dir.path().join("src/lib/components")).unwrap();
         fs::write(dir.path().join("src/lib/components/Layout.tsx"), "x").unwrap();
 
-        let mut c = call(ToolKind::EditFile, json!({"path": "src/components/Layout.tsx", "diff": "..."}));
+        let mut c = call(
+            ToolKind::EditFile,
+            json!({"path": "src/components/Layout.tsx", "diff": "..."}),
+        );
         let outcome = preflight_mutation_path(dir.path(), &mut c);
         assert_eq!(
             outcome,
             MutationPreflight::Corrected("src/lib/components/Layout.tsx".into())
         );
         // The call now carries the corrected path for the Apply Gate.
-        assert_eq!(c.args.get("path").and_then(|v| v.as_str()), Some("src/lib/components/Layout.tsx"));
+        assert_eq!(
+            c.args.get("path").and_then(|v| v.as_str()),
+            Some("src/lib/components/Layout.tsx")
+        );
     }
 
     #[test]
     fn preflight_rejects_missing_edit_target() {
         let dir = tempdir().unwrap();
-        let mut c = call(ToolKind::EditFile, json!({"path": "src/Ghost.tsx", "diff": "..."}));
+        let mut c = call(
+            ToolKind::EditFile,
+            json!({"path": "src/Ghost.tsx", "diff": "..."}),
+        );
         match preflight_mutation_path(dir.path(), &mut c) {
             MutationPreflight::Reject(msg) => assert!(msg.contains("file_search")),
             other => panic!("expected reject, got {other:?}"),
@@ -681,7 +751,13 @@ mod tests {
     fn preflight_proceeds_for_write_file() {
         // write_file may create a new file, so a missing path must not be rejected.
         let dir = tempdir().unwrap();
-        let mut c = call(ToolKind::WriteFile, json!({"path": "src/new/File.ts", "content": "x"}));
-        assert_eq!(preflight_mutation_path(dir.path(), &mut c), MutationPreflight::Proceed);
+        let mut c = call(
+            ToolKind::WriteFile,
+            json!({"path": "src/new/File.ts", "content": "x"}),
+        );
+        assert_eq!(
+            preflight_mutation_path(dir.path(), &mut c),
+            MutationPreflight::Proceed
+        );
     }
 }

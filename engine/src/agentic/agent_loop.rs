@@ -23,7 +23,10 @@ pub const DEFAULT_MAX_ITERATIONS: usize = 16;
 #[derive(Debug, Clone)]
 pub enum LoopTurn {
     /// The model's reply for a step, with the parsed tool call (None = finish).
-    Assistant { text: String, tool_call: Option<ToolCall> },
+    Assistant {
+        text: String,
+        tool_call: Option<ToolCall>,
+    },
     /// The observation produced by executing the preceding tool call.
     Tool { result: ToolResult },
 }
@@ -193,7 +196,8 @@ mod tests {
     #[test]
     fn record_assistant_tracks_iteration_and_call() {
         let mut lp = AgentLoop::new("do it");
-        let call = lp.record_assistant("```tool\n{\"tool\":\"read_file\",\"args\":{\"path\":\"a\"}}\n```");
+        let call =
+            lp.record_assistant("```tool\n{\"tool\":\"read_file\",\"args\":{\"path\":\"a\"}}\n```");
         assert!(call.is_some());
         assert_eq!(lp.iteration, 1);
         assert!(!lp.is_exhausted());

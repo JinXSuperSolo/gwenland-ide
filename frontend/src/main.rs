@@ -2252,7 +2252,10 @@ enum AgentStepResult {
     },
 }
 
-fn agent_tool_result_event(session_id: &str, result: &gwenland_engine::agentic::ToolResult) -> AgentToolResultEvent {
+fn agent_tool_result_event(
+    session_id: &str,
+    result: &gwenland_engine::agentic::ToolResult,
+) -> AgentToolResultEvent {
     AgentToolResultEvent {
         session_id: session_id.to_string(),
         id: result.id.clone(),
@@ -2373,7 +2376,10 @@ fn execute_auto_tool(
                 }
             }
         }
-        other => ToolResult::err(&call.id, format!("tool {} is not auto-executable", other.name())),
+        other => ToolResult::err(
+            &call.id,
+            format!("tool {} is not auto-executable", other.name()),
+        ),
     }
 }
 
@@ -2382,7 +2388,11 @@ fn execute_auto_tool(
 /// (write) arg; `delete_file` is irrelevant since it is always destructive.
 fn estimate_mutation_lines(call: &gwenland_engine::agentic::ToolCall) -> usize {
     use gwenland_engine::agentic::ToolKind;
-    let key = if matches!(call.tool, ToolKind::EditFile) { "diff" } else { "content" };
+    let key = if matches!(call.tool, ToolKind::EditFile) {
+        "diff"
+    } else {
+        "content"
+    };
     call.args
         .get(key)
         .and_then(|v| v.as_str())
@@ -2410,7 +2420,11 @@ fn apply_mutation_tool(
     }
     match call.tool {
         ToolKind::WriteFile => {
-            let content = call.args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let content = call
+                .args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if let Some(parent) = abs.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -2430,7 +2444,9 @@ fn apply_mutation_tool(
                 Err(_) => {
                     return ToolResult::err(
                         &call.id,
-                        format!("cannot edit '{path}': file not found. Use file_search to locate it, or write_file to create it."),
+                        format!(
+                            "cannot edit '{path}': file not found. Use file_search to locate it, or write_file to create it."
+                        ),
                     );
                 }
             };
@@ -2445,7 +2461,8 @@ fn apply_mutation_tool(
                 .flat_map(|f| f.hunks.iter().map(|h| h.id.clone()))
                 .collect();
             for hid in &hunk_ids {
-                change_set.set_hunk_approval(hid, gwenland_engine::agentic::ApprovalState::Approved);
+                change_set
+                    .set_hunk_approval(hid, gwenland_engine::agentic::ApprovalState::Approved);
             }
             let file = &change_set.files[0];
             match gwenland_engine::agentic::apply_approved_hunks_to_text(&original, file) {
@@ -2467,15 +2484,24 @@ fn run_terminal_tool(
     call: &gwenland_engine::agentic::ToolCall,
 ) -> gwenland_engine::agentic::ToolResult {
     use gwenland_engine::agentic::{CommandRisk, ToolResult};
-    let command = call.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    let command = call
+        .args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if command.trim().is_empty() {
         return ToolResult::err(&call.id, "missing required arg 'command'");
     }
-    if matches!(gwenland_engine::agentic::classify_command(command), CommandRisk::Blocked) {
+    if matches!(
+        gwenland_engine::agentic::classify_command(command),
+        CommandRisk::Blocked
+    ) {
         return ToolResult::err(&call.id, "refused: command could not be classified as safe");
     }
     match run_shell(root, command) {
-        Ok((code, out)) => ToolResult::ok(&call.id, format!("exit {code}\n{}", redact_and_bound(out))),
+        Ok((code, out)) => {
+            ToolResult::ok(&call.id, format!("exit {code}\n{}", redact_and_bound(out)))
+        }
         Err(e) => ToolResult::err(&call.id, format!("command failed to run: {e}")),
     }
 }
@@ -2602,7 +2628,10 @@ async fn agent_tool_step(
                     args: call.args.to_string(),
                 },
             );
-            let _ = app.emit("agent://tool_result", agent_tool_result_event(&session_id, &result));
+            let _ = app.emit(
+                "agent://tool_result",
+                agent_tool_result_event(&session_id, &result),
+            );
             manager
                 .loops
                 .lock()
@@ -2628,7 +2657,10 @@ async fn agent_tool_step(
     match call.tool {
         // Mutating / terminal tools: classify, then either auto-resolve (when the
         // session's tier permits) or park behind the Apply / Validation gate.
-        ToolKind::EditFile | ToolKind::WriteFile | ToolKind::DeleteFile | ToolKind::RunTerminalCmd => {
+        ToolKind::EditFile
+        | ToolKind::WriteFile
+        | ToolKind::DeleteFile
+        | ToolKind::RunTerminalCmd => {
             use gwenland_engine::agentic::{
                 ActionConfidence, CommandRisk, ToolSide, command_confidence, mutation_confidence,
                 requires_user_approval,
@@ -2636,26 +2668,49 @@ async fn agent_tool_step(
             // Classify the action for both the gate label and the tier policy.
             let (gate_side, gate_risk, confidence, risk_label) = match call.tool {
                 ToolKind::RunTerminalCmd => {
-                    let cmd = call.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                    let cmd = call
+                        .args
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let risk = gwenland_engine::agentic::classify_command(cmd);
-                    (ToolSide::Terminal, Some(risk), command_confidence(risk), Some(format!("{risk:?}")))
+                    (
+                        ToolSide::Terminal,
+                        Some(risk),
+                        command_confidence(risk),
+                        Some(format!("{risk:?}")),
+                    )
                 }
                 // `delete_file` is a destructive mutation → hits the hard floor.
-                ToolKind::DeleteFile => {
-                    (ToolSide::Mutating, Some(CommandRisk::Destructive), ActionConfidence::Low, None)
-                }
+                ToolKind::DeleteFile => (
+                    ToolSide::Mutating,
+                    Some(CommandRisk::Destructive),
+                    ActionConfidence::Low,
+                    None,
+                ),
                 _ => {
                     let changed = estimate_mutation_lines(&call);
                     let within = call
                         .args
                         .get("path")
                         .and_then(|v| v.as_str())
-                        .map(|p| gwenland_engine::agentic::is_within_workspace(&root.join(p), &root))
+                        .map(|p| {
+                            gwenland_engine::agentic::is_within_workspace(&root.join(p), &root)
+                        })
                         .unwrap_or(false);
-                    (ToolSide::Mutating, None, mutation_confidence(changed, within), None)
+                    (
+                        ToolSide::Mutating,
+                        None,
+                        mutation_confidence(changed, within),
+                        None,
+                    )
                 }
             };
-            let side = if matches!(gate_side, ToolSide::Terminal) { "terminal" } else { "mutating" };
+            let side = if matches!(gate_side, ToolSide::Terminal) {
+                "terminal"
+            } else {
+                "mutating"
+            };
 
             // Tier policy: auto-mint + auto-consume the gate for permitted actions
             // (Full Control / high-confidence Accept-for-Me), running them inline.
@@ -2667,7 +2722,10 @@ async fn agent_tool_step(
                 };
                 let ok = result.ok;
                 let tool = call.tool.name().to_string();
-                let _ = app.emit("agent://tool_result", agent_tool_result_event(&session_id, &result));
+                let _ = app.emit(
+                    "agent://tool_result",
+                    agent_tool_result_event(&session_id, &result),
+                );
                 manager
                     .loops
                     .lock()
@@ -2685,17 +2743,35 @@ async fn agent_tool_step(
                 .lock()
                 .map_err(|_| "agent manager lock poisoned".to_string())?
                 .insert(session_id.clone(), call);
-            Ok(AgentStepResult::Awaiting { id, tool, side: side.to_string(), risk: risk_label })
+            Ok(AgentStepResult::Awaiting {
+                id,
+                tool,
+                side: side.to_string(),
+                risk: risk_label,
+            })
         }
         ToolKind::AskUser => {
-            let prompt = call.args.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let prompt = call
+                .args
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let options = call
                 .args
                 .get("options")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect::<Vec<_>>())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
-            let multi = call.args.get("multi").and_then(|v| v.as_bool()).unwrap_or(false);
+            let multi = call
+                .args
+                .get("multi")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let id = call.id.clone();
             let _ = app.emit(
                 "agent://ask",
@@ -2724,7 +2800,10 @@ async fn agent_tool_step(
             let result = execute_auto_tool(&root, &call);
             let ok = result.ok;
             let tool = call.tool.name().to_string();
-            let _ = app.emit("agent://tool_result", agent_tool_result_event(&session_id, &result));
+            let _ = app.emit(
+                "agent://tool_result",
+                agent_tool_result_event(&session_id, &result),
+            );
             manager
                 .loops
                 .lock()
@@ -2785,7 +2864,10 @@ fn agent_tool_resolve(
         other => ToolResult::err(&call.id, format!("{} is not a gated tool", other.name())),
     };
 
-    let _ = app.emit("agent://tool_result", agent_tool_result_event(&session_id, &result));
+    let _ = app.emit(
+        "agent://tool_result",
+        agent_tool_result_event(&session_id, &result),
+    );
     manager
         .loops
         .lock()

@@ -47,11 +47,6 @@ pub use prompts::{
     AGENT_TOOL_SYSTEM, EDIT_SYSTEM, PLAN_SYSTEM, SUMMARY_SYSTEM, build_edit_user_prompt,
     build_plan_user_prompt, build_summary_user_prompt,
 };
-pub use tools::{
-    ALL_TOOLS, MutationPreflight, PathResolution, ToolCall, ToolKind, ToolResult, ToolSide,
-    ToolSpec, execute_local_tool, preflight_mutation_path, render_tool_specs,
-    resolve_workspace_file,
-};
 pub use session::{
     AgentPhase, AgentPlan, AgentSession, ApprovalKind, ApprovalRecord, PhaseError, PlanStep,
     PlanStepStatus,
@@ -59,6 +54,11 @@ pub use session::{
 pub use summary::{AgentSummary, build_local_summary, validation_status_line};
 pub use tier::{
     ActionConfidence, AgentTier, command_confidence, mutation_confidence, requires_user_approval,
+};
+pub use tools::{
+    ALL_TOOLS, MutationPreflight, PathResolution, ToolCall, ToolKind, ToolResult, ToolSide,
+    ToolSpec, execute_local_tool, preflight_mutation_path, render_tool_specs,
+    resolve_workspace_file,
 };
 pub use validation::{CommandRisk, ValidationCommand, ValidationRun, ValidationStatus};
 
