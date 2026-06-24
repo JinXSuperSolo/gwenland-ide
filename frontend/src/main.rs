@@ -3119,7 +3119,10 @@ mod agent_tests {
         // No prefix → base prompt unchanged.
         assert_eq!(compose_system_prompt(None), GWENLAND_SYSTEM_PROMPT);
         // Blank/whitespace prefix is ignored (falls back to base).
-        assert_eq!(compose_system_prompt(Some("   \n ")), GWENLAND_SYSTEM_PROMPT);
+        assert_eq!(
+            compose_system_prompt(Some("   \n ")),
+            GWENLAND_SYSTEM_PROMPT
+        );
         // A real persona is layered ON TOP, base protocol still present.
         let composed = compose_system_prompt(Some("You are Gwen."));
         assert!(composed.starts_with("You are Gwen."));
