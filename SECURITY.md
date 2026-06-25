@@ -1,14 +1,11 @@
 # Security Policy
 
-## Supported Versions
-
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| < 0.1.0 | :x:                |
+GwenLand IDE is currently in early development (pre-0.1.0).
 
 ## Reporting a Vulnerability
 
-Please do not report security vulnerabilities through public GitHub issues.
+If you discover a security vulnerability, please open a 
+[GitHub Security Advisory](https://github.com/JinXSuperSolo/gwenland-ide/security/advisories/new)
 
-Instead, please report them privately by emailing the maintainers or using GitHub Security Advisories. We will do our best to acknowledge your report within 48 hours and provide a timeline for a fix.
+We'll do our best to respond as soon as possible.
+No formal SLA at this stage — this is a solo project in active development.
