@@ -1,7 +1,7 @@
 <script lang="ts">
   import { isActionEnabled } from './actionRegistry'
   import { closeContextMenu } from './contextMenuStore'
-  import { shortcutFor } from '../stores/commands'
+  import { shortcutFor } from '../commands/registry'
   import type { ContextAction, ContextMenuContext } from './contextTypes'
 
   let { action, ctx }: { action: ContextAction; ctx: ContextMenuContext } = $props()

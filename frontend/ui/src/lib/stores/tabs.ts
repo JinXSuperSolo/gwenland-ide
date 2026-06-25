@@ -4,6 +4,8 @@ import { createEditorState } from '../editor/codemirror-setup'
 import { activeDoc } from '../editor/active-editor'
 import { readFile, writeFile } from '../tauri/commands'
 import { lspOpenPath, lspClosePath } from './lsp'
+import { openPrompt } from './prompt-dialog'
+import { workspace } from './workspace'
 
 /**
  * The center workspace area is tab-based, and tabs are no longer all editors:
@@ -103,6 +105,26 @@ function basename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
 
+function sep(path: string): string {
+  return path.includes('\\') ? '\\' : '/'
+}
+
+function joinPath(parent: string, child: string): string {
+  if (!parent) return child
+  if (/^[a-zA-Z]:[\\/]/.test(child) || child.startsWith('/') || child.startsWith('\\')) {
+    return child
+  }
+  const s = sep(parent)
+  return parent.endsWith(s) ? parent + child : parent + s + child
+}
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'])
+
+export function isImagePath(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() ?? ''
+  return IMAGE_EXTS.has(ext)
+}
+
 /** The engine's binary-file error message (engine/src/fs.rs). */
 const BINARY_FILE = 'binary file'
 
@@ -118,6 +140,11 @@ export interface OpenFileResult {
  * the saved baseline (so a freshly-opened file is never dirty).
  */
 export async function openFile(filePath: string): Promise<OpenFileResult> {
+  if (isImagePath(filePath)) {
+    openPreview({ kind: 'static-file', path: filePath })
+    return { ok: true }
+  }
+
   const existing = get(tabs).tabs.find((t) => isEditorTab(t) && t.path === filePath)
   if (existing) {
     activateTab(existing.id)
@@ -142,7 +169,7 @@ export async function openFile(filePath: string): Promise<OpenFileResult> {
     path: filePath,
     name: basename(filePath),
     baseline: content,
-    state: createEditorState(content),
+    state: createEditorState(content, undefined, undefined, filePath),
     dirty: false,
   }
   tabs.update((s) => ({ tabs: [...s.tabs, tab], activeId: id }))
@@ -325,6 +352,49 @@ export async function saveActiveTab(): Promise<void> {
   if (!res.ok) console.error(res.error)
 }
 
+/** Save the active editor to a user-provided path inside the workspace. */
+export async function saveActiveTabAs(): Promise<void> {
+  const s = get(tabs)
+  const id = s.activeId
+  if (!id) return
+  const tab = s.tabs.find((t) => t.id === id)
+  if (!tab || !isEditorTab(tab)) return
+  const content = activeDoc()
+  if (content === null) return
+  const root = get(workspace).folderPath ?? ''
+  const name = await openPrompt({
+    title: 'Save As',
+    label: root ? 'File path relative to workspace' : 'Absolute file path',
+    initialValue: tab.path ? basename(tab.path) : tab.name,
+    placeholder: root ? 'src/example.ts' : 'C:\\path\\example.ts',
+    confirmLabel: 'Save',
+  })
+  if (!name) return
+  const target = root ? joinPath(root, name) : name
+  try {
+    await writeFile(target, content)
+  } catch (e) {
+    console.error('Save As failed:', e)
+    return
+  }
+  tabs.update((state) => ({
+    ...state,
+    tabs: state.tabs.map((t) =>
+      t.id === id && isEditorTab(t)
+        ? {
+            ...t,
+            path: target,
+            name: basename(target),
+            baseline: content,
+            state: createEditorState(content, undefined, undefined, target),
+            dirty: false,
+          }
+        : t,
+    ),
+  }))
+  void lspOpenPath(target, content)
+}
+
 /**
  * Close the active tab, prompting (native confirm) when it has unsaved changes.
  * Used by Ctrl+W / the File menu's Close Editor.
@@ -338,6 +408,13 @@ export function closeActiveTab(): void {
     if (!ok) return
   }
   closeTab(id)
+}
+
+/** Close every tab, prompting once if any editor tab is dirty. */
+export function closeAllTabs(): void {
+  const all = get(tabs).tabs
+  if (!confirmCloseDirty(all)) return
+  for (const tab of all) closeTab(tab.id)
 }
 
 /** Confirm before discarding a set of dirty tabs (single prompt for the batch).

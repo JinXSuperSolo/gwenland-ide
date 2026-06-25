@@ -30,9 +30,18 @@ export interface TerminalSession {
 export interface TerminalSessionsState {
   sessions: TerminalSession[]
   activeKey: string | null
+  detectedPort: number | null
+  detectedUrl: string | null
+  detectedSessionKey: string | null
 }
 
-const initial: TerminalSessionsState = { sessions: [], activeKey: null }
+const initial: TerminalSessionsState = {
+  sessions: [],
+  activeKey: null,
+  detectedPort: null,
+  detectedUrl: null,
+  detectedSessionKey: null,
+}
 
 export const terminalSessions = writable<TerminalSessionsState>(initial)
 
@@ -58,6 +67,9 @@ export function createSession(cwd: string | null = null): string {
   terminalSessions.update((s) => ({
     sessions: [...s.sessions, { key, title, ptyId: null, cwd }],
     activeKey: key,
+    detectedPort: s.detectedPort,
+    detectedUrl: s.detectedUrl,
+    detectedSessionKey: s.detectedSessionKey,
   }))
   return key
 }
@@ -95,7 +107,13 @@ export function removeSession(key: string): string | null {
       const neighbour = sessions[idx - 1] ?? sessions[sessions.length - 1] ?? null
       activeKey = neighbour?.key ?? null
     }
-    return { sessions, activeKey }
+    return {
+      sessions,
+      activeKey,
+      detectedPort: s.detectedSessionKey === key ? null : s.detectedPort,
+      detectedUrl: s.detectedSessionKey === key ? null : s.detectedUrl,
+      detectedSessionKey: s.detectedSessionKey === key ? null : s.detectedSessionKey,
+    }
   })
 
   return removed?.ptyId ?? null
@@ -106,4 +124,13 @@ export function ensureInitialSession(): void {
   if (get(terminalSessions).sessions.length === 0) {
     createSession()
   }
+}
+
+export function setDetectedPort(key: string, port: number, url?: string | null): void {
+  terminalSessions.update((s) => ({
+    ...s,
+    detectedPort: port,
+    detectedUrl: url ?? `http://localhost:${port}`,
+    detectedSessionKey: key,
+  }))
 }

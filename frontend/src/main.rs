@@ -327,6 +327,11 @@ fn write_file(path: String, content: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
 // --- Workspace-scoped file operations (Milestone 9 — Context Menu System) ----
 // Every right-click file mutation goes through these. The engine rejects any
 // target outside `workspace_root`, so the context menu can never touch files
@@ -3639,6 +3644,40 @@ fn workspace_save_settings(
     .map_err(|e| e.to_string())
 }
 
+/// Load UI-owned workspace restore state from `.gwenland/workspace.json`.
+/// Missing, empty, or malformed files return `None`.
+#[tauri::command]
+fn load_workspace_state(workspace_root: String) -> Option<serde_json::Value> {
+    gwenland_engine::workspace::load_workspace_state(std::path::Path::new(&workspace_root))
+}
+
+/// Save UI-owned workspace restore state to `.gwenland/workspace.json`.
+#[tauri::command]
+fn save_workspace_state(
+    workspace_root: String,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    gwenland_engine::workspace::save_workspace_state(
+        std::path::Path::new(&workspace_root),
+        &state,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Load UI-owned layout restore state from `.gwenland/layout.json`.
+/// Missing, empty, or malformed files return `None`.
+#[tauri::command]
+fn load_layout_state(workspace_root: String) -> Option<serde_json::Value> {
+    gwenland_engine::workspace::load_layout_state(std::path::Path::new(&workspace_root))
+}
+
+/// Save UI-owned layout restore state to `.gwenland/layout.json`.
+#[tauri::command]
+fn save_layout_state(workspace_root: String, state: serde_json::Value) -> Result<(), String> {
+    gwenland_engine::workspace::save_layout_state(std::path::Path::new(&workspace_root), &state)
+        .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Safety Engine (M14 Wave 5)
 //
@@ -3788,6 +3827,7 @@ fn main() {
             list_directory,
             read_file,
             write_file,
+            path_exists,
             create_file,
             create_dir,
             rename_path,
@@ -3853,6 +3893,10 @@ fn main() {
             git_delete_branch,
             workspace_load_settings,
             workspace_save_settings,
+            load_workspace_state,
+            save_workspace_state,
+            load_layout_state,
+            save_layout_state,
             safety_evaluate,
             search_should_exclude,
             permissions_load_state,

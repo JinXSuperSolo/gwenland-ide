@@ -63,6 +63,11 @@ export function writeFile(path: string, content: string): Promise<void> {
   return invoke<void>('write_file', { path, content })
 }
 
+/** Whether a path exists on disk. Used for fail-open restore checks. */
+export function pathExists(path: string): Promise<boolean> {
+  return invoke<boolean>('path_exists', { path })
+}
+
 // ---------------------------------------------------------------------------
 // Workspace-scoped file operations (Milestone 9 — Context Menu System)
 //
@@ -1449,6 +1454,68 @@ export function workspaceSaveSettings(
   settings: WorkspaceSettings
 ): Promise<void> {
   return invoke<void>('workspace_save_settings', { workspaceRoot, settings })
+}
+
+// ===========================================================================
+// Workspace/Layout Restore State (M15 / GWEN-348)
+//
+// UI-owned JSON blobs stored under `.gwenland/workspace.json` and
+// `.gwenland/layout.json`. Missing or malformed files resolve to null.
+// ===========================================================================
+
+export interface PersistedWorkspaceTab {
+  path: string
+  type: string
+  isDirty: boolean
+}
+
+export interface PersistedConversationState {
+  isOpen?: boolean
+  activeConversationId?: string | null
+  activeProvider?: string
+  activeModel?: string
+  reasoningLevel?: string
+  unsentInput?: string
+}
+
+export interface PersistedWorkspaceState {
+  workspaceRoot: string
+  openTabs: PersistedWorkspaceTab[]
+  activeTabPath: string
+  conversationState?: PersistedConversationState | null
+}
+
+export interface PersistedLayoutState {
+  sidebarOpen: boolean
+  sidebarWidth: number
+  bottomPanelOpen: boolean
+  bottomPanelHeight: number
+  terminalOpen: boolean
+  theme: string
+}
+
+export function loadWorkspaceState(
+  workspaceRoot: string
+): Promise<PersistedWorkspaceState | null> {
+  return invoke<PersistedWorkspaceState | null>('load_workspace_state', { workspaceRoot })
+}
+
+export function saveWorkspaceState(
+  workspaceRoot: string,
+  state: PersistedWorkspaceState
+): Promise<void> {
+  return invoke<void>('save_workspace_state', { workspaceRoot, state })
+}
+
+export function loadLayoutState(workspaceRoot: string): Promise<PersistedLayoutState | null> {
+  return invoke<PersistedLayoutState | null>('load_layout_state', { workspaceRoot })
+}
+
+export function saveLayoutState(
+  workspaceRoot: string,
+  state: PersistedLayoutState
+): Promise<void> {
+  return invoke<void>('save_layout_state', { workspaceRoot, state })
 }
 
 // ===========================================================================

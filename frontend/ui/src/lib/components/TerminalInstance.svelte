@@ -14,11 +14,12 @@
     fitTerminal,
     type TerminalBundle,
   } from '../terminal/xterm-setup'
-  import { bindPtyId, terminalSessions } from '../stores/terminal-sessions'
+  import { bindPtyId, setDetectedPort, terminalSessions } from '../stores/terminal-sessions'
   import { workspace } from '../stores/workspace'
   import { subscribeFocus, isAppActive } from '../stores/app-focus'
   import { registerTerminalHandle, unregisterTerminalHandle } from '../terminal/terminal-registry'
   import { openContextMenu } from '../context-menu/contextMenuStore'
+  import { detectPreviewTarget } from '../terminal/port-detect'
 
   // One session per instance. `key` ties it to the sessions store; `visible`
   // drives the keep-alive show/hide (only the active tab is visible). All
@@ -33,6 +34,8 @@
   let resizeObserver: ResizeObserver | null = null
   let disposed = false
   const encoder = new TextEncoder()
+  const decoder = new TextDecoder()
+  let portBuffer = ''
 
   // Background throttle: while the window is inactive we keep receiving PTY
   // output (the process never pauses) but defer WRITING it to XTerm, so the
@@ -45,6 +48,13 @@
 
   /** Write a chunk now, or buffer it while inactive. */
   function renderOutput(bytes: Uint8Array) {
+    const text = decoder.decode(bytes, { stream: true })
+    if (text) {
+      portBuffer = (portBuffer + text).slice(-4096)
+      const preview = detectPreviewTarget(portBuffer)
+      if (preview) setDetectedPort(key, preview.port, preview.url)
+    }
+
     if (isAppActive()) {
       bundle?.term.write(bytes)
       return

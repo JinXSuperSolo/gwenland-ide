@@ -70,8 +70,7 @@
     z-index: 200;
     display: flex;
     justify-content: center;
-    align-items: flex-start;
-    padding-top: 18vh;
+    align-items: center;
     background-color: rgba(0, 0, 0, 0.4);
   }
   .prompt {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MENUS, type MenuItem } from '../actions'
+  import { MENUS, runCommand, shortcutFor, type MenuItem } from '../commands/registry'
   import { getRecentProjects, type RecentProject } from '../tauri/commands'
   import { openFolderPath } from '../stores/workspace'
 
@@ -31,10 +31,14 @@
     recentsLoaded = true
   }
 
+  function itemShortcut(item: MenuItem): string | undefined {
+    return item.shortcut ?? (item.commandId ? shortcutFor(item.commandId) : undefined)
+  }
+
   function runItem(item: MenuItem) {
-    if (item.disabled || item.type === 'divider' || item.children) return
+    if (item.disabled || item.type === 'divider' || item.children || !item.commandId) return
     close()
-    item.action?.()
+    void runCommand(item.commandId)
   }
 
   function basename(p: string): string {
@@ -111,8 +115,8 @@
                 onclick={() => runItem(item)}
               >
                 <span class="menu-item-label">{item.label}</span>
-                {#if item.shortcut}
-                  <span class="menu-item-shortcut">{item.shortcut}</span>
+                {#if itemShortcut(item)}
+                  <span class="menu-item-shortcut">{itemShortcut(item)}</span>
                 {/if}
               </button>
             {/if}

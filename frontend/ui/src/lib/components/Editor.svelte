@@ -2,7 +2,8 @@
   import { onDestroy } from 'svelte'
   import { get } from 'svelte/store'
   import { appActive } from '../stores/app-focus'
-  import { tabs, persistTabState, recomputeDirty, isEditorTab } from '../stores/tabs'
+  import { tabs, persistTabState, recomputeDirty, isEditorTab, openFile } from '../stores/tabs'
+  import { workspace } from '../stores/workspace'
   import { setCursorFromState, clearCursor } from '../stores/cursor'
   import { setActiveEditor } from '../editor/active-editor'
   import { lsp, lspChangePath, languageForPath } from '../stores/lsp'
@@ -64,6 +65,32 @@
   }
 
   /** Tear down the current view and mount the given tab's stored state. */
+  function dirname(path: string): string {
+    const idx = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
+    return idx <= 0 ? path : path.slice(0, idx)
+  }
+
+  function sep(path: string): string {
+    return path.includes('\\') ? '\\' : '/'
+  }
+
+  function isAbsolute(path: string): boolean {
+    return /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('/') || path.startsWith('\\')
+  }
+
+  function joinPath(parent: string, child: string): string {
+    const s = sep(parent)
+    return parent.endsWith(s) ? parent + child : parent + s + child
+  }
+
+  function openLinkedPath(raw: string): void {
+    const root = get(workspace).folderPath
+    const base = mountedPath ? dirname(mountedPath) : root
+    const target = isAbsolute(raw) ? raw : base ? joinPath(base, raw) : raw
+    void openFile(target)
+  }
+
+  /** Tear down the current view and mount the given tab's stored state. */
   function mountTab(id: string) {
     if (view) {
       view.destroy()
@@ -91,7 +118,7 @@
     const onSelectionChange = () => {
       if (view) setCursorFromState(view.state)
     }
-    const state = createEditorState(doc, onDocChange, onSelectionChange, tab.path)
+    const state = createEditorState(doc, onDocChange, onSelectionChange, tab.path, openLinkedPath)
     view = mountEditorView(state, host)
     mountedId = id
     mountedPath = tab.path

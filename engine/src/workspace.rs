@@ -36,6 +36,16 @@ pub fn settings_path(workspace_root: &Path) -> PathBuf {
     gwenland_dir(workspace_root).join("settings.json")
 }
 
+/// `.gwenland/workspace.json` (UI-owned tab/chat restore state).
+pub fn workspace_state_path(workspace_root: &Path) -> PathBuf {
+    gwenland_dir(workspace_root).join("workspace.json")
+}
+
+/// `.gwenland/layout.json` (UI-owned panel/theme restore state).
+pub fn layout_state_path(workspace_root: &Path) -> PathBuf {
+    gwenland_dir(workspace_root).join("layout.json")
+}
+
 /// `.gwenland/safety/`
 pub fn safety_dir(workspace_root: &Path) -> PathBuf {
     gwenland_dir(workspace_root).join("safety")
@@ -233,6 +243,58 @@ pub fn save_workspace_settings(
     Ok(())
 }
 
+fn load_json_blob(path: PathBuf) -> Option<serde_json::Value> {
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    if content.trim().is_empty() {
+        return None;
+    }
+    serde_json::from_str(&content).ok()
+}
+
+fn save_json_blob(
+    workspace_root: &Path,
+    path: PathBuf,
+    value: &serde_json::Value,
+) -> Result<(), WorkspaceError> {
+    ensure_gwenland_dir(workspace_root)?;
+    let tmp_path = path.with_extension("json.tmp");
+    let content = serde_json::to_string_pretty(value)?;
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+/// Load `.gwenland/workspace.json`. Missing, empty, or malformed files return
+/// `None` so WebView reload recovery can fail open.
+pub fn load_workspace_state(workspace_root: &Path) -> Option<serde_json::Value> {
+    load_json_blob(workspace_state_path(workspace_root))
+}
+
+/// Save `.gwenland/workspace.json` atomically.
+pub fn save_workspace_state(
+    workspace_root: &Path,
+    state: &serde_json::Value,
+) -> Result<(), WorkspaceError> {
+    save_json_blob(workspace_root, workspace_state_path(workspace_root), state)
+}
+
+/// Load `.gwenland/layout.json`. Missing, empty, or malformed files return
+/// `None` so startup never crashes on bad UI state.
+pub fn load_layout_state(workspace_root: &Path) -> Option<serde_json::Value> {
+    load_json_blob(layout_state_path(workspace_root))
+}
+
+/// Save `.gwenland/layout.json` atomically.
+pub fn save_layout_state(
+    workspace_root: &Path,
+    state: &serde_json::Value,
+) -> Result<(), WorkspaceError> {
+    save_json_blob(workspace_root, layout_state_path(workspace_root), state)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -250,6 +312,8 @@ mod tests {
         let gw = gwenland_dir(root);
         assert!(gw.starts_with(root));
         assert!(settings_path(root).starts_with(&gw));
+        assert!(workspace_state_path(root).starts_with(&gw));
+        assert!(layout_state_path(root).starts_with(&gw));
         assert!(safety_dir(root).starts_with(&gw));
         assert!(snapshots_dir(root).starts_with(&gw));
         assert!(trash_dir(root).starts_with(&gw));
@@ -375,5 +439,42 @@ mod tests {
         assert_eq!(s.theme, Some("light".to_string()));
         assert_eq!(s.autosave, None);
         assert_eq!(s.safety_strictness, None);
+    }
+
+    #[test]
+    fn workspace_state_round_trip_json_blob() {
+        let dir = tempdir().unwrap();
+        let value = serde_json::json!({
+            "workspaceRoot": dir.path().to_string_lossy(),
+            "openTabs": [{ "path": "src/main.rs", "type": "editor", "isDirty": false }],
+            "activeTabPath": "src/main.rs"
+        });
+        save_workspace_state(dir.path(), &value).unwrap();
+        assert_eq!(load_workspace_state(dir.path()), Some(value));
+    }
+
+    #[test]
+    fn layout_state_round_trip_json_blob() {
+        let dir = tempdir().unwrap();
+        let value = serde_json::json!({
+            "sidebarOpen": true,
+            "sidebarWidth": 260,
+            "bottomPanelOpen": false,
+            "bottomPanelHeight": 200,
+            "terminalOpen": false,
+            "theme": "gwen"
+        });
+        save_layout_state(dir.path(), &value).unwrap();
+        assert_eq!(load_layout_state(dir.path()), Some(value));
+    }
+
+    #[test]
+    fn malformed_workspace_and_layout_state_return_none() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".gwenland")).unwrap();
+        std::fs::write(dir.path().join(".gwenland/workspace.json"), b"not json").unwrap();
+        std::fs::write(dir.path().join(".gwenland/layout.json"), b"").unwrap();
+        assert_eq!(load_workspace_state(dir.path()), None);
+        assert_eq!(load_layout_state(dir.path()), None);
     }
 }

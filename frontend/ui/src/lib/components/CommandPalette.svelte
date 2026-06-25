@@ -1,6 +1,11 @@
 <script lang="ts">
   import { paletteOpen, closePalette } from '../stores/ui'
-  import { filterCommands, commandCategory, type Command } from '../stores/commands'
+  import {
+    commandCategory,
+    filterCommands,
+    keybindingsFor,
+    type Command,
+  } from '../commands/registry'
   import Icon from './Icon.svelte'
 
   let query = $state('')
@@ -28,7 +33,7 @@
   function run(cmd: Command | undefined) {
     if (!cmd) return
     closePalette()
-    cmd.action()
+    void cmd.handler()
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -84,9 +89,9 @@
             onclick={() => run(cmd)}
           >
             <span class="palette-cat">{commandCategory(cmd.id)}</span>
-            <span class="palette-label">{cmd.label}</span>
+            <span class="palette-label">{cmd.title}</span>
             <span class="palette-keys">
-              {#each keyChips(cmd.keys[0] ?? '') as k}
+              {#each keyChips(keybindingsFor(cmd)[0] ?? '') as k}
                 <kbd class="palette-kbd">{k}</kbd>
               {/each}
             </span>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { convertFileSrc } from '@tauri-apps/api/core'
-  import type { PreviewSource } from '../stores/tabs'
+  import { isImagePath, type PreviewSource } from '../stores/tabs'
   import Icon from './Icon.svelte'
 
   // The web-preview surface (M5). One pipeline for both source kinds: an iframe
@@ -20,6 +20,7 @@
   const frameSrc = $derived(
     source.kind === 'dev-server' ? source.url : convertFileSrc(source.path),
   )
+  const isImagePreview = $derived(source.kind === 'static-file' && isImagePath(source.path))
 
   // Bumping this re-keys the iframe, forcing a fresh load. We can't call
   // iframe.contentWindow.location.reload() because the previewed origin
@@ -45,11 +46,17 @@
     </button>
   </div>
 
-  {#key `${frameSrc}::${reloadNonce}`}
-    <!-- No sandbox: a local dev server / file is trusted content the user owns,
-         and the preview should behave like a real browser tab (scripts, forms). -->
-    <iframe class="preview-frame" src={frameSrc} title="Web preview"></iframe>
-  {/key}
+  {#if isImagePreview}
+    <div class="image-stage">
+      <img class="image-preview" src={frameSrc} alt={displayUrl} />
+    </div>
+  {:else}
+    {#key `${frameSrc}::${reloadNonce}`}
+      <!-- No sandbox: a local dev server / file is trusted content the user owns,
+           and the preview should behave like a real browser tab (scripts, forms). -->
+      <iframe class="preview-frame" src={frameSrc} title="Web preview"></iframe>
+    {/key}
+  {/if}
 </div>
 
 <style>
@@ -106,5 +113,21 @@
     border: none;
     /* Web content expects an opaque (usually white) canvas, like a browser. */
     background-color: #ffffff;
+  }
+  .image-stage {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding: 24px;
+    background-color: var(--background);
+  }
+  .image-preview {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    image-rendering: auto;
   }
 </style>

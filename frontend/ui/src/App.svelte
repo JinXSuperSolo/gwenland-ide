@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { panels } from './lib/stores/panels'
   import FileTree from './lib/components/FileTree.svelte'
   import GitPanel from './lib/components/GitPanel.svelte'
@@ -20,7 +21,8 @@
   import { workspace } from './lib/stores/workspace'
   import { sidebarView } from './lib/stores/sidebar'
   import { tabs } from './lib/stores/tabs'
-  import { dispatchShortcut } from './lib/stores/commands'
+  import { handleGlobalKeydown } from './lib/commands/keybinding-handler'
+  import { initWorkspaceStatePersistence } from './lib/stores/workspace-state'
   import { handleGlobalContextMenu } from './lib/context-menu/globalContextMenu'
 
   // GWEN-321: with no folder open AND no tabs open, the app is in the "empty"
@@ -29,13 +31,12 @@
   // IDE layout. The check is reactive, so the swap is automatic.
   const showWelcome = $derived(!$workspace.folderPath && $tabs.tabs.length === 0)
 
-  // Global keyboard shortcuts: let the registry try to handle the combo first.
-  function onKeydown(e: KeyboardEvent) {
-    dispatchShortcut(e)
-  }
+  onMount(() => {
+    initWorkspaceStatePersistence()
+  })
 </script>
 
-<svelte:window onkeydown={onKeydown} oncontextmenu={handleGlobalContextMenu} />
+<svelte:window onkeydown={handleGlobalKeydown} oncontextmenu={handleGlobalContextMenu} />
 
 {#if showWelcome}
   <WelcomeScreen />

@@ -1,5 +1,23 @@
 import { EditorView } from '@codemirror/view'
-import { undo, redo, openSearchPanel } from './codemirror-setup'
+import {
+  addCursorAbove,
+  addCursorBelow,
+  copyLineDown,
+  copyLineUp,
+  deleteLine,
+  moveLineDown,
+  moveLineUp,
+  redo,
+  toggleComment,
+  undo,
+} from '@codemirror/commands'
+import {
+  gotoLine,
+  openSearchPanel,
+  selectNextOccurrence,
+  selectSelectionMatches,
+} from '@codemirror/search'
+import { openSearchPanel as openCustomSearchPanel } from './codemirror-setup'
 
 type View = EditorView
 
@@ -33,18 +51,15 @@ export function activeSelection(): string | null {
 }
 
 export function editorUndo(): void {
-  if (active) {
-    undo(active)
-    active.focus()
-  }
+  runEditorCommand(undo)
 }
 export function editorRedo(): void {
-  if (active) {
-    redo(active)
-    active.focus()
-  }
+  runEditorCommand(redo)
 }
 export function editorFind(): void {
+  if (active) openCustomSearchPanel(active)
+}
+export function editorReplace(): void {
   if (active) openSearchPanel(active)
 }
 export function editorSelectAll(): void {
@@ -54,6 +69,80 @@ export function editorSelectAll(): void {
 }
 export function focusEditor(): void {
   if (active) active.focus()
+}
+
+function runEditorCommand(command: (target: View) => boolean): void {
+  if (!active) return
+  command(active)
+  active.focus()
+}
+
+export function editorToggleComment(): void {
+  runEditorCommand(toggleComment)
+}
+
+export function editorMoveLineUp(): void {
+  runEditorCommand(moveLineUp)
+}
+
+export function editorMoveLineDown(): void {
+  runEditorCommand(moveLineDown)
+}
+
+export function editorCopyLineUp(): void {
+  runEditorCommand(copyLineUp)
+}
+
+export function editorCopyLineDown(): void {
+  runEditorCommand(copyLineDown)
+}
+
+export function editorDeleteLine(): void {
+  runEditorCommand(deleteLine)
+}
+
+export function editorSelectNextMatch(): void {
+  runEditorCommand(selectNextOccurrence)
+}
+
+export function editorSelectAllMatches(): void {
+  runEditorCommand(selectSelectionMatches)
+}
+
+export function editorAddCursorAbove(): void {
+  runEditorCommand(addCursorAbove)
+}
+
+export function editorAddCursorBelow(): void {
+  runEditorCommand(addCursorBelow)
+}
+
+export function editorGoToLine(): void {
+  runEditorCommand(gotoLine)
+}
+
+function pendingEditorFeature(name: string): void {
+  console.info(`[GwenLand] "${name}" needs an LSP edit/navigation command that is not wired yet.`)
+}
+
+export function editorFormatDocument(): void {
+  pendingEditorFeature('Format Document')
+}
+
+export function editorGoToDefinition(): void {
+  pendingEditorFeature('Go to Definition')
+}
+
+export function editorRenameSymbol(): void {
+  pendingEditorFeature('Rename Symbol')
+}
+
+export function editorFindWorkspace(): void {
+  pendingEditorFeature('Find in Workspace')
+}
+
+export function editorSplit(): void {
+  pendingEditorFeature('Split Editor')
 }
 
 // --- Clipboard (Milestone 9 — editor context menu) -------------------------

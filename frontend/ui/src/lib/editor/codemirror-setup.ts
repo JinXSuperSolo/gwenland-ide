@@ -47,9 +47,10 @@ import {
   type CompletionResult,
 } from '@codemirror/autocomplete'
 import type { Text } from '@codemirror/state'
-import { lspCompletion, type LspDiagnostic } from '../tauri/commands'
+import { lspCompletion, openBrowser, type LspDiagnostic } from '../tauri/commands'
 import { lspChangePath, languageForPath } from '../stores/lsp'
 import { reviewExtension } from './diff-overlay'
+import { getLanguageExtension } from './language-detect'
 // foldGutter/foldKeymap intentionally NOT imported — meaningful folding needs a
 // language grammar (Milestone 6).
 
@@ -215,6 +216,40 @@ export const lspPath = Facet.define<string, string>({
   combine: (values) => values[0] ?? '',
 })
 
+function tokenAt(doc: Text, pos: number): string {
+  const line = doc.lineAt(pos)
+  const stop = /[\s"'`<>()\[\]{}]/
+  let from = pos
+  let to = pos
+  while (from > line.from && !stop.test(doc.sliceString(from - 1, from))) from--
+  while (to < line.to && !stop.test(doc.sliceString(to, to + 1))) to++
+  return doc
+    .sliceString(from, to)
+    .replace(/[.,;!?]+$/, '')
+    .replace(/:\d+(?::\d+)?$/, '')
+}
+
+function maybeOpenCtrlClickTarget(
+  event: MouseEvent,
+  view: EditorView,
+  onOpenPath?: (path: string) => void,
+): boolean {
+  if (!event.ctrlKey && !event.metaKey) return false
+  const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
+  if (pos === null) return false
+  const text = tokenAt(view.state.doc, pos)
+  if (!text) return false
+  if (/^https?:\/\//i.test(text)) {
+    void openBrowser(text).catch(() => {})
+    return true
+  }
+  if ((text.includes('/') || text.includes('\\') || text.includes('.')) && onOpenPath) {
+    onOpenPath(text)
+    return true
+  }
+  return false
+}
+
 /**
  * CodeMirror autocomplete source backed by the LSP bridge (Milestone 6, Wave 5).
  * Converts the cursor offset to an LSP line/character, flushes the latest text
@@ -277,9 +312,11 @@ export function createEditorState(
   onDocChange?: () => void,
   onSelectionChange?: () => void,
   path?: string,
+  onOpenPath?: (path: string) => void,
 ): EditorState {
   const extensions = [
     lspPath.of(path ?? ''),
+    getLanguageExtension(path ?? ''),
     autocompletion({ override: [lspCompletionSource] }),
     lineNumbers(),
     highlightActiveLineGutter(),
@@ -317,6 +354,11 @@ export function createEditorState(
       ) {
         onSelectionChange()
       }
+    }),
+    EditorView.domEventHandlers({
+      click(event, view) {
+        return maybeOpenCtrlClickTarget(event, view, onOpenPath)
+      },
     }),
   ]
   return EditorState.create({ doc: doc ?? '', extensions })
