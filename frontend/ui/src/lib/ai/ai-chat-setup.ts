@@ -18,6 +18,7 @@ import {
 import { createThinkParser, splitThinking, type ThinkParser } from './thinking-parser'
 import { detectDiff } from './diff-detection'
 import { activeSystemPrefix } from './persona-setup'
+import { initSearchListener } from './search-setup'
 
 /**
  * AI chat orchestration (Milestone 4). Bridges the `ai-chat` store and the
@@ -86,6 +87,8 @@ export async function initAiChat(): Promise<void> {
     /* fall back to store defaults */
   }
   await Promise.all([loadConversations(), refreshKeyStatus(), loadModels()])
+  // M13: register the persistent search-request listener once at init time.
+  void initSearchListener()
 }
 
 /** Refresh the conversation list (newest first). */

@@ -1,10 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { collapsePanel } from '../stores/panels'
   import { workspace, openFolder, openFolderPath } from '../stores/workspace'
   import { newUntitledFile } from '../stores/tabs'
-  import { getRecentProjects, type RecentProject } from '../tauri/commands'
+  import { getRecentProjects, type RecentProject, createFile, createDir } from '../tauri/commands'
   import { openContextMenu } from '../context-menu/contextMenuStore'
+  import { requestTreeRefresh, requestTreeCollapse } from '../stores/file-tree'
+  import { refreshWorkspace } from '../stores/workspace'
+  import { treeInput, cancelTreeInput, confirmTreeInput } from '../stores/tree-input'
+  import { openFile } from '../stores/tabs'
   import TreeNode from './TreeNode.svelte'
   import Icon from './Icon.svelte'
 
@@ -29,13 +33,110 @@
   function basename(p: string): string {
     return p.split(/[\\/]/).filter(Boolean).pop() || p
   }
+  function sep(p: string): string {
+    return p.includes('\\') ? '\\' : '/'
+  }
+  function join(parent: string, name: string): string {
+    const s = sep(parent)
+    return parent.endsWith(s) ? parent + name : parent + s + name
+  }
+  function samePath(a: string, b: string): boolean {
+    const norm = (p: string) => p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
+    return norm(a) === norm(b)
+  }
+  function refreshDir(dir: string): void {
+    const root = $workspace.folderPath
+    if (root && samePath(dir, root)) void refreshWorkspace()
+    else requestTreeRefresh(dir)
+  }
 
-  // Right-click on the Explorer's blank area (below/around the tree) opens the
-  // workspace context menu. File/folder nodes stop propagation, so this only
-  // fires for empty space. No-op until a folder is open.
+  // Right-click on the Explorer's blank area opens the workspace context menu.
   function onEmptyContextMenu(e: MouseEvent) {
     if (!$workspace.folderPath) return
     openContextMenu(e, { scope: 'workspace_empty', workspaceRoot: $workspace.folderPath })
+  }
+
+  // Header button actions — trigger tree-input for new file / new folder.
+  function triggerNewFile() {
+    const root = $workspace.folderPath
+    if (!root) return
+    import('../stores/tree-input').then(({ openTreeInput }) => {
+      void openTreeInput({ kind: 'file', targetDir: root, icon: 'page' }).then(async (name) => {
+        if (!name) return
+        try {
+          await createFile(join(root, name), root)
+          refreshDir(root)
+          await openFile(join(root, name))
+        } catch (e) {
+          alert(`Could not create file: ${e}`)
+        }
+      })
+    })
+  }
+
+  function triggerNewFolder() {
+    const root = $workspace.folderPath
+    if (!root) return
+    import('../stores/tree-input').then(({ openTreeInput }) => {
+      void openTreeInput({ kind: 'folder', targetDir: root, icon: 'folder' }).then(async (name) => {
+        if (!name) return
+        try {
+          await createDir(join(root, name), root)
+          refreshDir(root)
+        } catch (e) {
+          alert(`Could not create folder: ${e}`)
+        }
+      })
+    })
+  }
+
+  function collapseAll() {
+    const root = $workspace.folderPath
+    if (!root) return
+    requestTreeCollapse(root)
+  }
+
+  function refreshAll() {
+    void refreshWorkspace()
+  }
+
+  // Inline input row logic.
+  let inputEl = $state<HTMLInputElement | null>(null)
+  let inputValue = $state('')
+
+  // When the store opens, seed the input value and focus.
+  $effect(() => {
+    if ($treeInput.open) {
+      inputValue = $treeInput.initialValue
+      tick().then(() => {
+        if (inputEl) {
+          inputEl.focus()
+          // For rename: select the name without extension so user can type over it.
+          if ($treeInput.kind === 'rename') {
+            const dot = inputValue.lastIndexOf('.')
+            if (dot > 0) inputEl.setSelectionRange(0, dot)
+            else inputEl.select()
+          } else {
+            inputEl.select()
+          }
+        }
+      })
+    }
+  })
+
+  function onInputKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      confirmTreeInput(inputValue)
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      cancelTreeInput()
+    }
+  }
+
+  function onInputBlur() {
+    // Blur without Enter = cancel (same as VS Code).
+    cancelTreeInput()
   }
 </script>
 
@@ -43,12 +144,39 @@
   <header class="panel-header">
     <span class="panel-title">{folderName ?? 'Explorer'}</span>
     <div class="header-actions">
-      <button
-        class="header-btn"
-        title="Open Folder"
-        aria-label="Open Folder"
-        onclick={openFolder}
-      ><Icon name="folder" size={15} /></button>
+      {#if $workspace.folderPath}
+        <button
+          class="header-btn"
+          title="New File"
+          aria-label="New File"
+          onclick={triggerNewFile}
+        ><Icon name="page-plus" size={15} /></button>
+        <button
+          class="header-btn"
+          title="New Folder"
+          aria-label="New Folder"
+          onclick={triggerNewFolder}
+        ><Icon name="folder-plus" size={15} /></button>
+        <button
+          class="header-btn"
+          title="Collapse All"
+          aria-label="Collapse All"
+          onclick={collapseAll}
+        ><Icon name="collapse" size={15} /></button>
+        <button
+          class="header-btn"
+          title="Refresh"
+          aria-label="Refresh"
+          onclick={refreshAll}
+        ><Icon name="refresh" size={15} /></button>
+      {:else}
+        <button
+          class="header-btn"
+          title="Open Folder"
+          aria-label="Open Folder"
+          onclick={openFolder}
+        ><Icon name="folder" size={15} /></button>
+      {/if}
       <button
         class="header-btn"
         title="Collapse File Tree"
@@ -92,6 +220,21 @@
     {:else if $workspace.error}
       <p class="placeholder error">{$workspace.error}</p>
     {:else}
+      <!-- Inline input row — appears at the top of the tree when active. -->
+      {#if $treeInput.open}
+        <div class="inline-input-row">
+          <Icon name={$treeInput.icon as 'page' | 'folder'} size={16} class="ii-icon" />
+          <input
+            bind:this={inputEl}
+            bind:value={inputValue}
+            class="inline-input"
+            type="text"
+            spellcheck="false"
+            onkeydown={onInputKeydown}
+            onblur={onInputBlur}
+          />
+        </div>
+      {/if}
       <div role="tree" class="tree">
         {#each $workspace.rootEntries as entry (entry.path)}
           <TreeNode {entry} depth={0} />
@@ -144,6 +287,9 @@
     width: 22px;
     height: 22px;
     border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   .header-btn:hover {
     color: var(--foreground);
@@ -158,6 +304,34 @@
     display: flex;
     flex-direction: column;
   }
+
+  /* Inline input row — mimics a tree node row. */
+  .inline-input-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 8px 0 22px;
+  }
+  .inline-input-row :global(.ii-icon) {
+    flex-shrink: 0;
+    color: var(--muted-foreground);
+  }
+  .inline-input {
+    flex: 1;
+    min-width: 0;
+    height: 18px;
+    background: var(--input, var(--secondary));
+    border: 1px solid var(--primary);
+    border-radius: 2px;
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    padding: 0 4px;
+    outline: none;
+    box-shadow: 0 0 0 1px var(--primary);
+  }
+
   .empty {
     display: flex;
     flex-direction: column;

@@ -5,7 +5,7 @@ import * as cmd from '../tauri/commands'
 import { workspace } from '../stores/workspace'
 import { tabs, isEditorTab } from '../stores/tabs'
 import { activeSelection } from '../editor/active-editor'
-import { aiChat, aiState, appendUserTurn, appendAgentTurn, snapshotAgentTurn } from '../stores/ai-chat'
+import { aiChat, aiState, appendUserTurn, appendAgentTurn, snapshotAgentTurn, rollbackEmptyAgentTurn } from '../stores/ai-chat'
 import { createConversation } from '../ai/ai-chat-setup'
 import {
   agentic,
@@ -454,7 +454,8 @@ export async function summarizeAgentSession(): Promise<void> {
 
 /** Cancel/abandon the session (changes no files). */
 export async function cancelAgentSession(): Promise<void> {
-  const session = agenticState().session
+  const state = agenticState()
+  const { session, runId } = state
   if (!session) {
     resetAgent()
     return
@@ -468,7 +469,14 @@ export async function cancelAgentSession(): Promise<void> {
   teardownAgentListeners()
   teardownToolListeners()
   endToolLoop()
-  setPhase('cancelled')
+
+  // If the run produced no tool steps and no final answer, roll back the
+  // user turn + agent turn so the conversation list stays clean.
+  if (runId && !state.toolLog.length && !state.toolFinal) {
+    rollbackEmptyAgentTurn(runId)
+  } else {
+    setPhase('cancelled')
+  }
 }
 
 // --- Tool-calling ReAct loop (M10 Wave 7) ----------------------------------

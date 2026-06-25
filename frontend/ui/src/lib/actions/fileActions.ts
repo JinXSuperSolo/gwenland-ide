@@ -23,7 +23,7 @@ import { refreshWorkspace } from '../stores/workspace'
 import { requestTreeRefresh, requestTreeCollapse } from '../stores/file-tree'
 import { createSession } from '../stores/terminal-sessions'
 import { expandPanel } from '../stores/panels'
-import { openPrompt } from '../stores/prompt-dialog'
+import { openTreeInput } from '../stores/tree-input'
 
 // --- Path helpers (OS-separator aware: engine paths use the native separator) ---
 
@@ -84,7 +84,7 @@ const fileTreeActions: ContextAction[] = [
     run: async (ctx) => {
       const dir = targetDir(ctx)
       if (!dir || !ctx.workspaceRoot) return
-      const name = await openPrompt({ title: 'New File', label: 'File name', placeholder: 'example.ts' })
+      const name = await openTreeInput({ kind: 'file', targetDir: dir, icon: 'page' })
       if (!name) return
       const target = join(dir, name)
       try {
@@ -107,7 +107,7 @@ const fileTreeActions: ContextAction[] = [
     run: async (ctx) => {
       const dir = targetDir(ctx)
       if (!dir || !ctx.workspaceRoot) return
-      const name = await openPrompt({ title: 'New Folder', label: 'Folder name', placeholder: 'components' })
+      const name = await openTreeInput({ kind: 'folder', targetDir: dir, icon: 'folder' })
       if (!name) return
       try {
         await createDir(join(dir, name), ctx.workspaceRoot)
@@ -131,14 +131,14 @@ const fileTreeActions: ContextAction[] = [
     run: async (ctx) => {
       if (!ctx.path || !ctx.workspaceRoot) return
       const current = basename(ctx.path)
-      const name = await openPrompt({
-        title: 'Rename',
-        label: 'New name',
+      const dir = dirname(ctx.path)
+      const name = await openTreeInput({
+        kind: 'rename',
+        targetDir: dir,
         initialValue: current,
-        confirmLabel: 'Rename',
+        icon: ctx.isDirectory ? 'folder' : 'page',
       })
       if (!name || name === current) return
-      const dir = dirname(ctx.path)
       try {
         // NOTE: an already-open tab keeps its old path until reopened; updating
         // live tabs on rename is out of M9 scope.

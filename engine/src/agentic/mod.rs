@@ -18,6 +18,7 @@
 pub mod agent_loop;
 pub mod changeset;
 pub mod context;
+pub mod memory;
 pub mod persistence;
 pub mod plan_parse;
 pub mod policy;
@@ -36,6 +37,12 @@ pub use changeset::{
 pub use context::{
     ContextItem, ContextItemKind, ContextOmission, ContextPreview, MAX_CONTEXT_ITEMS,
     MAX_ITEM_BYTES, MAX_TOTAL_CONTEXT_BYTES, OmissionReason, omission_for_path,
+};
+pub use memory::{
+    MemoryBudget, MemoryError, MemoryNote, MemorySearchResult, MemoryWriteTarget,
+    memory_conversation_dir, memory_project_dir, parse_keyword_array, parse_memory_note,
+    project_name_from_root, render_memory_block, sanitize_note_filename, sanitize_segment,
+    search_memory, write_memory_note,
 };
 pub use persistence::{load_sessions, persist_session, restored_session, session_for_persistence};
 pub use plan_parse::parse_plan;

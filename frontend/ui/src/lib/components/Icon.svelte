@@ -42,6 +42,7 @@
   import gitCommit from 'iconoir/icons/regular/git-commit.svg?raw'
   import list from 'iconoir/icons/regular/list.svg?raw'
   import reply from 'iconoir/icons/regular/reply.svg?raw'
+  import collapse from 'iconoir/icons/regular/collapse.svg?raw'
 
   export const ICONS = {
     plus,
@@ -83,6 +84,7 @@
     'git-commit': gitCommit,
     list,
     reply,
+    collapse,
   } as const
 
   export type IconName = keyof typeof ICONS
