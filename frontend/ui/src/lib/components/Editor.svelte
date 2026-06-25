@@ -2,7 +2,14 @@
   import { onDestroy } from 'svelte'
   import { get } from 'svelte/store'
   import { appActive } from '../stores/app-focus'
-  import { tabs, persistTabState, recomputeDirty, isEditorTab, openFile } from '../stores/tabs'
+  import {
+    tabs,
+    persistTabState,
+    recomputeDirty,
+    isEditorTab,
+    openFile,
+    setActiveGroup,
+  } from '../stores/tabs'
   import { workspace } from '../stores/workspace'
   import { setCursorFromState, clearCursor } from '../stores/cursor'
   import { setActiveEditor } from '../editor/active-editor'
@@ -18,6 +25,11 @@
   } from '../editor/codemirror-setup'
 
   let host: HTMLDivElement
+  let {
+    tabId = null,
+    groupId = null,
+    active = true,
+  }: { tabId?: string | null; groupId?: string | null; active?: boolean } = $props()
   let view: EditorView | null = null
   // The tab id currently mounted in `view` — drives swap-on-switch.
   let mountedId: string | null = null
@@ -87,7 +99,14 @@
     const root = get(workspace).folderPath
     const base = mountedPath ? dirname(mountedPath) : root
     const target = isAbsolute(raw) ? raw : base ? joinPath(base, raw) : raw
-    void openFile(target)
+    void openFile(target, { groupId: groupId ?? undefined })
+  }
+
+  function activateThisEditor() {
+    if (groupId) setActiveGroup(groupId)
+    if (!view) return
+    setActiveEditor(view)
+    setCursorFromState(view.state)
   }
 
   /** Tear down the current view and mount the given tab's stored state. */
@@ -122,20 +141,22 @@
     view = mountEditorView(state, host)
     mountedId = id
     mountedPath = tab.path
-    setActiveEditor(view)
-    // Seed the status bar with the just-mounted tab's cursor position.
-    setCursorFromState(view.state)
+    if (active) {
+      setActiveEditor(view)
+      // Seed the status bar with the just-mounted tab's cursor position.
+      setCursorFromState(view.state)
+    }
     // Seed any diagnostics already known for this document.
     applyDiagnosticsToView()
     // Seed the diff-review overlay if this file is part of an active review.
     updateReviewOverlay()
-    view.focus()
+    if (active) view.focus()
   }
 
   // React to active-tab changes: persist the outgoing tab, mount the incoming.
   // Using $effect so it runs after host is bound and on every activeId change.
   $effect(() => {
-    const activeId = $tabs.activeId
+    const activeId = tabId ?? $tabs.activeId
     if (activeId === mountedId) return
     // Flush + persist whatever is currently mounted before switching away.
     flushLspChange()
@@ -150,6 +171,13 @@
       mountedPath = null
       setActiveEditor(null)
       clearCursor()
+    }
+  })
+
+  $effect(() => {
+    if (active && view) {
+      setActiveEditor(view)
+      setCursorFromState(view.state)
     }
   })
 
@@ -172,8 +200,10 @@
     persistMounted()
     if (changeTimer) clearTimeout(changeTimer)
     if (view) view.destroy()
-    setActiveEditor(null)
-    clearCursor()
+    if (active) {
+      setActiveEditor(null)
+      clearCursor()
+    }
   })
 
   // Right-click opens the editor context menu (M9). Selection + language id are
@@ -200,6 +230,8 @@
   class="editor-host"
   class:inactive={!$appActive}
   bind:this={host}
+  onmousedown={activateThisEditor}
+  onfocusin={activateThisEditor}
   oncontextmenu={onEditorContextMenu}
 ></div>
 

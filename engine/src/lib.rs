@@ -6,6 +6,7 @@ pub mod devserver_detect;
 pub mod error_detect;
 pub mod fs;
 pub mod git;
+pub mod history;
 pub mod logs;
 pub mod lsp;
 pub mod permissions;

@@ -1,12 +1,22 @@
 <script lang="ts">
-  import { tabs, activateTab, type Tab } from '../stores/tabs'
+  import { activateTab, setActiveGroup, type Tab } from '../stores/tabs'
   import { openContextMenu } from '../context-menu/contextMenuStore'
   import Icon from './Icon.svelte'
   import FileIcon from './FileIcon.svelte'
 
   // Close is handled by the parent (Workspace) so it can gate dirty tabs with a
   // confirm before discarding. We just emit the intent.
-  let { onClose }: { onClose: (id: string) => void } = $props()
+  let {
+    groupId,
+    tabs: groupTabs,
+    activeId,
+    onClose,
+  }: {
+    groupId: string
+    tabs: Tab[]
+    activeId: string | null
+    onClose: (id: string) => void
+  } = $props()
 
   // Hover tooltip: an editor tab's on-disk path, a diff tab's path, or a
   // preview's source target.
@@ -20,30 +30,33 @@
   // carry a file path; preview tabs pass none, so path-gated actions disable.
   function onTabContextMenu(e: MouseEvent, tab: Tab) {
     openContextMenu(e, {
-      scope: 'editor_tab',
-      tabId: tab.id,
-      path: tab.kind === 'editor' ? tab.path || undefined : undefined,
-    })
+        scope: 'editor_tab',
+        tabId: tab.id,
+        groupId,
+        path: tab.kind === 'editor' ? tab.path || undefined : undefined,
+      })
   }
 </script>
 
-{#if $tabs.tabs.length > 0}
+{#if groupTabs.length > 0}
   <div class="tabs-bar" role="tablist">
-    {#each $tabs.tabs as tab (tab.id)}
+    {#each groupTabs as tab (tab.id)}
       <div
         class="tab-item gw-anim-rise"
-        class:active={tab.id === $tabs.activeId}
+        class:active={tab.id === activeId}
         class:dirty={tab.kind === 'editor' && tab.dirty}
+        class:preview={tab.preview}
         role="tab"
-        aria-selected={tab.id === $tabs.activeId}
+        aria-selected={tab.id === activeId}
         tabindex="0"
         title={tabTitle(tab)}
-        onmousedown={() => activateTab(tab.id)}
+        onmousedown={() => activateTab(tab.id, groupId)}
         oncontextmenu={(e) => onTabContextMenu(e, tab)}
         onkeydown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
-            activateTab(tab.id)
+            setActiveGroup(groupId)
+            activateTab(tab.id, groupId)
           }
         }}
       >
@@ -105,6 +118,9 @@
     background-color: var(--card);
     border-bottom: 2px solid var(--primary);
     font-weight: 500;
+  }
+  .tab-item.preview .tab-title {
+    font-style: italic;
   }
   .tab-title {
     overflow: hidden;

@@ -10,14 +10,12 @@
  * blocking notice rather than crashing (Strict Rule 6). Wiring them is a
  * straightforward follow-up once the engine exposes the LSP edit requests.
  *
- * Split Editor / Split Right are disabled until a split layout exists.
- *
  * Orders increase across groups so the registry renders them in design order.
  */
 import { get } from 'svelte/store'
 import { registry } from '../context-menu/actionRegistry'
 import type { ContextAction, ContextMenuContext } from '../context-menu/contextTypes'
-import { editorCut, editorCopy, editorPaste } from '../editor/active-editor'
+import { activeDoc, editorCut, editorCopy, editorPaste } from '../editor/active-editor'
 import { openPalette } from '../stores/ui'
 import {
   closeActiveTab,
@@ -25,7 +23,13 @@ import {
   closeOtherTabs,
   closeTabsToRight,
   closeSavedTabs,
+  openFileToSide,
+  splitHorizontal,
+  isEditorTab,
+  tabs,
 } from '../stores/tabs'
+import { explainSelection, fixSelection, generateTestsForSelection } from '../stores/ai-actions'
+import { openSimpleDiff } from '../stores/simple-diff'
 import { expandPanel } from '../stores/panels'
 import { requestTreeReveal } from '../stores/file-tree'
 import { lsp } from '../stores/lsp'
@@ -40,6 +44,24 @@ function isLspConnected(ctx: ContextMenuContext): boolean {
 /** Graceful placeholder for an LSP edit feature whose engine command is pending. */
 function lspFeaturePending(name: string): void {
   console.info(`[GwenLand] "${name}" needs an LSP edit feature that isn't wired yet.`)
+}
+
+function previewUnsavedDiff(): void {
+  const state = get(tabs)
+  const tab = state.tabs.find((candidate) => candidate.id === state.activeId)
+  if (!tab || !isEditorTab(tab)) return
+  const current = activeDoc() ?? tab.state.doc.toString()
+  if (current === tab.baseline) {
+    alert('No unsaved changes.')
+    return
+  }
+  openSimpleDiff({
+    title: 'Unsaved Changes',
+    leftLabel: 'Saved',
+    rightLabel: 'Current',
+    left: tab.baseline,
+    right: current,
+  })
 }
 
 const editorActions: ContextAction[] = [
@@ -146,6 +168,45 @@ const editorActions: ContextAction[] = [
       if (ctx.path) void navigator.clipboard.writeText(ctx.path)
     },
   },
+  {
+    id: 'editor.aiExplainSelection',
+    label: 'AI: Explain Selection',
+    icon: 'sparks',
+    group: 'ai',
+    order: 95,
+    commandId: 'ai.explainSelection',
+    when: (ctx) => ctx.scope === 'editor',
+    run: explainSelection,
+  },
+  {
+    id: 'editor.aiFixSelection',
+    label: 'AI: Fix Selection',
+    icon: 'magic-wand',
+    group: 'ai',
+    order: 96,
+    commandId: 'ai.fixSelection',
+    when: (ctx) => ctx.scope === 'editor',
+    run: fixSelection,
+  },
+  {
+    id: 'editor.aiGenerateTests',
+    label: 'AI: Generate Tests',
+    icon: 'check',
+    group: 'ai',
+    order: 97,
+    commandId: 'ai.generateTests',
+    when: (ctx) => ctx.scope === 'editor',
+    run: generateTestsForSelection,
+  },
+  {
+    id: 'editor.previewUnsavedDiff',
+    label: 'Safety: Preview Diff',
+    icon: 'warning-circle',
+    group: 'safety',
+    order: 98,
+    when: (ctx) => ctx.scope === 'editor',
+    run: previewUnsavedDiff,
+  },
 
   // ── layout ──────────────────────────────────────────────────────────────
   {
@@ -155,9 +216,7 @@ const editorActions: ContextAction[] = [
     group: 'layout',
     order: 100,
     when: (ctx) => ctx.scope === 'editor',
-    // Split layout isn't implemented yet — shown disabled (graceful degrade).
-    enabled: () => false,
-    run: () => {},
+    run: () => splitHorizontal(),
   },
   {
     id: 'editor.close',
@@ -256,9 +315,10 @@ const tabActions: ContextAction[] = [
     group: 'layout',
     order: 70,
     when: (ctx) => ctx.scope === 'editor_tab',
-    // Split layout isn't implemented yet — shown disabled (graceful degrade).
-    enabled: () => false,
-    run: () => {},
+    run: async (ctx) => {
+      if (ctx.path) await openFileToSide(ctx.path)
+      else splitHorizontal()
+    },
   },
 ]
 

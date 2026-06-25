@@ -5,12 +5,15 @@ import { settings, setSettings, THEME_PRESETS } from './settings'
 import { terminalSessions, createSession } from './terminal-sessions'
 import {
   activateTab,
+  editorGroupsSnapshot,
   isDiffTab,
   isEditorTab,
   isPreviewTab,
   openDiff,
   openFile,
   openPreview,
+  resetEditorGroups,
+  setActiveGroup,
   tabs,
   type Tab,
 } from './tabs'
@@ -53,6 +56,7 @@ function persistedTab(tab: Tab): PersistedWorkspaceTab | null {
     path,
     type: tab.kind,
     isDirty: isEditorTab(tab) ? tab.dirty : false,
+    isPreview: !!tab.preview,
   }
 }
 
@@ -82,6 +86,7 @@ function currentWorkspaceState(root: string): PersistedWorkspaceState {
 function currentLayoutState(): PersistedLayoutState {
   const panelState = get(panels)
   const terminals = get(terminalSessions)
+  const tabState = get(tabs)
   return {
     sidebarOpen: !panelState.fileTree.collapsed,
     sidebarWidth: panelState.fileTree.size,
@@ -89,6 +94,9 @@ function currentLayoutState(): PersistedLayoutState {
     bottomPanelHeight: panelState.terminal.size,
     terminalOpen: !panelState.terminal.collapsed && terminals.sessions.length > 0,
     theme: get(settings).preset,
+    editorGroupOrientation: tabState.orientation,
+    activeEditorGroupId: tabState.activeGroupId,
+    editorGroups: editorGroupsSnapshot(),
   }
 }
 
@@ -177,11 +185,15 @@ function portFromUrl(url: string): number | null {
   }
 }
 
-async function restoreTab(tab: PersistedWorkspaceTab, root: string): Promise<void> {
+async function restoreTab(
+  tab: PersistedWorkspaceTab,
+  root: string,
+  groupId?: string,
+): Promise<void> {
   if (!tab.path) return
   if (tab.type === 'preview' && isDevServerUrl(tab.path)) {
     const port = portFromUrl(tab.path)
-    if (port) openPreview({ kind: 'dev-server', url: tab.path, port })
+    if (port) openPreview({ kind: 'dev-server', url: tab.path, port }, { groupId, preview: tab.isPreview, ignoreLock: true })
     return
   }
 
@@ -189,16 +201,51 @@ async function restoreTab(tab: PersistedWorkspaceTab, root: string): Promise<voi
   if (!exists) return
 
   if (tab.type === 'preview') {
-    openPreview({ kind: 'static-file', path: tab.path })
+    openPreview({ kind: 'static-file', path: tab.path }, { groupId, preview: tab.isPreview, ignoreLock: true })
   } else if (tab.type === 'diff') {
-    openDiff(root, tab.path, false)
+    openDiff(root, tab.path, false, groupId, true)
   } else {
-    await openFile(tab.path)
+    await openFile(tab.path, { groupId, preview: tab.isPreview, ignoreLock: true })
   }
 }
 
-async function restoreWorkspace(root: string, state: PersistedWorkspaceState | null): Promise<void> {
+async function restoreWorkspace(
+  root: string,
+  state: PersistedWorkspaceState | null,
+  layoutState: PersistedLayoutState | null,
+): Promise<void> {
   if (!state || state.workspaceRoot !== root) return
+
+  const groupLayouts = layoutState?.editorGroups?.length ? layoutState.editorGroups : null
+  if (groupLayouts) {
+    resetEditorGroups(
+      groupLayouts.map((group) => ({
+        id: group.id,
+        isLocked: group.isLocked,
+        isMaximized: group.isMaximized,
+        size: group.size ?? 1,
+      })),
+      layoutState?.editorGroupOrientation ?? 'horizontal',
+      layoutState?.activeEditorGroupId,
+    )
+
+    for (const group of groupLayouts) {
+      for (const tab of group.tabs ?? []) {
+        await restoreTab(tab, root, group.id)
+      }
+      if (group.activeTabPath) {
+        const restoredGroup = get(tabs).groups.find((candidate) => candidate.id === group.id)
+        const active = restoredGroup?.tabs.find((tab) => tabRestoreKey(tab) === group.activeTabPath)
+        if (active) activateTab(active.id, group.id)
+      }
+    }
+
+    if (layoutState?.activeEditorGroupId) {
+      setActiveGroup(layoutState.activeEditorGroupId)
+    }
+    restoreConversation(state.conversationState)
+    return
+  }
 
   for (const tab of state.openTabs ?? []) {
     await restoreTab(tab, root)
@@ -222,7 +269,7 @@ async function restoreForRoot(root: string): Promise<void> {
       loadLayoutState(root).catch(() => null),
     ])
     restoreLayout(layoutState)
-    await restoreWorkspace(root, workspaceState)
+    await restoreWorkspace(root, workspaceState, layoutState)
   } finally {
     restoring = false
   }

@@ -1,24 +1,16 @@
 <script lang="ts">
   import { git } from '../stores/git'
   import { showSidebarView } from '../stores/sidebar'
-  import BranchSwitcher from './BranchSwitcher.svelte'
   import Icon from './Icon.svelte'
-
-  // GWEN-327: branch + dirty-count indicator, hidden when not a git repo.
-  // Clicking the branch opens the branch picker (GWEN-331); clicking the dirty
-  // count opens the Source Control panel (GWEN-328).
-  let branchPickerOpen = $state(false)
-  let anchorEl = $state<HTMLButtonElement>()
 </script>
 
 {#if $git.isRepo}
   <div class="git-status">
     <button
       class="git-branch"
-      bind:this={anchorEl}
-      title="Switch branch"
+      title="Open Source Control"
       aria-label={`Branch: ${$git.branch}`}
-      onclick={() => (branchPickerOpen = !branchPickerOpen)}
+      onclick={() => showSidebarView('git')}
     >
       <Icon name="git-branch" size={12} />
       <span class="git-branch-name">{$git.branch}</span>
@@ -34,12 +26,6 @@
       </button>
     {/if}
   </div>
-
-  <BranchSwitcher
-    open={branchPickerOpen}
-    {anchorEl}
-    onClose={() => (branchPickerOpen = false)}
-  />
 {/if}
 
 <style>

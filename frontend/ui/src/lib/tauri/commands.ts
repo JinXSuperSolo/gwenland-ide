@@ -111,6 +111,16 @@ export function revealInExplorer(path: string, workspaceRoot: string): Promise<v
   return invoke<void>('reveal_in_explorer', { path, workspaceRoot })
 }
 
+/** Move a path to the workspace-local `.gwenland/trash/` recovery area. */
+export function moveToTrash(path: string, workspaceRoot: string): Promise<void> {
+  return invoke<void>('move_to_trash', { path, workspaceRoot })
+}
+
+/** Add a workspace-relative path to `.gwenland/safety/protected-paths.json`. */
+export function markProtectedPath(path: string, workspaceRoot: string): Promise<void> {
+  return invoke<void>('mark_protected_path', { path, workspaceRoot })
+}
+
 // ---------------------------------------------------------------------------
 // Terminal I/O bridge (Milestone 3, Wave 2)
 //
@@ -1467,6 +1477,7 @@ export interface PersistedWorkspaceTab {
   path: string
   type: string
   isDirty: boolean
+  isPreview?: boolean
 }
 
 export interface PersistedConversationState {
@@ -1492,6 +1503,18 @@ export interface PersistedLayoutState {
   bottomPanelHeight: number
   terminalOpen: boolean
   theme: string
+  editorGroupOrientation?: 'horizontal' | 'vertical'
+  activeEditorGroupId?: string
+  editorGroups?: PersistedEditorGroup[]
+}
+
+export interface PersistedEditorGroup {
+  id: string
+  tabs: PersistedWorkspaceTab[]
+  activeTabPath: string
+  isLocked: boolean
+  isMaximized: boolean
+  size?: number
 }
 
 export function loadWorkspaceState(
@@ -1516,6 +1539,51 @@ export function saveLayoutState(
   state: PersistedLayoutState
 ): Promise<void> {
   return invoke<void>('save_layout_state', { workspaceRoot, state })
+}
+
+// ===========================================================================
+// Local File History (M16 / GWEN-354)
+// ===========================================================================
+
+export type HistorySource = 'save' | 'manual' | 'ai'
+
+export interface HistoryEntry {
+  timestamp: string
+  size: number
+  source: HistorySource | string
+}
+
+export function historySaveEntry(
+  workspaceRoot: string,
+  filePath: string,
+  content: string,
+  source: HistorySource
+): Promise<HistoryEntry | null> {
+  return invoke<HistoryEntry | null>('history_save_entry', {
+    workspaceRoot,
+    filePath,
+    content,
+    source
+  })
+}
+
+export function historyList(
+  workspaceRoot: string,
+  filePath: string
+): Promise<HistoryEntry[]> {
+  return invoke<HistoryEntry[]>('history_list', { workspaceRoot, filePath })
+}
+
+export function historyReadEntry(
+  workspaceRoot: string,
+  filePath: string,
+  timestamp: string
+): Promise<string> {
+  return invoke<string>('history_read_entry', { workspaceRoot, filePath, timestamp })
+}
+
+export function historyClear(workspaceRoot: string, filePath: string): Promise<void> {
+  return invoke<void>('history_clear', { workspaceRoot, filePath })
 }
 
 // ===========================================================================

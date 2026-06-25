@@ -21,7 +21,6 @@ import {
   editorSelectAll,
   editorSelectAllMatches,
   editorSelectNextMatch,
-  editorSplit,
   editorToggleComment,
   editorUndo,
 } from '../editor/active-editor'
@@ -34,14 +33,30 @@ import { showSidebarView } from '../stores/sidebar'
 import {
   closeActiveTab,
   closeAllTabs,
+  closeSavedTabs,
   newUntitledFile,
   openPreview,
   saveActiveTab,
   saveActiveTabAs,
+  showOpenedEditors,
+  splitHorizontal,
+  splitVertical,
+  toggleLockActiveGroup,
+  toggleMaximizeActiveGroup,
 } from '../stores/tabs'
 import { terminalSessions, createSession, removeSession } from '../stores/terminal-sessions'
 import { openFolder, workspace } from '../stores/workspace'
 import { openPalette, openSettings } from '../stores/ui'
+import {
+  clearLocalHistory,
+  createManualHistorySnapshot,
+  openLocalHistory,
+} from '../stores/local-history'
+import {
+  explainSelection,
+  fixSelection,
+  generateTestsForSelection,
+} from '../stores/ai-actions'
 import {
   gitCheckout,
   gitCreateBranch,
@@ -280,6 +295,25 @@ const COMMANDS: Command[] = [
     handler: () => void saveActiveTabAs(),
   },
   {
+    id: 'fileHistory.createSnapshot',
+    title: 'Local History: Create Snapshot',
+    category: 'File',
+    handler: () => void createManualHistorySnapshot(),
+  },
+  {
+    id: 'fileHistory.show',
+    title: 'Local History: Show Current File',
+    category: 'File',
+    defaultKeybinding: 'Ctrl+Alt+H',
+    handler: () => void openLocalHistory(),
+  },
+  {
+    id: 'fileHistory.clearHistory',
+    title: 'Local History: Clear Current File',
+    category: 'File',
+    handler: () => void clearLocalHistory(),
+  },
+  {
     id: 'tab.close',
     title: 'Close Tab',
     category: 'File',
@@ -290,6 +324,19 @@ const COMMANDS: Command[] = [
     title: 'Close All',
     category: 'File',
     handler: closeAllTabs,
+  },
+  {
+    id: 'editor.closeAll',
+    title: 'Close All in Group',
+    category: 'View',
+    defaultKeybinding: 'Ctrl+K W',
+    handler: closeAllTabs,
+  },
+  {
+    id: 'editor.closeSaved',
+    title: 'Close Saved in Group',
+    category: 'View',
+    handler: closeSavedTabs,
   },
   {
     id: 'edit.undo',
@@ -395,8 +442,40 @@ const COMMANDS: Command[] = [
     id: 'editor.split',
     title: 'Split Editor',
     category: 'View',
+    handler: splitHorizontal,
+  },
+  {
+    id: 'editor.splitHorizontal',
+    title: 'Split Editor Horizontal',
+    category: 'View',
     defaultKeybinding: 'Ctrl+\\',
-    handler: editorSplit,
+    handler: splitHorizontal,
+  },
+  {
+    id: 'editor.splitVertical',
+    title: 'Split Editor Vertical',
+    category: 'View',
+    defaultKeybinding: 'Ctrl+K Ctrl+\\',
+    handler: splitVertical,
+  },
+  {
+    id: 'editor.lockGroup',
+    title: 'Lock Editor Group',
+    category: 'View',
+    handler: toggleLockActiveGroup,
+  },
+  {
+    id: 'editor.maximizeGroup',
+    title: 'Maximize Editor Group',
+    category: 'View',
+    defaultKeybinding: 'Ctrl+K Ctrl+M',
+    handler: toggleMaximizeActiveGroup,
+  },
+  {
+    id: 'workbench.showOpenedEditors',
+    title: 'Show Opened Editors',
+    category: 'View',
+    handler: showOpenedEditors,
   },
   {
     id: 'selection.selectAll',
@@ -569,6 +648,27 @@ const COMMANDS: Command[] = [
     handler: ensureAiOpen,
   },
   {
+    id: 'ai.explainSelection',
+    title: 'AI: Explain Selection',
+    category: 'AI',
+    defaultKeybinding: 'Ctrl+Alt+E',
+    handler: explainSelection,
+  },
+  {
+    id: 'ai.fixSelection',
+    title: 'AI: Fix Selection',
+    category: 'AI',
+    defaultKeybinding: 'Ctrl+Alt+F',
+    handler: fixSelection,
+  },
+  {
+    id: 'ai.generateTests',
+    title: 'AI: Generate Tests',
+    category: 'AI',
+    defaultKeybinding: 'Ctrl+Alt+T',
+    handler: generateTestsForSelection,
+  },
+  {
     id: 'git.checkoutBranch',
     title: 'Git: Checkout Branch',
     category: 'Git',
@@ -638,7 +738,7 @@ export function filterCommands(query: string): Command[] {
 
 export function keybindingsFor(command: Command): string[] {
   return (command.defaultKeybinding ?? '')
-    .split('/')
+    .split(/\s+\/\s+/)
     .map((keybinding) => keybinding.trim())
     .filter(Boolean)
 }
@@ -663,6 +763,10 @@ export const MENUS: { name: string; items: MenuItem[] }[] = [
       { type: 'divider' },
       { label: 'Save', commandId: 'file.save' },
       { label: 'Save As', commandId: 'file.saveAs' },
+      { type: 'divider' },
+      { label: 'Create Local History Snapshot', commandId: 'fileHistory.createSnapshot' },
+      { label: 'Show Local History', commandId: 'fileHistory.show' },
+      { label: 'Clear Local History', commandId: 'fileHistory.clearHistory' },
       { type: 'divider' },
       { label: 'Close Tab', commandId: 'tab.close' },
       { label: 'Close All', commandId: 'tab.closeAll' },
@@ -699,6 +803,13 @@ export const MENUS: { name: string; items: MenuItem[] }[] = [
       { label: 'Toggle Sidebar', commandId: 'view.toggleSidebar' },
       { label: 'Toggle Terminal', commandId: 'panel.terminal' },
       { label: 'Toggle Explorer', commandId: 'view.showExplorer' },
+      { type: 'divider' },
+      { label: 'Split Editor Horizontal', commandId: 'editor.splitHorizontal' },
+      { label: 'Split Editor Vertical', commandId: 'editor.splitVertical' },
+      { label: 'Close Saved in Group', commandId: 'editor.closeSaved' },
+      { label: 'Lock Editor Group', commandId: 'editor.lockGroup' },
+      { label: 'Maximize Editor Group', commandId: 'editor.maximizeGroup' },
+      { label: 'Show Opened Editors', commandId: 'workbench.showOpenedEditors' },
       { type: 'divider' },
       { label: 'Command Palette', commandId: 'workbench.action.showCommands' },
       { label: 'Open Web Preview', commandId: 'workbench.openWebPreview' },

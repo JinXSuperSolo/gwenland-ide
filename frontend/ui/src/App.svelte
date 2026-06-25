@@ -14,6 +14,8 @@
   import SettingsPage from './lib/components/SettingsPage.svelte'
   import AiPanel from './lib/components/AiPanel.svelte'
   import DiffActionBar from './lib/components/DiffActionBar.svelte'
+  import LocalHistoryPanel from './lib/components/LocalHistoryPanel.svelte'
+  import SimpleDiffPanel from './lib/components/SimpleDiffPanel.svelte'
   import ContextMenuRoot from './lib/context-menu/ContextMenuRoot.svelte'
   import PromptDialog from './lib/components/PromptDialog.svelte'
   import WelcomeScreen from './lib/components/WelcomeScreen.svelte'
@@ -45,6 +47,8 @@
   <SettingsPage />
   <ContextMenuRoot />
   <PromptDialog />
+  <LocalHistoryPanel />
+  <SimpleDiffPanel />
 {:else}
 <div class="app-shell">
   <MenuBar />
@@ -108,6 +112,8 @@
   <SettingsPage />
   <ContextMenuRoot />
   <PromptDialog />
+  <LocalHistoryPanel />
+  <SimpleDiffPanel />
 </div>
 {/if}
 

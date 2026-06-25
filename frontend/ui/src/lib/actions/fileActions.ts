@@ -14,16 +14,21 @@ import {
   createFile,
   createDir,
   renamePath,
-  deletePath,
   duplicatePath,
   revealInExplorer,
+  moveToTrash,
+  markProtectedPath,
+  readFile,
 } from '../tauri/commands'
-import { openFile } from '../stores/tabs'
+import { openFile, openFileToSide } from '../stores/tabs'
 import { refreshWorkspace } from '../stores/workspace'
 import { requestTreeRefresh, requestTreeCollapse } from '../stores/file-tree'
 import { createSession } from '../stores/terminal-sessions'
 import { expandPanel } from '../stores/panels'
 import { openTreeInput } from '../stores/tree-input'
+import { openLocalHistory } from '../stores/local-history'
+import { explainFile, refactorFile } from '../stores/ai-actions'
+import { openSimpleDiff } from '../stores/simple-diff'
 
 // --- Path helpers (OS-separator aware: engine paths use the native separator) ---
 
@@ -52,6 +57,8 @@ function relativeTo(root: string, p: string): string {
   }
   return basename(p)
 }
+
+let compareAnchor: string | null = null
 
 /** The directory a file-tree action targets: the folder itself, else its parent. */
 function targetDir(ctx: ContextMenuContext): string | null {
@@ -151,7 +158,7 @@ const fileTreeActions: ContextAction[] = [
   },
   {
     id: 'file.delete',
-    label: 'Delete',
+    label: 'Move to Trash',
     icon: 'bin',
     group: 'edit',
     order: 40,
@@ -160,15 +167,13 @@ const fileTreeActions: ContextAction[] = [
     enabled: inWorkspace,
     run: async (ctx) => {
       if (!ctx.path || !ctx.workspaceRoot) return
-      // Destructive — confirm first (Strict Rule 3), reusing the native confirm
-      // pattern already used for close-dirty.
-      if (!confirm(`Delete "${basename(ctx.path)}"? This cannot be undone.`)) return
+      if (!confirm(`Move "${basename(ctx.path)}" to workspace trash?`)) return
       const dir = dirname(ctx.path)
       try {
-        await deletePath(ctx.path, ctx.workspaceRoot)
+        await moveToTrash(ctx.path, ctx.workspaceRoot)
         refreshDir(dir, ctx.workspaceRoot)
       } catch (e) {
-        alert(`Could not delete: ${e}`)
+        alert(`Could not move to trash: ${e}`)
       }
     },
   },
@@ -257,12 +262,86 @@ const fileTreeActions: ContextAction[] = [
     icon: 'page',
     group: 'navigate',
     order: 100,
-    // Split editor isn't built yet; for files this opens the file (graceful
-    // degradation). Hidden for folders.
     when: (ctx) => ctx.scope === 'file_tree' && ctx.isDirectory !== true,
     enabled: (ctx) => !!ctx.path,
     run: async (ctx) => {
-      if (ctx.path) await openFile(ctx.path)
+      if (ctx.path) await openFileToSide(ctx.path)
+    },
+  },
+  {
+    id: 'file.compareWithSelected',
+    label: compareAnchor ? 'Compare With Selected' : 'Select for Compare',
+    icon: 'code',
+    group: 'navigate',
+    order: 105,
+    when: (ctx) => ctx.scope === 'file_tree' && ctx.isDirectory !== true,
+    enabled: (ctx) => !!ctx.path,
+    run: async (ctx) => {
+      if (!ctx.path) return
+      if (!compareAnchor || compareAnchor === ctx.path) {
+        compareAnchor = ctx.path
+        alert(`Selected for compare: ${basename(ctx.path)}`)
+        return
+      }
+      const left = await readFile(compareAnchor).catch(() => '')
+      const right = await readFile(ctx.path).catch(() => '')
+      openSimpleDiff({
+        title: 'Compare With Selected',
+        leftLabel: compareAnchor,
+        rightLabel: ctx.path,
+        left,
+        right,
+      })
+      compareAnchor = null
+    },
+  },
+  {
+    id: 'file.showLocalHistory',
+    label: 'Show Local History',
+    icon: 'clock-rotate-right',
+    group: 'navigate',
+    order: 106,
+    when: (ctx) => ctx.scope === 'file_tree' && ctx.isDirectory !== true,
+    enabled: (ctx) => !!ctx.path,
+    run: (ctx) => {
+      if (ctx.path) void openLocalHistory(ctx.path)
+    },
+  },
+  {
+    id: 'file.markProtected',
+    label: 'Mark as Protected',
+    icon: 'warning-triangle',
+    group: 'safety',
+    order: 107,
+    when: (ctx) => ctx.scope === 'file_tree',
+    enabled: inWorkspace,
+    run: async (ctx) => {
+      if (!ctx.path || !ctx.workspaceRoot) return
+      await markProtectedPath(ctx.path, ctx.workspaceRoot)
+    },
+  },
+  {
+    id: 'file.aiExplain',
+    label: 'AI: Explain File',
+    icon: 'sparks',
+    group: 'ai',
+    order: 108,
+    when: (ctx) => ctx.scope === 'file_tree' && ctx.isDirectory !== true,
+    enabled: (ctx) => !!ctx.path,
+    run: (ctx) => {
+      if (ctx.path) void explainFile(ctx.path)
+    },
+  },
+  {
+    id: 'file.aiRefactor',
+    label: 'AI: Refactor File',
+    icon: 'magic-wand',
+    group: 'ai',
+    order: 109,
+    when: (ctx) => ctx.scope === 'file_tree' && ctx.isDirectory !== true,
+    enabled: (ctx) => !!ctx.path,
+    run: (ctx) => {
+      if (ctx.path) void refactorFile(ctx.path)
     },
   },
 

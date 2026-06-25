@@ -23,10 +23,9 @@
   let error = $state<string | null>(null)
   let children = $state<DirEntry[]>([])
 
-  async function toggle() {
+  async function toggle(permanent = false) {
     if (!entry.is_dir) {
-      // Wave 3: open the file in a Workspace tab (dedup + binary handled in store).
-      const res = await openFile(entry.path)
+      const res = await openFile(entry.path, { preview: !permanent })
       if (!res.ok && res.error) console.error(res.error)
       return
     }
@@ -147,12 +146,17 @@
   aria-selected={false}
   aria-expanded={entry.is_dir ? expanded : undefined}
   tabindex="0"
-  onclick={toggle}
+  onclick={() => toggle(false)}
+  ondblclick={(e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!entry.is_dir) void toggle(true)
+  }}
   oncontextmenu={onContextMenu}
   onkeydown={(e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      toggle()
+      toggle(false)
     }
   }}
 >

@@ -3653,15 +3653,9 @@ fn load_workspace_state(workspace_root: String) -> Option<serde_json::Value> {
 
 /// Save UI-owned workspace restore state to `.gwenland/workspace.json`.
 #[tauri::command]
-fn save_workspace_state(
-    workspace_root: String,
-    state: serde_json::Value,
-) -> Result<(), String> {
-    gwenland_engine::workspace::save_workspace_state(
-        std::path::Path::new(&workspace_root),
-        &state,
-    )
-    .map_err(|e| e.to_string())
+fn save_workspace_state(workspace_root: String, state: serde_json::Value) -> Result<(), String> {
+    gwenland_engine::workspace::save_workspace_state(std::path::Path::new(&workspace_root), &state)
+        .map_err(|e| e.to_string())
 }
 
 /// Load UI-owned layout restore state from `.gwenland/layout.json`.
@@ -3676,6 +3670,105 @@ fn load_layout_state(workspace_root: String) -> Option<serde_json::Value> {
 fn save_layout_state(workspace_root: String, state: serde_json::Value) -> Result<(), String> {
     gwenland_engine::workspace::save_layout_state(std::path::Path::new(&workspace_root), &state)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_save_entry(
+    workspace_root: String,
+    file_path: String,
+    content: String,
+    source: String,
+) -> Result<Option<gwenland_engine::history::HistoryEntry>, String> {
+    gwenland_engine::history::save_history_entry(
+        std::path::Path::new(&workspace_root),
+        std::path::Path::new(&file_path),
+        &content,
+        &source,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_list(
+    workspace_root: String,
+    file_path: String,
+) -> Result<Vec<gwenland_engine::history::HistoryEntry>, String> {
+    gwenland_engine::history::list_history(
+        std::path::Path::new(&workspace_root),
+        std::path::Path::new(&file_path),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_read_entry(
+    workspace_root: String,
+    file_path: String,
+    timestamp: String,
+) -> Result<String, String> {
+    gwenland_engine::history::read_history_entry(
+        std::path::Path::new(&workspace_root),
+        std::path::Path::new(&file_path),
+        &timestamp,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn history_clear(workspace_root: String, file_path: String) -> Result<(), String> {
+    gwenland_engine::history::clear_history(
+        std::path::Path::new(&workspace_root),
+        std::path::Path::new(&file_path),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn move_to_trash(path: String, workspace_root: String) -> Result<(), String> {
+    gwenland_engine::recovery::move_to_trash(
+        std::path::Path::new(&path),
+        std::path::Path::new(&workspace_root),
+        "user",
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mark_protected_path(path: String, workspace_root: String) -> Result<(), String> {
+    use gwenland_engine::safety::decision::RiskLevel;
+    use gwenland_engine::safety::{ProtectedPathEntry, ProtectedPathRegistry, ProtectionLevel};
+
+    let root = std::path::Path::new(&workspace_root);
+    let target = std::path::Path::new(&path);
+    if !gwenland_engine::agentic::policy::is_within_workspace(target, root) {
+        return Err("path would escape workspace root".to_string());
+    }
+    let rel = target
+        .strip_prefix(root)
+        .map_err(|_| "path would escape workspace root".to_string())?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    let registry_path = gwenland_engine::workspace::safety_dir(root).join("protected-paths.json");
+    let mut registry = std::fs::read_to_string(&registry_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ProtectedPathRegistry>(&raw).ok())
+        .unwrap_or_default();
+    if !registry.entries.iter().any(|entry| entry.pattern == rel) {
+        registry.entries.push(ProtectedPathEntry {
+            pattern: rel,
+            protection: ProtectionLevel::Ask,
+            risk: RiskLevel::High,
+            reason: "marked protected by user".to_string(),
+        });
+    }
+    if let Some(parent) = registry_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let raw = serde_json::to_string_pretty(&registry).map_err(|e| e.to_string())?;
+    std::fs::write(registry_path, raw).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -3834,6 +3927,8 @@ fn main() {
             delete_path,
             duplicate_path,
             reveal_in_explorer,
+            move_to_trash,
+            mark_protected_path,
             terminal_create,
             terminal_write,
             terminal_resize,
@@ -3897,6 +3992,10 @@ fn main() {
             save_workspace_state,
             load_layout_state,
             save_layout_state,
+            history_save_entry,
+            history_list,
+            history_read_entry,
+            history_clear,
             safety_evaluate,
             search_should_exclude,
             permissions_load_state,

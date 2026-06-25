@@ -15,6 +15,15 @@ const KEY_FROM_CODE: Record<string, string> = {
   Quote: "'",
 }
 
+let pendingChord: string | null = null
+let pendingChordTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearPendingChord(): void {
+  pendingChord = null
+  if (pendingChordTimer) clearTimeout(pendingChordTimer)
+  pendingChordTimer = null
+}
+
 function normalizedBaseKey(e: KeyboardEvent): string {
   if (e.code.startsWith('Key')) return e.code.slice(3).toUpperCase()
   if (e.code.startsWith('Digit')) return e.code.slice(5)
@@ -25,6 +34,13 @@ function normalizedBaseKey(e: KeyboardEvent): string {
 }
 
 export function normalizeKeybinding(binding: string): string {
+  if (binding.includes(' ')) {
+    return binding
+      .split(/\s+/)
+      .map((part) => normalizeKeybinding(part))
+      .filter(Boolean)
+      .join(' ')
+  }
   const raw = binding
     .split('+')
     .map((part) => part.trim())
@@ -60,13 +76,27 @@ export function handleGlobalKeydown(e: KeyboardEvent): boolean {
   }
 
   const combo = comboFromEvent(e)
-  const command = allCommands().find((entry) =>
-    keybindingsFor(entry).some((binding) => normalizeKeybinding(binding) === combo),
+  const normalizedBindings = allCommands().flatMap((entry) =>
+    keybindingsFor(entry).map((binding) => ({ command: entry, binding: normalizeKeybinding(binding) })),
   )
-  if (!command) return false
+  const candidate = pendingChord ? `${pendingChord} ${combo}` : combo
+  const command = normalizedBindings.find((entry) => entry.binding === candidate)?.command
+  if (!command) {
+    if (!pendingChord && normalizedBindings.some((entry) => entry.binding.startsWith(`${combo} `))) {
+      e.preventDefault()
+      e.stopPropagation()
+      pendingChord = combo
+      if (pendingChordTimer) clearTimeout(pendingChordTimer)
+      pendingChordTimer = setTimeout(clearPendingChord, 1400)
+      return true
+    }
+    clearPendingChord()
+    return false
+  }
 
   e.preventDefault()
   e.stopPropagation()
+  clearPendingChord()
   void runCommand(command.id)
   return true
 }

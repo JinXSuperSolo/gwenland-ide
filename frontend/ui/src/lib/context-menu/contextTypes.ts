@@ -57,6 +57,8 @@ export interface ContextMenuContext {
   terminalId?: string
   /** Id of the editor tab the menu was opened from (editor_tab scope). */
   tabId?: string
+  /** Id of the editor group the menu was opened from. */
+  groupId?: string
 }
 
 /**

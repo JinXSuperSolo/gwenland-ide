@@ -50,6 +50,25 @@ export function activeSelection(): string | null {
   return active.state.sliceDoc(sel.from, sel.to)
 }
 
+export function activeIndentInfo(): { kind: 'Spaces' | 'Tabs'; size: number } | null {
+  if (!active) return null
+  const lines = active.state.doc.toString().split('\n')
+  let tabLines = 0
+  const spaceCounts: number[] = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    const match = line.match(/^(\s+)/)
+    if (!match) continue
+    const indent = match[1]
+    if (indent.startsWith('\t')) tabLines += 1
+    const spaces = indent.match(/^ +/)?.[0].length ?? 0
+    if (spaces > 0) spaceCounts.push(spaces)
+  }
+  if (tabLines > spaceCounts.length) return { kind: 'Tabs', size: 1 }
+  const size = spaceCounts.find((count) => count % 2 === 0 && count <= 8) ?? 2
+  return { kind: 'Spaces', size: Math.max(2, Math.min(size, 8)) }
+}
+
 export function editorUndo(): void {
   runEditorCommand(undo)
 }

@@ -6,99 +6,105 @@ import { readFile, writeFile } from '../tauri/commands'
 import { lspOpenPath, lspClosePath } from './lsp'
 import { openPrompt } from './prompt-dialog'
 import { workspace } from './workspace'
+import { scheduleHistorySnapshot } from './history-snapshots'
 
-/**
- * The center workspace area is tab-based, and tabs are no longer all editors:
- * a tab is a discriminated union on `kind` so non-editor surfaces (the M5 web
- * preview) can live alongside file editors in the same tab strip. Shared fields
- * (`id`, `name`) live on every tab; kind-specific state hangs off the variant.
- * Narrow with [`isEditorTab`] / [`isPreviewTab`] before touching variant fields.
- */
 export type TabKind = 'editor' | 'preview' | 'diff'
+export type EditorGroupOrientation = 'horizontal' | 'vertical'
 
-/**
- * Where a preview tab points (mirrors the engine's `PreviewSource`, M5):
- * a local static file loaded by path, or a running dev server by URL.
- */
 export type PreviewSource =
   | { kind: 'static-file'; path: string }
   | { kind: 'dev-server'; url: string; port: number }
 
 interface TabCommon {
   id: string
-  /** Label shown on the tab. */
   name: string
+  /** Temporary preview tab. Replaced by the next single-click preview open. */
+  preview?: boolean
 }
 
-/**
- * A file editor tab. Each owns its own CodeMirror EditorState so cursor, scroll
- * and undo history never bleed across tabs when switching.
- *
- * Dirty tracking (GWEN-240): a tab is dirty iff its live document differs from
- * `baseline` (the last-saved content) — NOT merely because an edit event fired.
- * Opening a file therefore never marks it dirty, and reverting an edit clears
- * the dot. This is the bug-fixed semantics from the legacy version.
- */
 export interface EditorTab extends TabCommon {
   kind: 'editor'
   path: string
-  /** Last-saved content. dirty := liveDoc !== baseline. */
   baseline: string
-  /** Per-tab CM6 state, snapshotted on switch and restored on activate. */
   state: EditorState
   dirty: boolean
 }
 
-/** A web-preview tab (M5). Stateless beyond the source it renders; never dirty. */
 export interface PreviewTab extends TabCommon {
   kind: 'preview'
   source: PreviewSource
 }
 
-/**
- * A read-only git diff tab (GWEN-330). Renders a unified diff for one file; has
- * no editor state and never affects git state. Closeable like any tab.
- */
 export interface DiffTab extends TabCommon {
   kind: 'diff'
-  /** Repo-relative path of the file being diffed. */
   path: string
-  /** Absolute workspace root (for re-fetching the diff). */
   root: string
-  /** Whether the file is untracked (changes the diff base). */
   untracked: boolean
 }
 
 export type Tab = EditorTab | PreviewTab | DiffTab
 
-/** Narrowing guard: true (and refines the type) for file-editor tabs. */
-export function isEditorTab(tab: Tab): tab is EditorTab {
-  return tab.kind === 'editor'
-}
-
-/** Narrowing guard: true (and refines the type) for web-preview tabs. */
-export function isPreviewTab(tab: Tab): tab is PreviewTab {
-  return tab.kind === 'preview'
-}
-
-/** Narrowing guard: true (and refines the type) for git diff tabs. */
-export function isDiffTab(tab: Tab): tab is DiffTab {
-  return tab.kind === 'diff'
+export interface EditorGroup {
+  id: string
+  tabs: Tab[]
+  activeId: string | null
+  isLocked: boolean
+  isMaximized: boolean
+  /** Relative flex size. Kept unitless so row/column layouts can share it. */
+  size: number
 }
 
 export interface TabsState {
+  /** Flattened compatibility view for older consumers. */
   tabs: Tab[]
+  /** Active tab in the active group, also for older consumers. */
   activeId: string | null
+  groups: EditorGroup[]
+  activeGroupId: string
+  orientation: EditorGroupOrientation
 }
 
-const initial: TabsState = { tabs: [], activeId: null }
+export interface OpenFileOptions {
+  groupId?: string
+  preview?: boolean
+  ignoreLock?: boolean
+}
 
-export const tabs = writable<TabsState>(initial)
+export interface OpenPreviewOptions {
+  groupId?: string
+  preview?: boolean
+  ignoreLock?: boolean
+}
 
-function genId(): string {
+export interface OpenFileResult {
+  ok: boolean
+  error?: string
+}
+
+export interface PersistedEditorGroupTab {
+  path: string
+  type: string
+  isDirty: boolean
+  isPreview?: boolean
+}
+
+export interface PersistedEditorGroup {
+  id: string
+  tabs: PersistedEditorGroupTab[]
+  activeTabPath: string
+  isLocked: boolean
+  isMaximized: boolean
+  size?: number
+}
+
+const ROOT_GROUP_ID = 'group-root'
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'])
+const BINARY_FILE = 'binary file'
+
+function genId(prefix = 'tab'): string {
   return crypto.randomUUID
-    ? crypto.randomUUID()
-    : 'tab-' + Date.now() + '-' + Math.random().toString(16).slice(2)
+    ? `${prefix}-${crypto.randomUUID()}`
+    : `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function basename(path: string): string {
@@ -118,36 +124,210 @@ function joinPath(parent: string, child: string): string {
   return parent.endsWith(s) ? parent + child : parent + s + child
 }
 
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'])
+function makeGroup(partial: Partial<EditorGroup> = {}): EditorGroup {
+  const tabs = partial.tabs ?? []
+  const activeId =
+    partial.activeId && tabs.some((tab) => tab.id === partial.activeId)
+      ? partial.activeId
+      : tabs.at(-1)?.id ?? null
+  return {
+    id: partial.id ?? genId('group'),
+    tabs,
+    activeId,
+    isLocked: partial.isLocked ?? false,
+    isMaximized: partial.isMaximized ?? false,
+    size: Number.isFinite(partial.size) && partial.size! > 0 ? partial.size! : 1,
+  }
+}
+
+function flatten(groups: EditorGroup[]): Tab[] {
+  return groups.flatMap((group) => group.tabs)
+}
+
+function normalizeGroups(groups: EditorGroup[]): EditorGroup[] {
+  const source = groups.length > 0 ? groups : [makeGroup({ id: ROOT_GROUP_ID })]
+  return source.map((group) => makeGroup(group))
+}
+
+function derive(state: Partial<TabsState>): TabsState {
+  let groups = normalizeGroups(state.groups ?? [])
+  if (groups.length === 0) groups = [makeGroup({ id: ROOT_GROUP_ID })]
+  const activeGroupId = groups.some((group) => group.id === state.activeGroupId)
+    ? state.activeGroupId!
+    : groups.find((group) => group.activeId)?.id ?? groups[0].id
+  const activeGroup = groups.find((group) => group.id === activeGroupId) ?? groups[0]
+  return {
+    groups,
+    activeGroupId,
+    orientation: state.orientation ?? 'horizontal',
+    tabs: flatten(groups),
+    activeId: activeGroup.activeId,
+  }
+}
+
+const initial = derive({
+  groups: [makeGroup({ id: ROOT_GROUP_ID })],
+  activeGroupId: ROOT_GROUP_ID,
+  orientation: 'horizontal',
+})
+
+export const tabs = writable<TabsState>(initial)
+
+function updateTabs(fn: (state: TabsState) => Partial<TabsState>): void {
+  tabs.update((state) => derive(fn(derive(state))))
+}
+
+function groupForTab(state: TabsState, tabId: string): EditorGroup | undefined {
+  return state.groups.find((group) => group.tabs.some((tab) => tab.id === tabId))
+}
+
+function activeGroup(state: TabsState): EditorGroup {
+  return state.groups.find((group) => group.id === state.activeGroupId) ?? state.groups[0]
+}
+
+function previewKey(source: PreviewSource): string {
+  return source.kind === 'static-file' ? source.path : source.url
+}
+
+function previewName(source: PreviewSource): string {
+  return source.kind === 'static-file'
+    ? `Preview: ${basename(source.path)}`
+    : `Preview: localhost:${source.port}`
+}
+
+function tabRestoreKey(tab: Tab): string {
+  if (isEditorTab(tab)) return tab.path
+  if (isPreviewTab(tab)) return tab.source.kind === 'static-file' ? tab.source.path : tab.source.url
+  if (isDiffTab(tab)) return tab.path
+  return ''
+}
+
+function createEditorTab(path: string, content: string, preview = false): EditorTab {
+  return {
+    id: genId(),
+    kind: 'editor',
+    path,
+    name: path ? basename(path) : 'Untitled',
+    baseline: content,
+    state: createEditorState(content, undefined, undefined, path),
+    dirty: false,
+    preview,
+  }
+}
+
+function cloneTab(tab: Tab): Tab {
+  if (isEditorTab(tab)) {
+    const doc = tab.id === get(tabs).activeId ? activeDoc() ?? tab.state.doc.toString() : tab.state.doc.toString()
+    return {
+      ...tab,
+      id: genId(),
+      state: createEditorState(doc, undefined, undefined, tab.path),
+      dirty: doc !== tab.baseline,
+      preview: false,
+    }
+  }
+  if (isPreviewTab(tab)) return { ...tab, id: genId(), preview: false }
+  return { ...tab, id: genId(), preview: false }
+}
+
+function ensureWritableGroupId(preferred?: string, ignoreLock = false): string {
+  const state = get(tabs)
+  const wanted =
+    (preferred && state.groups.find((group) => group.id === preferred)) ||
+    activeGroup(state)
+  if (wanted && (ignoreLock || !wanted.isLocked)) return wanted.id
+  const unlocked = state.groups.find((group) => !group.isLocked)
+  if (unlocked) return unlocked.id
+  const id = genId('group')
+  updateTabs((s) => ({
+    ...s,
+    groups: [...s.groups, makeGroup({ id })],
+    activeGroupId: id,
+  }))
+  return id
+}
+
+function mapGroup(
+  state: TabsState,
+  groupId: string,
+  mapper: (group: EditorGroup) => EditorGroup,
+): EditorGroup[] {
+  return state.groups.map((group) => (group.id === groupId ? makeGroup(mapper(group)) : group))
+}
+
+function closeLspIfLast(path: string, remaining: Tab[]): void {
+  if (!path) return
+  const stillOpen = remaining.some((tab) => isEditorTab(tab) && tab.path === path)
+  if (!stillOpen) void lspClosePath(path)
+}
+
+export function isEditorTab(tab: Tab): tab is EditorTab {
+  return tab.kind === 'editor'
+}
+
+export function isPreviewTab(tab: Tab): tab is PreviewTab {
+  return tab.kind === 'preview'
+}
+
+export function isDiffTab(tab: Tab): tab is DiffTab {
+  return tab.kind === 'diff'
+}
 
 export function isImagePath(path: string): boolean {
   const ext = path.split('.').pop()?.toLowerCase() ?? ''
   return IMAGE_EXTS.has(ext)
 }
 
-/** The engine's binary-file error message (engine/src/fs.rs). */
-const BINARY_FILE = 'binary file'
-
-export interface OpenFileResult {
-  ok: boolean
-  /** Set when ok=false; a human-readable reason (e.g. binary file). */
-  error?: string
+export function setActiveGroup(groupId: string): void {
+  updateTabs((state) => ({
+    ...state,
+    activeGroupId: state.groups.some((group) => group.id === groupId)
+      ? groupId
+      : state.activeGroupId,
+  }))
 }
 
-/**
- * Open `filePath` in a tab. If already open, just activates that tab (dedup).
- * Reads content via the existing read_file command; the loaded content becomes
- * the saved baseline (so a freshly-opened file is never dirty).
- */
-export async function openFile(filePath: string): Promise<OpenFileResult> {
+export function activateTab(id: string, groupId?: string): void {
+  updateTabs((state) => {
+    const group = groupId
+      ? state.groups.find((candidate) => candidate.id === groupId)
+      : groupForTab(state, id)
+    if (!group || !group.tabs.some((tab) => tab.id === id)) return state
+    return {
+      ...state,
+      activeGroupId: group.id,
+      groups: mapGroup(state, group.id, (g) => ({ ...g, activeId: id })),
+    }
+  })
+}
+
+export async function openFile(
+  filePath: string,
+  options: OpenFileOptions = {},
+): Promise<OpenFileResult> {
   if (isImagePath(filePath)) {
-    openPreview({ kind: 'static-file', path: filePath })
+    openPreview({ kind: 'static-file', path: filePath }, options)
     return { ok: true }
   }
 
-  const existing = get(tabs).tabs.find((t) => isEditorTab(t) && t.path === filePath)
+  const groupId = ensureWritableGroupId(options.groupId, options.ignoreLock)
+  const existing = get(tabs)
+    .groups.find((group) => group.id === groupId)
+    ?.tabs.find((tab) => isEditorTab(tab) && tab.path === filePath)
   if (existing) {
-    activateTab(existing.id)
+    updateTabs((state) => ({
+      ...state,
+      activeGroupId: groupId,
+      groups: mapGroup(state, groupId, (group) => ({
+        ...group,
+        activeId: existing.id,
+        tabs: group.tabs.map((tab) =>
+          tab.id === existing.id && isEditorTab(tab) && !options.preview
+            ? { ...tab, preview: false }
+            : tab,
+        ),
+      })),
+    }))
     return { ok: true }
   }
 
@@ -162,90 +342,108 @@ export async function openFile(filePath: string): Promise<OpenFileResult> {
     return { ok: false, error: 'Could not open file: ' + msg }
   }
 
-  const id = genId()
-  const tab: EditorTab = {
-    id,
-    kind: 'editor',
-    path: filePath,
-    name: basename(filePath),
-    baseline: content,
-    state: createEditorState(content, undefined, undefined, filePath),
-    dirty: false,
-  }
-  tabs.update((s) => ({ tabs: [...s.tabs, tab], activeId: id }))
-  // Fire-and-forget: connect the language server in the background so opening a
-  // file is never blocked by server startup (Requirement 12.6).
+  const tab = createEditorTab(filePath, content, !!options.preview)
+  updateTabs((state) => ({
+    ...state,
+    activeGroupId: groupId,
+    groups: mapGroup(state, groupId, (group) => {
+      let nextTabs = group.tabs
+      if (options.preview) {
+        const preview = group.tabs.find((candidate) => candidate.preview)
+        if (preview) {
+          if (isEditorTab(preview)) closeLspIfLast(preview.path, state.tabs.filter((t) => t.id !== preview.id))
+          nextTabs = group.tabs.map((candidate) => (candidate.id === preview.id ? { ...tab, id: preview.id } : candidate))
+          return { ...group, tabs: nextTabs, activeId: preview.id }
+        }
+      }
+      nextTabs = [...group.tabs, tab]
+      return { ...group, tabs: nextTabs, activeId: tab.id }
+    }),
+  }))
   void lspOpenPath(filePath, content)
   return { ok: true }
 }
 
-/**
- * Create a new empty untitled tab (in-memory scratch buffer). It has no disk
- * path yet; an empty baseline means it starts clean and goes dirty once typed.
- * (Saving an untitled buffer to a chosen path is a later enhancement.)
- */
 export function newUntitledFile(): void {
-  const id = genId()
-  const n = get(tabs).tabs.filter((t) => isEditorTab(t) && t.path === '').length + 1
+  const groupId = ensureWritableGroupId()
+  const state = get(tabs)
+  const n = state.tabs.filter((tab) => isEditorTab(tab) && tab.path === '').length + 1
   const tab: EditorTab = {
-    id,
-    kind: 'editor',
-    path: '',
+    ...createEditorTab('', ''),
     name: n === 1 ? 'Untitled' : `Untitled-${n}`,
-    baseline: '',
-    state: createEditorState(''),
-    dirty: false,
   }
-  tabs.update((s) => ({ tabs: [...s.tabs, tab], activeId: id }))
+  updateTabs((s) => ({
+    ...s,
+    activeGroupId: groupId,
+    groups: mapGroup(s, groupId, (group) => ({ ...group, tabs: [...group.tabs, tab], activeId: tab.id })),
+  }))
 }
 
-/** A preview source's dedup key: static files by path, dev servers by URL. */
-function previewKey(source: PreviewSource): string {
-  return source.kind === 'static-file' ? source.path : source.url
-}
-
-/** A preview tab's label from its source. */
-function previewName(source: PreviewSource): string {
-  return source.kind === 'static-file'
-    ? `Preview: ${basename(source.path)}`
-    : `Preview: localhost:${source.port}`
-}
-
-/**
- * Open (or focus, if already open) a web-preview tab for `source` (M5). Dedup is
- * by source key (file path / server URL); re-opening an existing preview updates
- * its source in place — e.g. a dev server that restarted on a new port — so the
- * pane reloads rather than spawning a duplicate tab. Returns the tab id.
- */
-export function openPreview(source: PreviewSource): string {
+export function openPreview(source: PreviewSource, options: OpenPreviewOptions = {}): string {
+  const groupId = ensureWritableGroupId(options.groupId, options.ignoreLock)
   const key = previewKey(source)
-  const existing = get(tabs).tabs.find((t) => isPreviewTab(t) && previewKey(t.source) === key)
+  const existing = get(tabs)
+    .groups.find((group) => group.id === groupId)
+    ?.tabs.find((tab) => isPreviewTab(tab) && previewKey(tab.source) === key)
   if (existing) {
-    tabs.update((s) => ({
-      ...s,
-      activeId: existing.id,
-      tabs: s.tabs.map((t) =>
-        t.id === existing.id && isPreviewTab(t) ? { ...t, source, name: previewName(source) } : t,
-      ),
+    updateTabs((state) => ({
+      ...state,
+      activeGroupId: groupId,
+      groups: mapGroup(state, groupId, (group) => ({
+        ...group,
+        activeId: existing.id,
+        tabs: group.tabs.map((tab) =>
+          tab.id === existing.id && isPreviewTab(tab)
+            ? { ...tab, source, name: previewName(source), preview: options.preview ?? tab.preview }
+            : tab,
+        ),
+      })),
     }))
     return existing.id
   }
+
   const id = genId()
-  const tab: PreviewTab = { id, kind: 'preview', name: previewName(source), source }
-  tabs.update((s) => ({ tabs: [...s.tabs, tab], activeId: id }))
+  const tab: PreviewTab = {
+    id,
+    kind: 'preview',
+    name: previewName(source),
+    source,
+    preview: !!options.preview,
+  }
+  updateTabs((state) => ({
+    ...state,
+    activeGroupId: groupId,
+    groups: mapGroup(state, groupId, (group) => {
+      if (options.preview) {
+        const preview = group.tabs.find((candidate) => candidate.preview)
+        if (preview) {
+          if (isEditorTab(preview)) closeLspIfLast(preview.path, state.tabs.filter((t) => t.id !== preview.id))
+          return {
+            ...group,
+            tabs: group.tabs.map((candidate) => (candidate.id === preview.id ? { ...tab, id: preview.id } : candidate)),
+            activeId: preview.id,
+          }
+        }
+      }
+      return { ...group, tabs: [...group.tabs, tab], activeId: id }
+    }),
+  }))
   return id
 }
 
-/**
- * Open (or focus) a read-only git diff tab for `path` (GWEN-330). Dedup is by
- * `root + path`. Title is `filename.ext (diff)`. Returns the tab id.
- */
-export function openDiff(root: string, path: string, untracked: boolean): string {
-  const existing = get(tabs).tabs.find(
-    (t) => isDiffTab(t) && t.root === root && t.path === path,
-  )
+export function openDiff(
+  root: string,
+  path: string,
+  untracked: boolean,
+  groupId?: string,
+  ignoreLock = false,
+): string {
+  const targetGroupId = ensureWritableGroupId(groupId, ignoreLock)
+  const existing = get(tabs)
+    .groups.find((group) => group.id === targetGroupId)
+    ?.tabs.find((tab) => isDiffTab(tab) && tab.root === root && tab.path === path)
   if (existing) {
-    activateTab(existing.id)
+    activateTab(existing.id, targetGroupId)
     return existing.id
   }
   const id = genId()
@@ -257,94 +455,102 @@ export function openDiff(root: string, path: string, untracked: boolean): string
     untracked,
     name: `${basename(path)} (diff)`,
   }
-  tabs.update((s) => ({ tabs: [...s.tabs, tab], activeId: id }))
+  updateTabs((state) => ({
+    ...state,
+    activeGroupId: targetGroupId,
+    groups: mapGroup(state, targetGroupId, (group) => ({ ...group, tabs: [...group.tabs, tab], activeId: id })),
+  }))
   return id
 }
 
-/** Switch the active tab. No-op if already active. */
-export function activateTab(id: string): void {
-  tabs.update((s) => (s.activeId === id ? s : { ...s, activeId: id }))
-}
-
-/**
- * Snapshot a tab's live EditorState back into the store (called by the Editor
- * component before it tears down a view, so the next activate restores exactly
- * what the user was looking at). Recomputes dirty against the baseline.
- */
 export function persistTabState(id: string, state: EditorState): void {
-  tabs.update((s) => ({
+  updateTabs((s) => ({
     ...s,
-    tabs: s.tabs.map((t) =>
-      t.id === id && isEditorTab(t)
-        ? { ...t, state, dirty: state.doc.toString() !== t.baseline }
-        : t,
+    groups: s.groups.map((group) =>
+      makeGroup({
+        ...group,
+        tabs: group.tabs.map((tab) =>
+          tab.id === id && isEditorTab(tab)
+            ? { ...tab, state, dirty: state.doc.toString() !== tab.baseline }
+            : tab,
+        ),
+      }),
     ),
   }))
 }
 
-/**
- * Recompute a tab's dirty flag from its live document (called on every edit).
- * Cheap: only writes the store when the dirty bit actually flips.
- */
 export function recomputeDirty(id: string, currentDoc: string): void {
-  tabs.update((s) => {
-    const tab = s.tabs.find((t) => t.id === id)
-    if (!tab || !isEditorTab(tab)) return s
-    const nextDirty = currentDoc !== tab.baseline
-    if (nextDirty === tab.dirty) return s
-    return {
-      ...s,
-      tabs: s.tabs.map((t) => (t.id === id && isEditorTab(t) ? { ...t, dirty: nextDirty } : t)),
-    }
-  })
+  const tab = get(tabs).tabs.find((candidate) => candidate.id === id)
+  if (!tab || !isEditorTab(tab)) return
+  const nextDirty = currentDoc !== tab.baseline
+  if (nextDirty === tab.dirty) return
+  updateTabs((s) => ({
+    ...s,
+    groups: s.groups.map((group) =>
+      makeGroup({
+        ...group,
+        tabs: group.tabs.map((candidate) =>
+          candidate.id === id && isEditorTab(candidate)
+            ? { ...candidate, dirty: nextDirty }
+            : candidate,
+        ),
+      }),
+    ),
+  }))
 }
 
-/**
- * Save a tab to disk via the atomic write_file. `currentContent` is the live
- * document captured by the caller up front (so the write targets the right
- * content even if the active tab changes during the await). On success the
- * baseline moves forward and the tab is no longer dirty.
- */
 export async function saveTab(id: string, currentContent: string): Promise<OpenFileResult> {
-  const tab = get(tabs).tabs.find((t) => t.id === id)
+  const tab = get(tabs).tabs.find((candidate) => candidate.id === id)
   if (!tab || !isEditorTab(tab)) return { ok: false, error: 'tab not found' }
+  if (!tab.path) return { ok: false, error: 'Use Save As for untitled files' }
   try {
     await writeFile(tab.path, currentContent)
   } catch (e) {
     return { ok: false, error: 'Save failed: ' + String(e) }
   }
-  // Only update if the tab still exists after the await.
-  tabs.update((s) => ({
+  updateTabs((s) => ({
     ...s,
-    tabs: s.tabs.map((t) =>
-      t.id === id && isEditorTab(t) ? { ...t, baseline: currentContent, dirty: false } : t,
+    groups: s.groups.map((group) =>
+      makeGroup({
+        ...group,
+        tabs: group.tabs.map((candidate) =>
+          candidate.id === id && isEditorTab(candidate)
+            ? { ...candidate, baseline: currentContent, dirty: false, preview: false }
+            : candidate,
+        ),
+      }),
     ),
   }))
+  scheduleHistorySnapshot(tab.path, currentContent, 'save')
   return { ok: true }
 }
 
-/**
- * Replace a (non-active) editor tab's content after a diff-review apply wrote it
- * to disk: rebuild its stored state and move the baseline forward so it's clean.
- * The active tab is updated through the live view instead (see active-editor).
- */
 export function setTabContent(id: string, text: string): void {
-  tabs.update((s) => ({
+  updateTabs((s) => ({
     ...s,
-    tabs: s.tabs.map((t) =>
-      t.id === id && isEditorTab(t)
-        ? { ...t, state: createEditorState(text, undefined, undefined, t.path), baseline: text, dirty: false }
-        : t
+    groups: s.groups.map((group) =>
+      makeGroup({
+        ...group,
+        tabs: group.tabs.map((tab) =>
+          tab.id === id && isEditorTab(tab)
+            ? {
+                ...tab,
+                state: createEditorState(text, undefined, undefined, tab.path),
+                baseline: text,
+                dirty: false,
+                preview: false,
+              }
+            : tab,
+        ),
+      }),
     ),
   }))
 }
 
-/** Save the active tab using the live editor document. No-op if no active tab. */
 export async function saveActiveTab(): Promise<void> {
   const id = get(tabs).activeId
   if (!id) return
-  // Only editor tabs are saveable; a preview tab has nothing to write.
-  const tab = get(tabs).tabs.find((t) => t.id === id)
+  const tab = get(tabs).tabs.find((candidate) => candidate.id === id)
   if (!tab || !isEditorTab(tab)) return
   const content = activeDoc()
   if (content === null) return
@@ -352,12 +558,11 @@ export async function saveActiveTab(): Promise<void> {
   if (!res.ok) console.error(res.error)
 }
 
-/** Save the active editor to a user-provided path inside the workspace. */
 export async function saveActiveTabAs(): Promise<void> {
   const s = get(tabs)
   const id = s.activeId
   if (!id) return
-  const tab = s.tabs.find((t) => t.id === id)
+  const tab = s.tabs.find((candidate) => candidate.id === id)
   if (!tab || !isEditorTab(tab)) return
   const content = activeDoc()
   if (content === null) return
@@ -377,122 +582,247 @@ export async function saveActiveTabAs(): Promise<void> {
     console.error('Save As failed:', e)
     return
   }
-  tabs.update((state) => ({
+  updateTabs((state) => ({
     ...state,
-    tabs: state.tabs.map((t) =>
-      t.id === id && isEditorTab(t)
-        ? {
-            ...t,
-            path: target,
-            name: basename(target),
-            baseline: content,
-            state: createEditorState(content, undefined, undefined, target),
-            dirty: false,
-          }
-        : t,
+    groups: state.groups.map((group) =>
+      makeGroup({
+        ...group,
+        tabs: group.tabs.map((candidate) =>
+          candidate.id === id && isEditorTab(candidate)
+            ? {
+                ...candidate,
+                path: target,
+                name: basename(target),
+                baseline: content,
+                state: createEditorState(content, undefined, undefined, target),
+                dirty: false,
+                preview: false,
+              }
+            : candidate,
+        ),
+      }),
     ),
   }))
   void lspOpenPath(target, content)
 }
 
-/**
- * Close the active tab, prompting (native confirm) when it has unsaved changes.
- * Used by Ctrl+W / the File menu's Close Editor.
- */
+function confirmCloseDirty(list: Tab[]): boolean {
+  const dirty = list.filter((tab) => isEditorTab(tab) && tab.dirty)
+  if (dirty.length === 0) return true
+  const names = dirty.map((tab) => tab.name).join(', ')
+  return confirm(`${dirty.length} unsaved file(s) will be closed without saving:\n${names}\n\nContinue?`)
+}
+
 export function closeActiveTab(): void {
   const id = get(tabs).activeId
   if (!id) return
-  const tab = get(tabs).tabs.find((t) => t.id === id)
-  if (tab && isEditorTab(tab) && tab.dirty) {
-    const ok = confirm(`"${tab.name}" has unsaved changes. Close without saving?`)
-    if (!ok) return
-  }
+  const tab = get(tabs).tabs.find((candidate) => candidate.id === id)
+  if (tab && isEditorTab(tab) && tab.dirty && !confirm(`"${tab.name}" has unsaved changes. Close without saving?`)) return
   closeTab(id)
 }
 
-/** Close every tab, prompting once if any editor tab is dirty. */
-export function closeAllTabs(): void {
-  const all = get(tabs).tabs
-  if (!confirmCloseDirty(all)) return
-  for (const tab of all) closeTab(tab.id)
+export function closeAllTabs(groupId?: string): void {
+  const state = get(tabs)
+  const group = groupId
+    ? state.groups.find((candidate) => candidate.id === groupId)
+    : activeGroup(state)
+  if (!group || !confirmCloseDirty(group.tabs)) return
+  for (const tab of [...group.tabs]) closeTab(tab.id)
 }
 
-/** Confirm before discarding a set of dirty tabs (single prompt for the batch).
- *  Returns true to proceed. Non-editor/clean tabs never block. */
-function confirmCloseDirty(list: Tab[]): boolean {
-  const dirty = list.filter((t) => isEditorTab(t) && t.dirty)
-  if (dirty.length === 0) return true
-  const names = dirty.map((t) => t.name).join(', ')
-  return confirm(
-    `${dirty.length} unsaved file(s) will be closed without saving:\n${names}\n\nContinue?`,
-  )
+export function closeSavedTabs(groupId?: string): void {
+  const state = get(tabs)
+  const group = groupId
+    ? state.groups.find((candidate) => candidate.id === groupId)
+    : activeGroup(state)
+  if (!group) return
+  for (const tab of group.tabs.filter((candidate) => !(isEditorTab(candidate) && candidate.dirty))) {
+    closeTab(tab.id)
+  }
 }
 
-/** Close a specific tab (context menu "Close"), prompting if it's dirty. */
 export function closeTabById(id: string): void {
-  const tab = get(tabs).tabs.find((t) => t.id === id)
+  const tab = get(tabs).tabs.find((candidate) => candidate.id === id)
   if (!tab) return
-  if (isEditorTab(tab) && tab.dirty) {
-    if (!confirm(`"${tab.name}" has unsaved changes. Close without saving?`)) return
-  }
+  if (isEditorTab(tab) && tab.dirty && !confirm(`"${tab.name}" has unsaved changes. Close without saving?`)) return
   closeTab(id)
 }
 
-/** Close every tab except `keepId` (context menu "Close Others"). */
 export function closeOtherTabs(keepId: string): void {
-  const others = get(tabs).tabs.filter((t) => t.id !== keepId)
+  const state = get(tabs)
+  const group = groupForTab(state, keepId)
+  if (!group) return
+  const others = group.tabs.filter((tab) => tab.id !== keepId)
   if (!confirmCloseDirty(others)) return
-  for (const t of others) closeTab(t.id)
+  for (const tab of others) closeTab(tab.id)
 }
 
-/** Close all tabs to the right of `fromId` (context menu "Close to Right"). */
 export function closeTabsToRight(fromId: string): void {
-  const s = get(tabs)
-  const idx = s.tabs.findIndex((t) => t.id === fromId)
+  const state = get(tabs)
+  const group = groupForTab(state, fromId)
+  if (!group) return
+  const idx = group.tabs.findIndex((tab) => tab.id === fromId)
   if (idx === -1) return
-  const toClose = s.tabs.slice(idx + 1)
+  const toClose = group.tabs.slice(idx + 1)
   if (!confirmCloseDirty(toClose)) return
-  for (const t of toClose) closeTab(t.id)
+  for (const tab of toClose) closeTab(tab.id)
 }
 
-/** Close all non-dirty tabs (context menu "Close Saved"). Preview tabs count
- *  as saved (never dirty). */
-export function closeSavedTabs(): void {
-  const saved = get(tabs).tabs.filter((t) => !(isEditorTab(t) && t.dirty))
-  for (const t of saved) closeTab(t.id)
-}
-
-/** Cycle the active tab by `dir` (+1 next, -1 prev), wrapping around. */
 export function cycleTab(dir: number): void {
-  const s = get(tabs)
-  if (s.tabs.length < 2) return
-  const i = s.tabs.findIndex((t) => t.id === s.activeId)
+  const group = activeGroup(get(tabs))
+  if (group.tabs.length < 2) return
+  const i = group.tabs.findIndex((tab) => tab.id === group.activeId)
   if (i === -1) return
-  const next = (i + dir + s.tabs.length) % s.tabs.length
-  activateTab(s.tabs[next].id)
+  const next = (i + dir + group.tabs.length) % group.tabs.length
+  activateTab(group.tabs[next].id, group.id)
 }
 
-/**
- * Close a tab. When closing the active tab, activates the next tab (or the
- * previous if it was last). Returns the now-active id (or null if none left).
- * Dirty confirmation is the caller's responsibility.
- */
 export function closeTab(id: string): void {
-  // Send didClose + clear LSP state for an editor tab being closed
-  // (Requirement 9.9/10.10). Done before the store update so the path is known.
-  const closing = get(tabs).tabs.find((t) => t.id === id)
-  if (closing && isEditorTab(closing) && closing.path) {
-    void lspClosePath(closing.path)
-  }
-  tabs.update((s) => {
-    const idx = s.tabs.findIndex((t) => t.id === id)
-    if (idx === -1) return s
-    const remaining = s.tabs.filter((t) => t.id !== id)
-    let activeId = s.activeId
-    if (s.activeId === id) {
+  const state = get(tabs)
+  const group = groupForTab(state, id)
+  const closing = state.tabs.find((tab) => tab.id === id)
+  if (!group || !closing) return
+  const remainingAll = state.tabs.filter((tab) => tab.id !== id)
+  if (isEditorTab(closing)) closeLspIfLast(closing.path, remainingAll)
+  updateTabs((s) => ({
+    ...s,
+    groups: s.groups.map((candidate) => {
+      if (candidate.id !== group.id) return candidate
+      const idx = candidate.tabs.findIndex((tab) => tab.id === id)
+      const remaining = candidate.tabs.filter((tab) => tab.id !== id)
       const next = remaining[idx] ?? remaining[idx - 1] ?? null
-      activeId = next ? next.id : null
-    }
-    return { tabs: remaining, activeId }
+      return makeGroup({
+        ...candidate,
+        tabs: remaining,
+        activeId: candidate.activeId === id ? next?.id ?? null : candidate.activeId,
+      })
+    }),
+  }))
+}
+
+export function splitEditorGroup(orientation: EditorGroupOrientation = 'horizontal'): string {
+  const state = get(tabs)
+  const current = activeGroup(state)
+  const active = current.tabs.find((tab) => tab.id === current.activeId)
+  const clone = active ? cloneTab(active) : null
+  const newGroup = makeGroup({
+    tabs: clone ? [clone] : [],
+    activeId: clone?.id ?? null,
   })
+  const idx = state.groups.findIndex((group) => group.id === current.id)
+  const groups = [...state.groups]
+  groups.splice(idx + 1, 0, newGroup)
+  updateTabs((s) => ({
+    ...s,
+    orientation,
+    activeGroupId: newGroup.id,
+    groups,
+  }))
+  if (clone && isEditorTab(clone) && clone.path) void lspOpenPath(clone.path, clone.state.doc.toString())
+  return newGroup.id
+}
+
+export function createEditorGroup(orientation: EditorGroupOrientation = 'horizontal'): string {
+  const state = get(tabs)
+  const current = activeGroup(state)
+  const newGroup = makeGroup()
+  const idx = state.groups.findIndex((group) => group.id === current.id)
+  const groups = [...state.groups]
+  groups.splice(idx + 1, 0, newGroup)
+  updateTabs((s) => ({
+    ...s,
+    orientation,
+    activeGroupId: newGroup.id,
+    groups,
+  }))
+  return newGroup.id
+}
+
+export function splitHorizontal(): void {
+  splitEditorGroup('horizontal')
+}
+
+export function splitVertical(): void {
+  splitEditorGroup('vertical')
+}
+
+export async function openFileToSide(path: string): Promise<void> {
+  const groupId = createEditorGroup('horizontal')
+  await openFile(path, { groupId, preview: false })
+}
+
+export function toggleLockActiveGroup(): void {
+  const id = get(tabs).activeGroupId
+  updateTabs((state) => ({
+    ...state,
+    groups: mapGroup(state, id, (group) => ({ ...group, isLocked: !group.isLocked })),
+  }))
+}
+
+export function toggleMaximizeActiveGroup(): void {
+  const id = get(tabs).activeGroupId
+  const anyMaximized = get(tabs).groups.some((group) => group.isMaximized)
+  updateTabs((state) => ({
+    ...state,
+    groups: state.groups.map((group) =>
+      makeGroup({ ...group, isMaximized: anyMaximized ? false : group.id === id }),
+    ),
+  }))
+}
+
+export function setGroupSizes(sizes: Record<string, number>): void {
+  updateTabs((state) => ({
+    ...state,
+    groups: state.groups.map((group) =>
+      makeGroup({ ...group, size: Math.max(0.2, sizes[group.id] ?? group.size) }),
+    ),
+  }))
+}
+
+export function showOpenedEditors(): void {
+  const lines = get(tabs).groups.flatMap((group, index) =>
+    group.tabs.map((tab) => {
+      const suffix = tab.id === group.activeId ? ' (active)' : ''
+      return `Group ${index + 1}: ${tab.name}${suffix}`
+    }),
+  )
+  alert(lines.length ? lines.join('\n') : 'No open editors.')
+}
+
+export function editorGroupsSnapshot(): PersistedEditorGroup[] {
+  return get(tabs).groups.map((group) => {
+    const active = group.tabs.find((tab) => tab.id === group.activeId)
+    return {
+      id: group.id,
+      activeTabPath: active ? tabRestoreKey(active) : '',
+      isLocked: group.isLocked,
+      isMaximized: group.isMaximized,
+      size: group.size,
+      tabs: group.tabs
+        .map((tab) => ({
+          path: tabRestoreKey(tab),
+          type: tab.kind,
+          isDirty: isEditorTab(tab) ? tab.dirty : false,
+          isPreview: !!tab.preview,
+        }))
+        .filter((tab) => !!tab.path),
+    }
+  })
+}
+
+export function resetEditorGroups(
+  groups: Pick<EditorGroup, 'id' | 'isLocked' | 'isMaximized' | 'size'>[] = [],
+  orientation: EditorGroupOrientation = 'horizontal',
+  activeGroupId?: string,
+): void {
+  const nextGroups = groups.length
+    ? groups.map((group) => makeGroup({ ...group, tabs: [], activeId: null }))
+    : [makeGroup({ id: ROOT_GROUP_ID })]
+  updateTabs(() => ({
+    groups: nextGroups,
+    activeGroupId: activeGroupId && nextGroups.some((group) => group.id === activeGroupId)
+      ? activeGroupId
+      : nextGroups[0].id,
+    orientation,
+  }))
 }
