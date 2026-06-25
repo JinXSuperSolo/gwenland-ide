@@ -65,7 +65,7 @@ impl std::fmt::Display for Permission {
 }
 
 impl Permission {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "read_workspace" => Self::ReadWorkspace,
             "write_file" => Self::WriteFile,
@@ -371,7 +371,7 @@ mod tests {
         );
         // Via string parsing.
         assert_eq!(
-            default_for_permission(&Permission::from_str("hack_the_planet")),
+            default_for_permission(&Permission::parse("hack_the_planet")),
             PermissionDefault::Blocked
         );
     }

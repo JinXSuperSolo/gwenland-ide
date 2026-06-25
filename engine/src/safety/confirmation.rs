@@ -71,10 +71,10 @@ pub fn evaluate(
 
         // ---- File delete (always ask) ------------------------------------
         SafetyActionKind::FileDelete { path } => {
-            if let Some((_entry, is_secret)) = registry.classify(path) {
-                if is_secret {
-                    return secret_block(id, path);
-                }
+            if let Some((_entry, is_secret)) = registry.classify(path)
+                && is_secret
+            {
+                return secret_block(id, path);
             }
             match strictness {
                 SafetyStrictness::Paranoid => SafetyDecision::block(
@@ -94,10 +94,10 @@ pub fn evaluate(
         // ---- File rename / copy ------------------------------------------
         SafetyActionKind::FileRename { old_path, new_path } => {
             for p in [old_path.as_str(), new_path.as_str()] {
-                if let Some((_e, is_secret)) = registry.classify(p) {
-                    if is_secret {
-                        return secret_block(id, p);
-                    }
+                if let Some((_e, is_secret)) = registry.classify(p)
+                    && is_secret
+                {
+                    return secret_block(id, p);
                 }
             }
             maybe_ask(
@@ -111,10 +111,10 @@ pub fn evaluate(
 
         SafetyActionKind::FileCopy { src, dest } => {
             for p in [src.as_str(), dest.as_str()] {
-                if let Some((_e, is_secret)) = registry.classify(p) {
-                    if is_secret {
-                        return secret_block(id, p);
-                    }
+                if let Some((_e, is_secret)) = registry.classify(p)
+                    && is_secret
+                {
+                    return secret_block(id, p);
                 }
             }
             maybe_ask(

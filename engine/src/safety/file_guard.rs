@@ -66,15 +66,15 @@ pub fn preflight_file_mutation(
         AuditCategory::Safety,
         AuditKind::SafetyDecision,
     );
-    if let Err(_audit_err) = audit_result {
-        if crate::audit::should_block_on_audit_failure(decision.risk) {
-            // Audit failed for a destructive/secret action → block.
-            return PreflightOutcome::Blocked(crate::safety::decision::SafetyDecision::block(
-                &action.id,
-                decision.risk,
-                "action blocked because the required audit log write failed",
-            ));
-        }
+    if let Err(_audit_err) = audit_result
+        && crate::audit::should_block_on_audit_failure(decision.risk)
+    {
+        // Audit failed for a destructive/secret action → block.
+        return PreflightOutcome::Blocked(crate::safety::decision::SafetyDecision::block(
+            &action.id,
+            decision.risk,
+            "action blocked because the required audit log write failed",
+        ));
         // Non-fatal: read-only/low-risk can continue without audit.
     }
 

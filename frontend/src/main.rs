@@ -879,7 +879,7 @@ async fn extract_keywords(
         }
         if !seen
             .iter()
-            .any(|s: &String| s.to_ascii_lowercase() == kw.to_ascii_lowercase())
+            .any(|s: &String| s.eq_ignore_ascii_case(&kw))
         {
             seen.push(kw);
         }

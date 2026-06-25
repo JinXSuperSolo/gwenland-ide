@@ -135,7 +135,7 @@ pub fn project_name_from_root(workspace_root: &Path) -> String {
 /// - If the result is empty, return `fallback`.
 pub fn sanitize_segment(input: &str, fallback: &str) -> String {
     // Reject obvious traversal attempts early.
-    let input = input.replace("..", "").replace('/', "-").replace('\\', "-");
+    let input = input.replace("..", "").replace(['/', '\\'], "-");
     let lower = input.to_lowercase();
 
     let mut out = String::with_capacity(lower.len());
@@ -202,7 +202,7 @@ pub fn sanitize_segment(input: &str, fallback: &str) -> String {
 /// Ensure a note filename ends in `.md` and is safe.
 pub fn sanitize_note_filename(raw: &str) -> String {
     // Strip any directory component.
-    let base = raw.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(raw);
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
     let stem = base.trim_end_matches(".md");
     let clean = sanitize_segment(stem, "memory-note");
     format!("{clean}.md")
@@ -329,6 +329,7 @@ pub fn search_memory(
 /// Walk only `.md` files inside the memory directory. Stops if more than
 /// `MAX_MEMORY_WALK` files have been scanned or `visit` returns false.
 /// `visit(workspace_relative_path, absolute_path) -> should_continue`
+#[allow(clippy::only_used_in_recursion)]
 fn walk_memory_dir(
     mem_root: &Path,
     dir: &Path,

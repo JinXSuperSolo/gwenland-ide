@@ -158,6 +158,7 @@ impl AuditEvent {
 
     /// Build a simple audit event (for rollback, agent, terminal events that
     /// don't have a `SafetyDecision`).
+    #[allow(clippy::too_many_arguments)]
     pub fn simple(
         id: impl Into<String>,
         workspace_root: impl Into<String>,

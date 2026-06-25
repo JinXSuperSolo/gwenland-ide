@@ -147,7 +147,7 @@ pub enum SafetyStrictness {
 /// Merged over global settings at runtime; absent fields inherit global values.
 ///
 /// **No API keys, tokens, passwords, or credentials may appear here.**
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct WorkspaceSettings {
     /// Theme override for this workspace ("dark" | "light" | "system").
     #[serde(default)]
@@ -182,24 +182,6 @@ pub struct WorkspaceSettings {
     /// Safety strictness for this workspace.
     #[serde(default)]
     pub safety_strictness: Option<SafetyStrictness>,
-}
-
-impl Default for WorkspaceSettings {
-    fn default() -> Self {
-        Self {
-            theme: None,
-            accent_color: None,
-            editor_font: None,
-            terminal_font: None,
-            layout_state: None,
-            sidebar_open: None,
-            panel_open: None,
-            keybindings: None,
-            formatter: None,
-            autosave: None,
-            safety_strictness: None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
