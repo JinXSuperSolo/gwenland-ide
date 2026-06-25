@@ -204,11 +204,32 @@ export function finaliseStream(streamId: string): void {
 export function setStreamError(streamId: string, error: AiError): void {
   aiChat.update((s) => {
     if (s.activeStreamId !== streamId) return s
+
+    // On cancel: if the streaming assistant message is still empty (no content
+    // was received), roll back both the blank assistant message and its preceding
+    // user message so the conversation list stays clean.
+    if (error.kind === 'cancelled') {
+      const streamingIdx = s.messages.findLastIndex((m) => m.streaming)
+      if (streamingIdx !== -1 && !s.messages[streamingIdx].content.trim()) {
+        const msgs = s.messages.filter((_, i) => {
+          // Drop the blank streaming assistant and the user turn just before it.
+          if (i === streamingIdx) return false
+          if (i === streamingIdx - 1 && s.messages[i].role === 'user') return false
+          return true
+        })
+        return { ...s, messages: msgs, activeStreamId: null, lastError: s.lastError }
+      }
+      // Has partial content — keep it, just stop streaming.
+      const msgs = s.messages.map((m) =>
+        m.streaming ? { ...m, streaming: false, thinking: closeThinking(m.thinking) } : m
+      )
+      return { ...s, messages: msgs, activeStreamId: null, lastError: s.lastError }
+    }
+
     const msgs = s.messages.map((m) =>
       m.streaming ? { ...m, streaming: false, thinking: closeThinking(m.thinking) } : m
     )
-    const lastError = error.kind === 'cancelled' ? s.lastError : error
-    return { ...s, messages: msgs, activeStreamId: null, lastError }
+    return { ...s, messages: msgs, activeStreamId: null, lastError: error }
   })
 }
 
@@ -299,6 +320,29 @@ export function snapshotAgentTurn(runId: string, snapshot: AgentRunSnapshot): vo
         : m
     ),
   }))
+}
+
+/**
+ * Roll back a cancelled/empty agent turn and its preceding user turn.
+ * Only removes the pair when the agent produced no steps and no final output —
+ * i.e. the run was cancelled before producing anything worth keeping.
+ */
+export function rollbackEmptyAgentTurn(runId: string): void {
+  aiChat.update((s) => {
+    const agentIdx = s.messages.findLastIndex(
+      (m) => m.agent?.runId === runId && m.agent.snapshot === null
+    )
+    if (agentIdx === -1) return s
+    // Only roll back if there were no tool steps or final answer.
+    const msg = s.messages[agentIdx]
+    if (msg.agent?.snapshot?.toolLog?.length || msg.agent?.snapshot?.final) return s
+
+    const idsToRemove = new Set([msg.id])
+    if (agentIdx > 0 && s.messages[agentIdx - 1].role === 'user') {
+      idsToRemove.add(s.messages[agentIdx - 1].id)
+    }
+    return { ...s, messages: s.messages.filter((m) => !idsToRemove.has(m.id)) }
+  })
 }
 
 export function setPendingTerminalError(error: TerminalError | null): void {

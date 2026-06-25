@@ -86,9 +86,13 @@ impl TerminalManager {
 /// `stream_id`, so `ai_cancel` can abort the matching one. The map is behind an
 /// `Arc` so the spawned stream task can remove its own entry on completion.
 /// M4 supports one active stream per window, but the map generalizes cleanly.
+/// M13 adds `search_resolvers`: when a stream detects a search trigger it parks
+/// a oneshot `Sender<String>` here keyed by `stream_id`; `ai_search_result`
+/// looks it up and delivers the search text to unblock the continuation.
 #[derive(Default, Clone)]
 struct AiManager {
     active_streams: Arc<Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>>,
+    search_resolvers: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
 }
 
 // --- AI streaming event payloads -------------------------------------------
@@ -113,6 +117,14 @@ struct AiDoneEvent {
 struct AiErrorEvent {
     stream_id: String,
     error: AiError,
+}
+
+/// M13 — `ai://search_request` — emitted when the assistant writes the exact
+/// search trigger phrase. The UI calls `ai_search_result` to resume the stream.
+#[derive(Clone, Serialize)]
+struct AiSearchRequestEvent {
+    stream_id: String,
+    query: String,
 }
 
 fn emit_ai_error(app: &AppHandle, stream_id: &str, error: AiError) {
@@ -511,23 +523,38 @@ fn conversation_set_training_opt_in(conversation_id: String, opt_in: bool) -> Re
 /// Drive one provider stream to completion, emitting `ai://chunk` per token and
 /// exactly one terminal `ai://done`/`ai://error`. On clean completion the
 /// finished turn is appended to the conversation JSONL (cancelled/failed streams
-/// are not persisted).
+/// are not persisted). After JSONL persistence, triggers M13 memory write-back
+/// best-effort (silent on failure).
+///
+/// M13: detects the first `Let me search <topic> for more detail...` trigger per
+/// response, pauses the stream, emits `ai://search_request`, awaits the UI's
+/// `ai_search_result` call, then continues with a second provider request.
+#[allow(clippy::too_many_arguments)]
 async fn run_stream(
     app: AppHandle,
+    ai_manager: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
     adapter: Box<dyn AiProvider>,
     request: MessageRequest,
     expanded_user_message: String,
     provider_id: String,
     model_id: String,
     conversation_id: String,
+    project_path: String,
+    conversation_name: String,
 ) {
     let stream_id = request.stream_id.clone();
+    // Clone the prior messages so we can rebuild a continuation request if needed.
+    let prior_messages = request.messages.clone();
+    let system_prompt = request.system.clone();
+    let model = request.model.clone();
+
     let mut stream = match adapter.send_message(request).await {
         Ok(s) => s,
         Err(e) => return emit_ai_error(&app, &stream_id, e),
     };
 
     let mut assistant = String::new();
+
     loop {
         match stream.next_chunk().await {
             Ok(Some(chunk)) => {
@@ -536,31 +563,215 @@ async fn run_stream(
                     "ai://chunk",
                     AiChunkEvent {
                         stream_id: stream_id.clone(),
-                        text: chunk.text,
+                        text: chunk.text.clone(),
                     },
                 );
+
+                // M13: detect the first search trigger per response.
+                // We break out of the outer loop after the continuation so the
+                // guard `detect_search_trigger` is only reached once.
+                if let Some(query) = detect_search_trigger(&assistant) {
+                        drop(stream); // stop reading the current stream
+
+                        // Park a oneshot resolver so `ai_search_result` can wake us.
+                        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+                        if let Ok(mut resolvers) = ai_manager.lock() {
+                            resolvers.insert(stream_id.clone(), tx);
+                        }
+
+                        // Tell the UI to fetch the search result.
+                        let _ = app.emit(
+                            "ai://search_request",
+                            AiSearchRequestEvent {
+                                stream_id: stream_id.clone(),
+                                query: query.clone(),
+                            },
+                        );
+
+                        // Wait for result (or timeout / cancellation).
+                        let search_text = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            rx,
+                        )
+                        .await
+                        .unwrap_or_else(|_| Ok(String::new()))
+                        .unwrap_or_default();
+
+                        // Clean up resolver (may already be gone if cancelled).
+                        let _ = ai_manager.lock().map(|mut r| r.remove(&stream_id));
+
+                        let search_block = if search_text.trim().is_empty() {
+                            format!("<search query=\"{query}\">\n[unavailable]\n</search>")
+                        } else {
+                            let capped = truncate_chars(&search_text, 2000);
+                            format!("<search query=\"{query}\">\n{capped}\n</search>")
+                        };
+
+                        // Build continuation: original messages + assistant partial + search observation.
+                        let settings = gwenland_engine::settings::load_settings()
+                            .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()));
+                        let adapter2 = settings.and_then(|s| {
+                            gwenland_engine::ai::registry::resolve_provider(&provider_id, &s.ai)
+                                .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()))
+                        });
+                        let adapter2 = match adapter2 {
+                            Ok(a) => a,
+                            Err(e) => return emit_ai_error(&app, &stream_id, e),
+                        };
+
+                        let mut cont_messages = prior_messages.clone();
+                        cont_messages.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: assistant.clone(),
+                        });
+                        cont_messages.push(ChatMessage::user(search_block));
+
+                        let cont_request = MessageRequest {
+                            stream_id: stream_id.clone(),
+                            messages: cont_messages,
+                            system: system_prompt.clone(),
+                            attachments: Vec::new(),
+                            images: Vec::new(),
+                            model: model.clone(),
+                            max_tokens: None,
+                        };
+
+                        let mut cont_stream = match adapter2.send_message(cont_request).await {
+                            Ok(s) => s,
+                            Err(e) => return emit_ai_error(&app, &stream_id, e),
+                        };
+
+                        // Continue emitting chunks on the same stream_id.
+                        loop {
+                            match cont_stream.next_chunk().await {
+                                Ok(Some(chunk)) => {
+                                    assistant.push_str(&chunk.text);
+                                    let _ = app.emit(
+                                        "ai://chunk",
+                                        AiChunkEvent {
+                                            stream_id: stream_id.clone(),
+                                            text: chunk.text,
+                                        },
+                                    );
+                                }
+                                Ok(None) => break,
+                                Err(e) => return emit_ai_error(&app, &stream_id, e),
+                            }
+                        }
+
+                        // Fall through to persist + done below.
+                        break;
+                }
             }
-            Ok(None) => {
-                // Persist the completed turn (best-effort; a storage failure must
-                // not turn a successful generation into a user-visible error).
-                let _ = gwenland_engine::ai::conversation::record_turn(
-                    &conversation_id,
-                    &expanded_user_message,
-                    &assistant,
-                    &provider_id,
-                    &model_id,
-                );
-                let _ = app.emit(
-                    "ai://done",
-                    AiDoneEvent {
-                        stream_id: stream_id.clone(),
-                    },
-                );
-                return;
-            }
+            Ok(None) => break,
             Err(e) => return emit_ai_error(&app, &stream_id, e),
         }
     }
+
+    // Persist the completed turn once (whether or not search continuation ran).
+    let _ = gwenland_engine::ai::conversation::record_turn(
+        &conversation_id,
+        &expanded_user_message,
+        &assistant,
+        &provider_id,
+        &model_id,
+    );
+    let _ = app.emit(
+        "ai://done",
+        AiDoneEvent {
+            stream_id: stream_id.clone(),
+        },
+    );
+    // M13: memory write-back — best-effort, silent on failure.
+    run_memory_writeback(
+        &expanded_user_message,
+        &assistant,
+        &provider_id,
+        &model_id,
+        &project_path,
+        &conversation_name,
+    )
+    .await;
+}
+
+/// Detect the M13 search trigger phrase: `Let me search <topic> for more detail...`
+/// Returns the extracted topic (trimmed) or `None`.
+fn detect_search_trigger(text: &str) -> Option<String> {
+    let marker = "Let me search ";
+    let suffix = " for more detail...";
+    // Find the first occurrence in the buffered text.
+    let start = text.find(marker)?;
+    let after_marker = &text[start + marker.len()..];
+    let end = after_marker.find(suffix)?;
+    let topic = after_marker[..end].trim();
+    if topic.is_empty() || topic.len() > 200 {
+        return None;
+    }
+    Some(topic.to_string())
+}
+
+/// After a successful response, call the write-back mini LLM to produce a short
+/// memory note, then write it to `.gwenland/agent/memory/`. Any failure is
+/// silent debug-only and never blocks the caller.
+async fn run_memory_writeback(
+    user_message: &str,
+    assistant_response: &str,
+    provider_id: &str,
+    model_id: &str,
+    project_path: &str,
+    conversation_name: &str,
+) {
+    if assistant_response.trim().is_empty() {
+        return;
+    }
+
+    const WRITEBACK_SYSTEM: &str = "You just completed a coding task. Write a short memory note \
+        (max 10-15 lines). Return ONLY JSON: { \"filename\": \"<kebab-case>.md\", \"content\": \"...\" }";
+
+    // Truncate inputs to approximately 500 tokens (2000 chars).
+    let user_truncated = truncate_chars(user_message, 1000);
+    let assistant_truncated = truncate_chars(assistant_response, 1500);
+    let prompt = format!("User:\n{user_truncated}\n\nAssistant:\n{assistant_truncated}");
+
+    let raw = match complete_once(
+        Some(WRITEBACK_SYSTEM.to_string()),
+        prompt,
+        provider_id,
+        model_id,
+        Some(150),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return, // silent failure
+    };
+
+    let note = match gwenland_engine::agentic::parse_memory_note(&raw) {
+        Ok(n) => n,
+        Err(_) => return,
+    };
+
+    let workspace = std::path::Path::new(project_path);
+    let project_name = gwenland_engine::agentic::project_name_from_root(workspace);
+    let conv_name = gwenland_engine::agentic::sanitize_segment(conversation_name, "conversation");
+    let target = gwenland_engine::agentic::MemoryWriteTarget {
+        project_name,
+        conversation_name: conv_name,
+        filename: note.filename.clone(),
+    };
+
+    let _ = gwenland_engine::agentic::write_memory_note(workspace, &target, &note);
+}
+
+fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    if s.len() <= max_chars {
+        return s;
+    }
+    let mut end = max_chars;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// GwenLand's AI system prompt (Requirement 10.1-10.3, plus always-on thinking).
@@ -586,7 +797,10 @@ Guidelines:
 - Prefer unified diffs for edits and refactors so the user can review them hunk by hunk.
 - You never apply changes yourself; the user decides which hunks to accept.
 - Use real project-relative file paths in the diff headers.
-- For questions that are not code edits, still reason in <think> first, then answer normally without a diff.";
+- For questions that are not code edits, still reason in <think> first, then answer normally without a diff.
+- If you need current or external information to answer well, write exactly this on its own line:
+  Let me search <topic> for more detail...
+  (keep <topic> short — 2-5 words, no secrets, no file contents). Then wait; search results will be injected before you continue.";
 
 /// Compose the effective system prompt. A per-workspace persona/system prompt
 /// (GWEN-334) is layered ON TOP of `GWENLAND_SYSTEM_PROMPT` — the persona sets
@@ -600,11 +814,118 @@ fn compose_system_prompt(prefix: Option<&str>) -> String {
     }
 }
 
+/// Bounded, non-streaming, non-persisted completion for internal side-prompts
+/// (keyword extraction, memory write-back). Never records JSONL, never triggers
+/// memory retrieval or write-back itself, and never surfaces a visible error to
+/// the user. Returns the trimmed assistant text, or `Err` on provider failure.
+async fn complete_once(
+    system: Option<String>,
+    prompt: String,
+    provider_id: &str,
+    model_id: &str,
+    max_tokens: Option<u32>,
+) -> Result<String, gwenland_engine::ai::AiError> {
+    let settings = gwenland_engine::settings::load_settings()
+        .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()))?;
+    let adapter =
+        gwenland_engine::ai::registry::resolve_provider(provider_id, &settings.ai)
+            .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()))?;
+
+    let request = MessageRequest {
+        stream_id: format!("mini-{}", gwenland_engine::agentic::new_id()),
+        messages: vec![ChatMessage::user(prompt)],
+        system,
+        attachments: Vec::new(),
+        images: Vec::new(),
+        model: model_id.to_string(),
+        max_tokens,
+    };
+
+    let mut stream = adapter.send_message(request).await?;
+    let mut text = String::new();
+    while let Some(chunk) = stream.next_chunk().await? {
+        text.push_str(&chunk.text);
+    }
+    Ok(text.trim().to_string())
+}
+
+/// Extract 3-7 search keywords from `user_prompt` using a bounded mini-call.
+/// Returns `None` on any failure so the caller can skip memory gracefully.
+async fn extract_keywords(
+    user_prompt: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<Vec<String>> {
+    const SYSTEM: &str =
+        "Extract 3-7 search keywords from this user message. Return ONLY a JSON array of strings.";
+
+    let raw = complete_once(
+        Some(SYSTEM.to_string()),
+        user_prompt.to_string(),
+        provider_id,
+        model_id,
+        Some(80),
+    )
+    .await
+    .ok()?;
+
+    let keywords = gwenland_engine::agentic::parse_keyword_array(&raw);
+    if keywords.is_empty() {
+        return None;
+    }
+
+    // Normalize: trim, deduplicate case-insensitively, cap at 7.
+    let mut seen: Vec<String> = Vec::new();
+    for kw in keywords {
+        let kw = kw.trim().to_string();
+        if kw.is_empty() {
+            continue;
+        }
+        if !seen.iter().any(|s: &String| s.to_ascii_lowercase() == kw.to_ascii_lowercase()) {
+            seen.push(kw);
+        }
+        if seen.len() >= 7 {
+            break;
+        }
+    }
+
+    if seen.is_empty() { None } else { Some(seen) }
+}
+
+/// Run keyword extraction then memory grep and return the rendered `<memory>`
+/// block, or `None` when memory is unavailable or extraction fails. Always
+/// non-fatal: any error returns `None` so the caller skips injection silently.
+async fn retrieve_memory_block(
+    raw_user_prompt: &str,
+    project_path: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> Option<String> {
+    let workspace = std::path::Path::new(project_path);
+    let project_name = gwenland_engine::agentic::project_name_from_root(workspace);
+
+    // Extract keywords — failure silently skips memory injection.
+    let keywords = extract_keywords(raw_user_prompt, provider_id, model_id).await?;
+
+    let results = gwenland_engine::agentic::search_memory(
+        workspace,
+        &project_name,
+        &keywords,
+        gwenland_engine::agentic::MemoryBudget::default(),
+    )
+    .ok()?;
+
+    gwenland_engine::agentic::render_memory_block(
+        &results,
+        gwenland_engine::agentic::MemoryBudget::default(),
+    )
+}
+
 /// Start a streaming completion. The UI generates `stream_id` and registers its
 /// listeners before calling this. Returns the same `stream_id` once accepted.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-fn ai_send(
+async fn ai_send(
     app: AppHandle,
     manager: State<'_, AiManager>,
     stream_id: String,
@@ -661,7 +982,16 @@ fn ai_send(
         std::path::Path::new(&meta.project_path),
     )
     .map_err(|e| e.to_string())?;
-    messages.push(ChatMessage::user(expanded.clone()));
+
+    // M13: retrieve memory block for provider-only injection (non-fatal; skipped on failure).
+    // `expanded` (the JSONL-persisted form) is kept unchanged.
+    let memory_block = retrieve_memory_block(&message, &meta.project_path, &provider_id, &model_id).await;
+    let provider_user = match &memory_block {
+        Some(block) => format!("{block}\n\n{expanded}"),
+        None => expanded.clone(),
+    };
+
+    messages.push(ChatMessage::user(provider_user));
 
     let request = MessageRequest {
         stream_id: stream_id.clone(),
@@ -676,9 +1006,17 @@ fn ai_send(
     let adapter = gwenland_engine::ai::registry::resolve_provider(&provider_id, &settings.ai)
         .map_err(|e| e.to_string())?;
 
+    // Resolve conversation name for memory write-back (title → fallback to id).
+    let conv_name_for_writeback = if meta.title.trim().is_empty() {
+        conversation_id.clone()
+    } else {
+        meta.title.clone()
+    };
+
     // Spawn the stream task, gated until its handle is registered so the task's
     // self-removal can never race ahead of the insert below.
     let streams = manager.active_streams.clone();
+    let search_resolvers = manager.search_resolvers.clone();
     let sid = stream_id.clone();
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
     let join = tauri::async_runtime::spawn(async move {
@@ -687,12 +1025,15 @@ fn ai_send(
         }
         run_stream(
             app,
+            search_resolvers,
             adapter,
             request,
             expanded,
             provider_id,
             model_id,
             conversation_id,
+            meta.project_path,
+            conv_name_for_writeback,
         )
         .await;
         streams.lock().unwrap().remove(&sid);
@@ -729,10 +1070,31 @@ fn ai_cancel(
     Ok(())
 }
 
-/// One-shot, non-streaming, non-persisted completion (GWEN-324). Drains a
-/// provider stream into a single string. Used for short side-prompts like
-/// auto-naming a conversation — it does NOT touch conversation history. Returns
-/// the trimmed assistant text, or a stringified `AiError` on failure.
+/// M13 — Deliver a web search result to a parked stream so generation continues.
+/// The stream task is waiting on a oneshot channel; we look it up by stream_id
+/// and send the result text. If the channel is missing (stream cancelled / already
+/// continued), this is a safe no-op.
+#[tauri::command]
+fn ai_search_result(
+    manager: State<'_, AiManager>,
+    stream_id: String,
+    result_text: String,
+) -> Result<(), String> {
+    let sender = manager
+        .search_resolvers
+        .lock()
+        .map_err(|_| "ai manager lock poisoned".to_string())?
+        .remove(&stream_id);
+    if let Some(tx) = sender {
+        // Ignore send failure — stream may have been cancelled concurrently.
+        let _ = tx.send(result_text);
+    }
+    Ok(())
+}
+
+/// One-shot, non-streaming, non-persisted completion (GWEN-324). Used for short
+/// side-prompts like auto-naming a conversation — does NOT touch conversation
+/// history. Returns the trimmed assistant text, or a stringified `AiError`.
 #[tauri::command]
 async fn ai_complete(
     prompt: String,
@@ -746,30 +1108,10 @@ async fn ai_complete(
     let model_id = model
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| settings.ai.active_model.clone());
-
-    let adapter = gwenland_engine::ai::registry::resolve_provider(&provider_id, &settings.ai)
-        .map_err(|e| e.to_string())?;
-
-    let request = MessageRequest {
-        stream_id: format!("oneshot-{}", gwenland_engine::agentic::new_id()),
-        messages: vec![ChatMessage::user(prompt)],
-        system: None,
-        attachments: Vec::new(),
-        images: Vec::new(),
-        model: model_id,
-        // Titles are tiny; cap the response so a misbehaving model can't run on.
-        max_tokens: Some(64),
-    };
-
-    let mut stream = adapter
-        .send_message(request)
+    // Titles are tiny; cap the response so a misbehaving model can't run on.
+    complete_once(None, prompt, &provider_id, &model_id, Some(64))
         .await
-        .map_err(|e| e.to_string())?;
-    let mut text = String::new();
-    while let Some(chunk) = stream.next_chunk().await.map_err(|e| e.to_string())? {
-        text.push_str(&chunk.text);
-    }
-    Ok(text.trim().to_string())
+        .map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -2626,7 +2968,38 @@ async fn agent_tool_step(
 ) -> Result<AgentStepResult, String> {
     let session = manager.snapshot(&session_id)?;
     let root = std::path::PathBuf::from(&session.project_root);
-    let context_summary = render_context_for_prompt(&session.context, &context_item_ids);
+    let base_context_summary = render_context_for_prompt(&session.context, &context_item_ids);
+
+    // M13: on the first step only, inject a memory block into the context summary
+    // using the session goal as the keyword source. Non-fatal if retrieval fails.
+    let is_first_step = manager
+        .loops
+        .lock()
+        .map_err(|_| "agent manager lock poisoned".to_string())?
+        .get(&session_id)
+        .map(|lp| lp.iteration == 0)
+        .unwrap_or(true);
+
+    let context_summary = if is_first_step {
+        if let Some(mem_block) = retrieve_memory_block(
+            &session.goal,
+            &session.project_root,
+            &session.provider,
+            &session.model,
+        )
+        .await
+        {
+            if base_context_summary.trim().is_empty() {
+                mem_block
+            } else {
+                format!("{mem_block}\n\n{base_context_summary}")
+            }
+        } else {
+            base_context_summary
+        }
+    } else {
+        base_context_summary
+    };
 
     // Build the next request from the loop transcript (lazily create the loop).
     // Drop the guard before any await — std Mutex guards are not held across .await.
@@ -3235,6 +3608,155 @@ fn git_delete_branch(root: String, branch: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Workspace settings (M14 Wave 1)
+//
+// Thin wrappers over `gwenland_engine::workspace`. The engine owns load/save
+// logic; these commands only convert the engine result to a Tauri-friendly
+// `Result<_, String>`. No policy logic lives here.
+// ---------------------------------------------------------------------------
+
+/// Load the per-workspace settings overlay from `.gwenland/settings.json`.
+/// Returns the default struct (all None fields) when the file is absent or
+/// malformed — never errors on missing config.
+#[tauri::command]
+fn workspace_load_settings(
+    workspace_root: String,
+) -> Result<gwenland_engine::workspace::WorkspaceSettings, String> {
+    Ok(gwenland_engine::workspace::load_workspace_settings(
+        std::path::Path::new(&workspace_root),
+    ))
+}
+
+/// Save the per-workspace settings overlay to `.gwenland/settings.json`.
+/// Creates the `.gwenland/` directory if needed; write is atomic.
+#[tauri::command]
+fn workspace_save_settings(
+    workspace_root: String,
+    settings: gwenland_engine::workspace::WorkspaceSettings,
+) -> Result<(), String> {
+    gwenland_engine::workspace::save_workspace_settings(
+        std::path::Path::new(&workspace_root),
+        &settings,
+    )
+    .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Safety Engine (M14 Wave 5)
+//
+// Thin command wrapper so the UI can call the Safety Engine for explicit
+// confirmation prompts. Policy logic lives entirely in the engine.
+// ---------------------------------------------------------------------------
+
+/// Evaluate a safety action and return the decision. The UI uses this to
+/// show confirmation dialogs or block actions before calling the underlying
+/// engine operation.
+///
+/// `action_kind_json` is the JSON-serialized `SafetyActionKind` value.
+/// `strictness` is one of "standard" | "strict" | "paranoid".
+#[tauri::command]
+fn safety_evaluate(
+    action_kind_json: String,
+    workspace_root: String,
+    actor: String,
+    strictness: String,
+) -> Result<gwenland_engine::safety::SafetyDecision, String> {
+    use gwenland_engine::safety::{Actor, SafetyAction, SafetyActionKind};
+    use gwenland_engine::safety::protected_paths::ProtectedPathRegistry;
+    use gwenland_engine::workspace::SafetyStrictness;
+
+    let kind: SafetyActionKind = serde_json::from_str(&action_kind_json)
+        .map_err(|e| format!("invalid action_kind_json: {e}"))?;
+
+    let actor_val = match actor.as_str() {
+        "user" => Actor::User,
+        "agent" => Actor::Agent,
+        "system" => Actor::System,
+        ext if ext.starts_with("extension:") => Actor::Extension {
+            id: ext["extension:".len()..].to_string(),
+        },
+        _ => Actor::User,
+    };
+
+    let strictness_val = match strictness.as_str() {
+        "strict" => SafetyStrictness::Strict,
+        "paranoid" => SafetyStrictness::Paranoid,
+        _ => SafetyStrictness::Standard,
+    };
+
+    let ws = std::path::Path::new(&workspace_root);
+    let registry = ProtectedPathRegistry::load(ws);
+    let action = SafetyAction::new(actor_val, kind, &workspace_root);
+    Ok(gwenland_engine::safety::evaluate(&action, &registry, strictness_val))
+}
+
+/// Check whether a path should be excluded from local search results.
+#[tauri::command]
+fn search_should_exclude(path: String, workspace_root: String) -> bool {
+    gwenland_engine::search_policy::should_exclude_from_search(
+        &path,
+        std::path::Path::new(&workspace_root),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Extension Permission Foundation (M14 Wave 6)
+//
+// Thin wrappers over `gwenland_engine::permissions`. Registry and approval-
+// history logic is entirely engine-side; these commands only convert errors
+// to strings. No extension runtime is implemented in M14.
+// ---------------------------------------------------------------------------
+
+/// Load the effective permission state for an extension. Returns the resolved
+/// verdict (from the per-workspace registry + default matrix) for every known
+/// permission kind. Never errors — falls back to default matrix when the
+/// registry file is absent or malformed.
+#[tauri::command]
+fn permissions_load_state(
+    workspace_root: String,
+    extension_id: String,
+) -> Vec<gwenland_engine::permissions::PermissionDecision> {
+    use gwenland_engine::permissions::{Permission, PermissionRegistry};
+    let registry = PermissionRegistry::load(std::path::Path::new(&workspace_root));
+    let known: &[Permission] = &[
+        Permission::ReadWorkspace,
+        Permission::WriteFile,
+        Permission::DeleteFile,
+        Permission::RunTerminal,
+        Permission::AccessGit,
+        Permission::AccessEnv,
+        Permission::AccessDatabase,
+    ];
+    known
+        .iter()
+        .map(|perm| registry.resolve(&extension_id, perm))
+        .collect()
+}
+
+/// Record an extension permission approval or denial in the workspace approval
+/// history JSONL. The `target_summary` is bounded + redacted before writing.
+#[tauri::command]
+fn permissions_record_approval(
+    workspace_root: String,
+    extension_id: String,
+    permission: String,
+    approved: bool,
+    target_summary: String,
+) -> Result<(), String> {
+    let record = gwenland_engine::permissions::ApprovalRecord::new(
+        extension_id,
+        permission,
+        approved,
+        target_summary,
+    );
+    gwenland_engine::permissions::record_approval(
+        std::path::Path::new(&workspace_root),
+        &record,
+    )
+    .map_err(|e| e.to_string())
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -3284,6 +3806,7 @@ fn main() {
             ai_list_models,
             ai_send,
             ai_cancel,
+            ai_search_result,
             ai_complete,
             agent_create_session,
             agent_set_tier,
@@ -3329,7 +3852,13 @@ fn main() {
             git_list_branches,
             git_checkout,
             git_create_branch,
-            git_delete_branch
+            git_delete_branch,
+            workspace_load_settings,
+            workspace_save_settings,
+            safety_evaluate,
+            search_should_exclude,
+            permissions_load_state,
+            permissions_record_approval
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");

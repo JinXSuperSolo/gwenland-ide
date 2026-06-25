@@ -475,6 +475,11 @@ export function aiCancel(streamId: string): Promise<void> {
   return invoke<void>('ai_cancel', { streamId })
 }
 
+/** M13 — deliver a web search result to a parked stream so generation resumes. */
+export function aiSearchResult(streamId: string, resultText: string): Promise<void> {
+  return invoke<void>('ai_search_result', { streamId, resultText })
+}
+
 /**
  * One-shot, non-streaming, non-persisted completion (GWEN-324). Used for short
  * side-prompts (e.g. auto-naming a conversation). Resolves to the trimmed
@@ -1393,5 +1398,192 @@ export async function onAgentAsk(
 ): Promise<UnlistenFn> {
   return listen<AgentAskPayload>(AGENT_ASK_EVENT, (event) => {
     if (event.payload.session_id === sessionId) handler(event.payload)
+  })
+}
+
+// ===========================================================================
+// Workspace Settings (M14 Wave 1)
+//
+// Per-workspace settings overlay stored under `.gwenland/settings.json`.
+// These merge on top of global settings; absent fields (null) fall back to
+// global values. No API keys, tokens, or secrets may appear here.
+// ===========================================================================
+
+/** Safety strictness level (mirrors `gwenland_engine::workspace::SafetyStrictness`). */
+export type SafetyStrictness = 'standard' | 'strict' | 'paranoid'
+
+/**
+ * Per-workspace settings overlay (mirrors `WorkspaceSettings`).
+ * Every field is optional (`null` = inherit from global settings).
+ * **Must never contain API keys, tokens, passwords, or credentials.**
+ */
+export interface WorkspaceSettings {
+  theme?: string | null
+  accent_color?: string | null
+  editor_font?: string | null
+  terminal_font?: string | null
+  layout_state?: unknown | null
+  sidebar_open?: boolean | null
+  panel_open?: boolean | null
+  keybindings?: unknown | null
+  formatter?: string | null
+  autosave?: boolean | null
+  safety_strictness?: SafetyStrictness | null
+}
+
+/**
+ * Load the per-workspace settings overlay from `.gwenland/settings.json`.
+ * Always resolves — returns an all-null object when the file is absent or
+ * malformed, never rejects on missing config.
+ */
+export function workspaceLoadSettings(workspaceRoot: string): Promise<WorkspaceSettings> {
+  return invoke<WorkspaceSettings>('workspace_load_settings', { workspaceRoot })
+}
+
+/**
+ * Save the per-workspace settings overlay to `.gwenland/settings.json`.
+ * Creates `.gwenland/` if needed; write is atomic (tmp + rename) engine-side.
+ */
+export function workspaceSaveSettings(
+  workspaceRoot: string,
+  settings: WorkspaceSettings
+): Promise<void> {
+  return invoke<void>('workspace_save_settings', { workspaceRoot, settings })
+}
+
+// ===========================================================================
+// Safety Engine (M14 Wave 5)
+//
+// Typed wrappers over the local safety evaluation command and search policy
+// helper. The engine owns all policy logic; these are thin call bridges.
+// ===========================================================================
+
+/** Risk level for a safety decision (mirrors `RiskLevel`). */
+export type RiskLevel =
+  | 'safe'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'destructive'
+  | 'secret'
+  | 'remote'
+  | 'unknown'
+
+/** Safety verdict (mirrors `SafetyVerdict`). */
+export type SafetyVerdict = 'allow' | 'ask' | 'block'
+
+/** Confirmation kind (mirrors `ConfirmationKind`). */
+export type ConfirmationKind =
+  | { kind: 'none' }
+  | { kind: 'simple' }
+  | { kind: 'typed' }
+  | { kind: 'danger_ack'; warning: string }
+
+/** Safety decision returned by the engine (mirrors `SafetyDecision`). */
+export interface SafetyDecision {
+  action_id: string
+  verdict: SafetyVerdict
+  risk: RiskLevel
+  reason: string
+  confirmation: ConfirmationKind
+  protected_path_matched: boolean
+  secret_path_matched: boolean
+}
+
+/**
+ * Evaluate a safety action. `actionKindJson` is the JSON-serialized
+ * `SafetyActionKind` (use `JSON.stringify({ kind: "file_write", path: "…" })`).
+ * Returns the local policy decision — no network call is made.
+ */
+export function safetyEvaluate(
+  actionKindJson: string,
+  workspaceRoot: string,
+  actor: 'user' | 'agent' | 'system' | string,
+  strictness: SafetyStrictness
+): Promise<SafetyDecision> {
+  return invoke<SafetyDecision>('safety_evaluate', {
+    actionKindJson,
+    workspaceRoot,
+    actor,
+    strictness
+  })
+}
+
+/**
+ * Check whether a path should be excluded from local search results.
+ * Returns `true` for secret paths, generated/dependency dirs, and blocked
+ * protected paths. Always resolves (never rejects).
+ */
+export function searchShouldExclude(path: string, workspaceRoot: string): Promise<boolean> {
+  return invoke<boolean>('search_should_exclude', { path, workspaceRoot })
+}
+
+// ===========================================================================
+// Extension Permission Foundation (M14 Wave 6)
+//
+// Typed wrappers over the engine-backed `permissions_*` commands. The
+// permission registry and approval history are stored locally in
+// `.gwenland/extensions/`. No extension runtime is implemented in M14.
+// ===========================================================================
+
+/** Known extension permission kinds (mirrors `gwenland_engine::permissions::Permission`). */
+export type ExtensionPermission =
+  | 'read_workspace'
+  | 'write_file'
+  | 'delete_file'
+  | 'run_terminal'
+  | 'access_git'
+  | 'access_env'
+  | 'access_database'
+  | 'unknown'
+
+/** Default policy verdict for a permission (mirrors `PermissionDefault`). */
+export type PermissionDefault = 'allowed' | 'ask' | 'blocked'
+
+/**
+ * Resolved permission decision for one extension+permission pair
+ * (mirrors `PermissionDecision`).
+ */
+export interface PermissionDecision {
+  extension_id: string
+  permission: string
+  verdict: PermissionDefault
+  reason: string
+}
+
+/**
+ * Load the effective permission state for an extension. Returns the resolved
+ * verdict (from the per-workspace registry + default matrix) for every known
+ * permission kind. Always resolves — falls back to the default matrix when
+ * the registry file is absent or malformed.
+ */
+export function permissionsLoadState(
+  workspaceRoot: string,
+  extensionId: string
+): Promise<PermissionDecision[]> {
+  return invoke<PermissionDecision[]>('permissions_load_state', {
+    workspaceRoot,
+    extensionId,
+  })
+}
+
+/**
+ * Record an extension permission approval or denial in the workspace approval
+ * history (`.gwenland/extensions/approvals.jsonl`). The `targetSummary` is
+ * bounded and redacted by the engine before writing — never include secrets.
+ */
+export function permissionsRecordApproval(
+  workspaceRoot: string,
+  extensionId: string,
+  permission: string,
+  approved: boolean,
+  targetSummary: string
+): Promise<void> {
+  return invoke<void>('permissions_record_approval', {
+    workspaceRoot,
+    extensionId,
+    permission,
+    approved,
+    targetSummary,
   })
 }

@@ -18,6 +18,7 @@
 pub mod agent_loop;
 pub mod changeset;
 pub mod context;
+pub mod memory;
 pub mod persistence;
 pub mod plan_parse;
 pub mod policy;
@@ -29,6 +30,12 @@ pub mod tools;
 pub mod validation;
 
 pub use agent_loop::{AgentLoop, DEFAULT_MAX_ITERATIONS, LoopTurn, parse_tool_call};
+pub use memory::{
+    MemoryBudget, MemoryError, MemoryNote, MemorySearchResult, MemoryWriteTarget,
+    memory_conversation_dir, memory_project_dir, parse_keyword_array, parse_memory_note,
+    project_name_from_root, render_memory_block, sanitize_note_filename, sanitize_segment,
+    search_memory, write_memory_note,
+};
 pub use changeset::{
     ApplyOutcome, ApplyReport, ApprovalState, ChangeSet, FileChangeKind, ProposedFileChange,
     ProposedHunk, apply_approved_hunks_to_text, change_set_from_diff_files, change_set_from_text,
