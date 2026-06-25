@@ -877,10 +877,7 @@ async fn extract_keywords(
         if kw.is_empty() {
             continue;
         }
-        if !seen
-            .iter()
-            .any(|s: &String| s.eq_ignore_ascii_case(&kw))
-        {
+        if !seen.iter().any(|s: &String| s.eq_ignore_ascii_case(&kw)) {
             seen.push(kw);
         }
         if seen.len() >= 7 {
