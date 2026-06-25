@@ -422,14 +422,14 @@ mod tests {
 
         let record = move_to_trash(&file, ws.path(), "user").unwrap();
         assert!(!file.exists(), "original must be removed after trash move");
-        assert!(Path::new(&record.trash_path).exists(), "trash copy must exist");
+        assert!(
+            Path::new(&record.trash_path).exists(),
+            "trash copy must exist"
+        );
 
         restore_from_trash(&record, ws.path(), false).unwrap();
         assert!(file.exists(), "file must be restored");
-        assert_eq!(
-            std::fs::read_to_string(&file).unwrap(),
-            "hello trash"
-        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello trash");
     }
 
     // 4.7.2b — directory trash + restore
@@ -451,13 +451,28 @@ mod tests {
     fn backup_metadata_appends() {
         let ws = tempdir().unwrap();
         // Initialize a git repo so `git diff HEAD` works.
-        let _ = std::process::Command::new("git").args(["init"]).current_dir(ws.path()).output();
-        let _ = std::process::Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(ws.path()).output();
-        let _ = std::process::Command::new("git").args(["config", "user.name", "Test"]).current_dir(ws.path()).output();
+        let _ = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(ws.path())
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(ws.path())
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(ws.path())
+            .output();
         // Create and commit a file so HEAD exists.
         std::fs::write(ws.path().join("README.md"), b"# project").unwrap();
-        let _ = std::process::Command::new("git").args(["add", "."]).current_dir(ws.path()).output();
-        let _ = std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(ws.path()).output();
+        let _ = std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(ws.path())
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(ws.path())
+            .output();
         // Modify the file so there's a diff.
         std::fs::write(ws.path().join("README.md"), b"# project\nchanged").unwrap();
 
@@ -465,7 +480,8 @@ mod tests {
         // Only assert if git is available and in PATH.
         if let Ok(Some(record)) = result {
             assert!(Path::new(&record.patch_path).exists());
-            let content = std::fs::read_to_string(ws.path().join(".gwenland/backups/index.jsonl")).unwrap();
+            let content =
+                std::fs::read_to_string(ws.path().join(".gwenland/backups/index.jsonl")).unwrap();
             assert!(content.contains("pre-reset backup"));
         }
         // If git is unavailable, the test silently passes (CI without git).

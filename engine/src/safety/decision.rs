@@ -123,11 +123,7 @@ impl SafetyDecision {
         }
     }
 
-    pub fn block(
-        action_id: impl Into<String>,
-        risk: RiskLevel,
-        reason: impl Into<String>,
-    ) -> Self {
+    pub fn block(action_id: impl Into<String>, risk: RiskLevel, reason: impl Into<String>) -> Self {
         Self {
             action_id: action_id.into(),
             verdict: SafetyVerdict::Block,

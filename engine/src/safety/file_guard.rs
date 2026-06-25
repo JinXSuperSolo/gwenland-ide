@@ -52,11 +52,7 @@ pub fn preflight_file_mutation(
     strictness: SafetyStrictness,
 ) -> PreflightOutcome {
     let registry = ProtectedPathRegistry::load(workspace_root);
-    let action = SafetyAction::new(
-        actor,
-        kind,
-        workspace_root.to_string_lossy().as_ref(),
-    );
+    let action = SafetyAction::new(actor, kind, workspace_root.to_string_lossy().as_ref());
     let decision = evaluate(&action, &registry, strictness);
     let writer = AuditWriter::new(workspace_root);
 
@@ -101,8 +97,8 @@ fn maybe_snapshot(
     workspace_root: &Path,
     risk: crate::safety::decision::RiskLevel,
 ) -> Option<SnapshotRecord> {
-    use crate::safety::decision::RiskLevel;
     use crate::safety::action::SafetyActionKind;
+    use crate::safety::decision::RiskLevel;
 
     let path_str = match &action.kind {
         SafetyActionKind::FileWrite { path }
@@ -125,7 +121,7 @@ fn maybe_snapshot(
     ) {
         Ok(snap) => Some(snap),
         Err(RecoveryError::NotFound(_)) => None, // new file, nothing to snapshot
-        Err(_) => None, // snapshot failed non-fatally for allowed action
+        Err(_) => None,                          // snapshot failed non-fatally for allowed action
     }
 }
 
@@ -144,7 +140,9 @@ mod tests {
         std::fs::write(&file, b"fn old() {}").unwrap();
 
         let outcome = preflight_file_mutation(
-            SafetyActionKind::FileDelete { path: file.to_string_lossy().into_owned() },
+            SafetyActionKind::FileDelete {
+                path: file.to_string_lossy().into_owned(),
+            },
             ws.path(),
             Actor::Agent,
             SafetyStrictness::Standard,
@@ -161,7 +159,9 @@ mod tests {
     fn protected_file_write_asks_or_blocks() {
         let ws = tempdir().unwrap();
         let outcome = preflight_file_mutation(
-            SafetyActionKind::FileWrite { path: ".env".into() },
+            SafetyActionKind::FileWrite {
+                path: ".env".into(),
+            },
             ws.path(),
             Actor::Agent,
             SafetyStrictness::Standard,
@@ -177,7 +177,9 @@ mod tests {
     fn normal_file_write_allowed_standard() {
         let ws = tempdir().unwrap();
         let outcome = preflight_file_mutation(
-            SafetyActionKind::FileWrite { path: "src/main.rs".into() },
+            SafetyActionKind::FileWrite {
+                path: "src/main.rs".into(),
+            },
             ws.path(),
             Actor::Agent,
             SafetyStrictness::Standard,

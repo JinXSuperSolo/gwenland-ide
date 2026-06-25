@@ -26,11 +26,7 @@ pub fn check_file_action(
     strictness: SafetyStrictness,
 ) -> SafetyDecision {
     let registry = ProtectedPathRegistry::load(workspace_root);
-    let action = SafetyAction::new(
-        actor,
-        kind,
-        workspace_root.to_string_lossy().as_ref(),
-    );
+    let action = SafetyAction::new(actor, kind, workspace_root.to_string_lossy().as_ref());
     evaluate(&action, &registry, strictness)
 }
 
@@ -38,13 +34,11 @@ pub fn check_file_action(
 ///
 /// Equivalent to `check_file_action(FileWrite, …).verdict == Allow` but
 /// avoids allocating a full `SafetyDecision` struct for hot paths.
-pub fn file_write_allowed(
-    path: &str,
-    workspace_root: &Path,
-    strictness: SafetyStrictness,
-) -> bool {
+pub fn file_write_allowed(path: &str, workspace_root: &Path, strictness: SafetyStrictness) -> bool {
     let d = check_file_action(
-        SafetyActionKind::FileWrite { path: path.to_string() },
+        SafetyActionKind::FileWrite {
+            path: path.to_string(),
+        },
         workspace_root,
         Actor::Agent,
         strictness,
@@ -60,7 +54,9 @@ pub fn check_terminal_command(
     strictness: SafetyStrictness,
 ) -> SafetyDecision {
     check_file_action(
-        SafetyActionKind::TerminalCommand { command: command.to_string() },
+        SafetyActionKind::TerminalCommand {
+            command: command.to_string(),
+        },
         workspace_root,
         actor,
         strictness,
@@ -75,7 +71,10 @@ pub fn check_ai_context(
     strictness: SafetyStrictness,
 ) -> SafetyDecision {
     check_file_action(
-        SafetyActionKind::AiContextInclude { path_count, has_secret_path },
+        SafetyActionKind::AiContextInclude {
+            path_count,
+            has_secret_path,
+        },
         workspace_root,
         Actor::System,
         strictness,
@@ -90,22 +89,36 @@ mod tests {
     #[test]
     fn file_write_allowed_returns_false_for_secret_path() {
         let dir = tempdir().unwrap();
-        assert!(!file_write_allowed(".env", dir.path(), SafetyStrictness::Standard));
+        assert!(!file_write_allowed(
+            ".env",
+            dir.path(),
+            SafetyStrictness::Standard
+        ));
     }
 
     #[test]
     fn file_write_allowed_returns_true_for_normal_path_standard() {
         let dir = tempdir().unwrap();
-        assert!(file_write_allowed("src/main.rs", dir.path(), SafetyStrictness::Standard));
+        assert!(file_write_allowed(
+            "src/main.rs",
+            dir.path(),
+            SafetyStrictness::Standard
+        ));
     }
 
     #[test]
     fn check_terminal_command_dangerous_asks() {
         let dir = tempdir().unwrap();
-        let d = check_terminal_command("rm -rf .", dir.path(), Actor::Agent, SafetyStrictness::Standard);
+        let d = check_terminal_command(
+            "rm -rf .",
+            dir.path(),
+            Actor::Agent,
+            SafetyStrictness::Standard,
+        );
         assert!(matches!(
             d.verdict,
-            crate::safety::decision::SafetyVerdict::Ask | crate::safety::decision::SafetyVerdict::Block
+            crate::safety::decision::SafetyVerdict::Ask
+                | crate::safety::decision::SafetyVerdict::Block
         ));
     }
 

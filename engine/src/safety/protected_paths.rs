@@ -44,40 +44,190 @@ impl ProtectedPathRegistry {
     pub fn defaults() -> Self {
         let entries = vec![
             // ---- Secret files (block) ----------------------------------------
-            entry(".env", ProtectionLevel::Block, RiskLevel::Secret, "environment file may contain secrets"),
-            entry(".env.*", ProtectionLevel::Block, RiskLevel::Secret, ".env variant may contain secrets"),
-            entry("*.pem", ProtectionLevel::Block, RiskLevel::Secret, "PEM certificate or private key"),
-            entry("*.key", ProtectionLevel::Block, RiskLevel::Secret, "private key file"),
-            entry("*.pfx", ProtectionLevel::Block, RiskLevel::Secret, "PKCS#12 certificate bundle"),
-            entry("*.p12", ProtectionLevel::Block, RiskLevel::Secret, "PKCS#12 certificate bundle"),
-            entry("id_rsa", ProtectionLevel::Block, RiskLevel::Secret, "RSA private key"),
-            entry("id_ed25519", ProtectionLevel::Block, RiskLevel::Secret, "Ed25519 private key"),
-            entry("id_ecdsa", ProtectionLevel::Block, RiskLevel::Secret, "ECDSA private key"),
-            entry(".ssh/**", ProtectionLevel::Block, RiskLevel::Secret, "SSH directory"),
-            entry(".aws/**", ProtectionLevel::Block, RiskLevel::Secret, "AWS credentials directory"),
-            entry(".gcloud/**", ProtectionLevel::Block, RiskLevel::Secret, "GCloud credentials directory"),
-            entry(".gnupg/**", ProtectionLevel::Block, RiskLevel::Secret, "GPG key directory"),
-            entry("secrets.*", ProtectionLevel::Block, RiskLevel::Secret, "secrets file"),
-            entry("credentials.*", ProtectionLevel::Block, RiskLevel::Secret, "credentials file"),
-            entry("service-account*.json", ProtectionLevel::Block, RiskLevel::Secret, "service account key"),
+            entry(
+                ".env",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "environment file may contain secrets",
+            ),
+            entry(
+                ".env.*",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                ".env variant may contain secrets",
+            ),
+            entry(
+                "*.pem",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "PEM certificate or private key",
+            ),
+            entry(
+                "*.key",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "private key file",
+            ),
+            entry(
+                "*.pfx",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "PKCS#12 certificate bundle",
+            ),
+            entry(
+                "*.p12",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "PKCS#12 certificate bundle",
+            ),
+            entry(
+                "id_rsa",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "RSA private key",
+            ),
+            entry(
+                "id_ed25519",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "Ed25519 private key",
+            ),
+            entry(
+                "id_ecdsa",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "ECDSA private key",
+            ),
+            entry(
+                ".ssh/**",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "SSH directory",
+            ),
+            entry(
+                ".aws/**",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "AWS credentials directory",
+            ),
+            entry(
+                ".gcloud/**",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "GCloud credentials directory",
+            ),
+            entry(
+                ".gnupg/**",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "GPG key directory",
+            ),
+            entry(
+                "secrets.*",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "secrets file",
+            ),
+            entry(
+                "credentials.*",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "credentials file",
+            ),
+            entry(
+                "service-account*.json",
+                ProtectionLevel::Block,
+                RiskLevel::Secret,
+                "service account key",
+            ),
             // ---- GwenLand store (ask) ----------------------------------------
-            entry(".gwenland/**", ProtectionLevel::Ask, RiskLevel::High, ".gwenland workspace store"),
+            entry(
+                ".gwenland/**",
+                ProtectionLevel::Ask,
+                RiskLevel::High,
+                ".gwenland workspace store",
+            ),
             // ---- VCS (ask) ---------------------------------------------------
-            entry(".git/**", ProtectionLevel::Ask, RiskLevel::High, "git repository internals"),
+            entry(
+                ".git/**",
+                ProtectionLevel::Ask,
+                RiskLevel::High,
+                "git repository internals",
+            ),
             // ---- Lock files (ask) --------------------------------------------
-            entry("package-lock.json", ProtectionLevel::Ask, RiskLevel::Medium, "npm lock file"),
-            entry("pnpm-lock.yaml", ProtectionLevel::Ask, RiskLevel::Medium, "pnpm lock file"),
-            entry("yarn.lock", ProtectionLevel::Ask, RiskLevel::Medium, "yarn lock file"),
-            entry("Cargo.lock", ProtectionLevel::Ask, RiskLevel::Medium, "Cargo lock file"),
-            entry("poetry.lock", ProtectionLevel::Ask, RiskLevel::Medium, "poetry lock file"),
-            entry("Gemfile.lock", ProtectionLevel::Ask, RiskLevel::Medium, "Bundler lock file"),
-            entry("go.sum", ProtectionLevel::Ask, RiskLevel::Medium, "Go checksum file"),
-            entry("composer.lock", ProtectionLevel::Ask, RiskLevel::Medium, "Composer lock file"),
+            entry(
+                "package-lock.json",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "npm lock file",
+            ),
+            entry(
+                "pnpm-lock.yaml",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "pnpm lock file",
+            ),
+            entry(
+                "yarn.lock",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "yarn lock file",
+            ),
+            entry(
+                "Cargo.lock",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "Cargo lock file",
+            ),
+            entry(
+                "poetry.lock",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "poetry lock file",
+            ),
+            entry(
+                "Gemfile.lock",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "Bundler lock file",
+            ),
+            entry(
+                "go.sum",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "Go checksum file",
+            ),
+            entry(
+                "composer.lock",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "Composer lock file",
+            ),
             // ---- Package manifests (ask) -------------------------------------
-            entry("package.json", ProtectionLevel::Ask, RiskLevel::Medium, "npm package manifest"),
-            entry("Cargo.toml", ProtectionLevel::Ask, RiskLevel::Medium, "Cargo manifest"),
-            entry("pyproject.toml", ProtectionLevel::Ask, RiskLevel::Medium, "Python project config"),
-            entry("go.mod", ProtectionLevel::Ask, RiskLevel::Medium, "Go module definition"),
+            entry(
+                "package.json",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "npm package manifest",
+            ),
+            entry(
+                "Cargo.toml",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "Cargo manifest",
+            ),
+            entry(
+                "pyproject.toml",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "Python project config",
+            ),
+            entry(
+                "go.mod",
+                ProtectionLevel::Ask,
+                RiskLevel::Medium,
+                "Go module definition",
+            ),
         ];
         Self { entries }
     }
@@ -85,8 +235,7 @@ impl ProtectedPathRegistry {
     /// Load from a workspace override file (`.gwenland/safety/protected-paths.json`),
     /// falling back to `defaults()` if the file is absent or malformed.
     pub fn load(workspace_root: &Path) -> Self {
-        let path = crate::workspace::safety_dir(workspace_root)
-            .join("protected-paths.json");
+        let path = crate::workspace::safety_dir(workspace_root).join("protected-paths.json");
         if !path.exists() {
             return Self::defaults();
         }

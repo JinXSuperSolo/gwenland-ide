@@ -36,41 +36,77 @@ impl std::fmt::Display for Actor {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SafetyActionKind {
     // --- File operations ---
-    FileRead { path: String },
-    FileCreate { path: String },
-    FileWrite { path: String },
-    FileDelete { path: String },
-    FileRename { old_path: String, new_path: String },
-    FileCopy { src: String, dest: String },
+    FileRead {
+        path: String,
+    },
+    FileCreate {
+        path: String,
+    },
+    FileWrite {
+        path: String,
+    },
+    FileDelete {
+        path: String,
+    },
+    FileRename {
+        old_path: String,
+        new_path: String,
+    },
+    FileCopy {
+        src: String,
+        dest: String,
+    },
 
     // --- Terminal operations ---
     /// A command proposed for execution (by agent or extension).
-    TerminalCommand { command: String },
+    TerminalCommand {
+        command: String,
+    },
 
     // --- Git operations ---
     GitRead,
-    GitCommit { message_summary: String },
-    GitCheckout { target: String },
-    GitBranchDelete { branch: String },
+    GitCommit {
+        message_summary: String,
+    },
+    GitCheckout {
+        target: String,
+    },
+    GitBranchDelete {
+        branch: String,
+    },
     /// Destructive: reset --hard, clean, force-push, etc.
-    GitDestructive { summary: String },
+    GitDestructive {
+        summary: String,
+    },
     /// Remote network operation: push/pull/fetch.
-    GitRemote { summary: String },
+    GitRemote {
+        summary: String,
+    },
 
     // --- AI context boundary ---
     /// A file or set of files is about to be included in an AI context window.
-    AiContextInclude { path_count: usize, has_secret_path: bool },
+    AiContextInclude {
+        path_count: usize,
+        has_secret_path: bool,
+    },
     /// A full AI response is about to be stored/persisted locally.
     AiResponseStore,
 
     // --- Extension operations ---
-    ExtensionPermission { extension_id: String, permission: String },
+    ExtensionPermission {
+        extension_id: String,
+        permission: String,
+    },
 
     // --- Remote / export operations ---
-    RemoteExport { destination_summary: String },
+    RemoteExport {
+        destination_summary: String,
+    },
 
     // --- Catch-all for unknown or future action kinds ---
-    Unknown { summary: String },
+    Unknown {
+        summary: String,
+    },
 }
 
 impl SafetyActionKind {
@@ -115,11 +151,7 @@ pub struct SafetyAction {
 }
 
 impl SafetyAction {
-    pub fn new(
-        actor: Actor,
-        kind: SafetyActionKind,
-        workspace_root: impl Into<String>,
-    ) -> Self {
+    pub fn new(actor: Actor, kind: SafetyActionKind, workspace_root: impl Into<String>) -> Self {
         Self {
             id: crate::agentic::new_id(),
             actor,

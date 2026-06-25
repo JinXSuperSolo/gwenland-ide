@@ -57,7 +57,10 @@ mod tests {
     #[test]
     fn generated_dirs_excluded() {
         let dir = tempdir().unwrap();
-        assert!(should_exclude_from_search("node_modules/pkg/index.js", dir.path()));
+        assert!(should_exclude_from_search(
+            "node_modules/pkg/index.js",
+            dir.path()
+        ));
         assert!(should_exclude_from_search("target/debug/exe", dir.path()));
         assert!(should_exclude_from_search(".git/config", dir.path()));
     }

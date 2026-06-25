@@ -115,16 +115,12 @@ impl AuditEvent {
             crate::safety::action::SafetyActionKind::FileCopy { src, dest } => {
                 format!("{src} → {dest}")
             }
-            crate::safety::action::SafetyActionKind::TerminalCommand { command } => {
-                command.clone()
-            }
+            crate::safety::action::SafetyActionKind::TerminalCommand { command } => command.clone(),
             crate::safety::action::SafetyActionKind::GitCommit { message_summary } => {
                 message_summary.clone()
             }
             crate::safety::action::SafetyActionKind::GitCheckout { target } => target.clone(),
-            crate::safety::action::SafetyActionKind::GitBranchDelete { branch } => {
-                branch.clone()
-            }
+            crate::safety::action::SafetyActionKind::GitBranchDelete { branch } => branch.clone(),
             crate::safety::action::SafetyActionKind::GitDestructive { summary }
             | crate::safety::action::SafetyActionKind::GitRemote { summary }
             | crate::safety::action::SafetyActionKind::Unknown { summary } => summary.clone(),
@@ -137,9 +133,9 @@ impl AuditEvent {
                 extension_id,
                 permission,
             } => format!("{extension_id}:{permission}"),
-            crate::safety::action::SafetyActionKind::RemoteExport { destination_summary } => {
-                destination_summary.clone()
-            }
+            crate::safety::action::SafetyActionKind::RemoteExport {
+                destination_summary,
+            } => destination_summary.clone(),
         };
 
         let (redacted, _) = redact_secrets(&raw_summary);
@@ -309,7 +305,9 @@ mod tests {
     fn sample_decision(id: &str) -> (SafetyDecision, SafetyAction) {
         let action = SafetyAction::new(
             Actor::Agent,
-            SafetyActionKind::FileDelete { path: "src/old.rs".into() },
+            SafetyActionKind::FileDelete {
+                path: "src/old.rs".into(),
+            },
             "/workspace",
         );
         let decision = SafetyDecision::ask(
@@ -328,7 +326,12 @@ mod tests {
         let writer = AuditWriter::new(dir.path());
         let (decision, action) = sample_decision("id-1");
         writer
-            .record_decision(&decision, &action, AuditCategory::Safety, AuditKind::SafetyDecision)
+            .record_decision(
+                &decision,
+                &action,
+                AuditCategory::Safety,
+                AuditKind::SafetyDecision,
+            )
             .unwrap();
         let log_path = dir.path().join(".gwenland/audit/safety.jsonl");
         assert!(log_path.exists(), "audit log must exist");
@@ -369,7 +372,12 @@ mod tests {
         let (decision, action) = sample_decision("ignored");
         let action_id = action.id.clone();
         writer
-            .record_decision(&decision, &action, AuditCategory::Safety, AuditKind::SafetyDecision)
+            .record_decision(
+                &decision,
+                &action,
+                AuditCategory::Safety,
+                AuditKind::SafetyDecision,
+            )
             .unwrap();
         // read_all skips the corrupt line; only the valid one appears.
         let events = writer.read_all(AuditCategory::Safety);
@@ -446,7 +454,12 @@ mod tests {
             ConfirmationKind::Simple,
         );
         writer
-            .record_decision(&decision, &action, AuditCategory::Safety, AuditKind::SafetyDecision)
+            .record_decision(
+                &decision,
+                &action,
+                AuditCategory::Safety,
+                AuditKind::SafetyDecision,
+            )
             .unwrap();
         let events = writer.read_all(AuditCategory::Safety);
         assert!(

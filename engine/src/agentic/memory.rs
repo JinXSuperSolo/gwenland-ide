@@ -142,7 +142,32 @@ pub fn sanitize_segment(input: &str, fallback: &str) -> String {
     for ch in lower.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
             out.push(ch);
-        } else if ch == '-' || ch.is_ascii_whitespace() || matches!(ch, '+' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':' | '!' | '?' | '&' | '#' | '%' | '@' | '=' | '~' | '^' | '*' | '|') {
+        } else if ch == '-'
+            || ch.is_ascii_whitespace()
+            || matches!(
+                ch,
+                '+' | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | ','
+                    | ';'
+                    | ':'
+                    | '!'
+                    | '?'
+                    | '&'
+                    | '#'
+                    | '%'
+                    | '@'
+                    | '='
+                    | '~'
+                    | '^'
+                    | '*'
+                    | '|'
+            )
+        {
             // Treat all separators as a dash (we'll collapse them).
             out.push('-');
         }
@@ -177,10 +202,7 @@ pub fn sanitize_segment(input: &str, fallback: &str) -> String {
 /// Ensure a note filename ends in `.md` and is safe.
 pub fn sanitize_note_filename(raw: &str) -> String {
     // Strip any directory component.
-    let base = raw
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(raw);
+    let base = raw.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(raw);
     let stem = base.trim_end_matches(".md");
     let clean = sanitize_segment(stem, "memory-note");
     format!("{clean}.md")
@@ -216,10 +238,7 @@ pub fn search_memory(
         return Ok(Vec::new());
     }
 
-    let normalized: Vec<String> = keywords
-        .iter()
-        .map(|k| k.to_ascii_lowercase())
-        .collect();
+    let normalized: Vec<String> = keywords.iter().map(|k| k.to_ascii_lowercase()).collect();
 
     let mut results: Vec<MemorySearchResult> = Vec::new();
     let mut scanned = 0usize;
@@ -275,10 +294,13 @@ pub fn search_memory(
             }
 
             // Bonus for covering multiple keywords.
-            let covered = normalized.iter().filter(|kw| {
-                filename_lower.contains(kw.as_str())
-                    || content.to_ascii_lowercase().contains(kw.as_str())
-            }).count();
+            let covered = normalized
+                .iter()
+                .filter(|kw| {
+                    filename_lower.contains(kw.as_str())
+                        || content.to_ascii_lowercase().contains(kw.as_str())
+                })
+                .count();
             if covered > 1 {
                 score += (covered - 1) * 3;
             }
@@ -374,10 +396,7 @@ fn apply_char_budget(results: &mut Vec<MemorySearchResult>, max_chars: usize) {
 
 /// Render the `<memory>...</memory>` block for injection into provider context.
 /// Returns `None` when there are no results.
-pub fn render_memory_block(
-    results: &[MemorySearchResult],
-    budget: MemoryBudget,
-) -> Option<String> {
+pub fn render_memory_block(results: &[MemorySearchResult], budget: MemoryBudget) -> Option<String> {
     if results.is_empty() {
         return None;
     }
@@ -428,7 +447,11 @@ pub fn write_memory_note(
     target: &MemoryWriteTarget,
     note: &MemoryNote,
 ) -> Result<PathBuf, MemoryError> {
-    let dir = memory_conversation_dir(workspace_root, &target.project_name, &target.conversation_name);
+    let dir = memory_conversation_dir(
+        workspace_root,
+        &target.project_name,
+        &target.conversation_name,
+    );
 
     // Verify the directory path stays inside the workspace before creating it.
     let workspace_canon = workspace_root
@@ -436,9 +459,7 @@ pub fn write_memory_note(
         .map_err(|_| MemoryError::OutsideWorkspace)?;
 
     // For the directory, we resolve parent by parent (it may not exist yet).
-    let abs_dir = workspace_root.join(
-        dir.strip_prefix(workspace_root).unwrap_or(&dir),
-    );
+    let abs_dir = workspace_root.join(dir.strip_prefix(workspace_root).unwrap_or(&dir));
     // Safety: ensure the computed path is under workspace root.
     // We compare the normalized string since the dir might not exist yet.
     let dir_str = abs_dir.to_string_lossy();
@@ -629,8 +650,14 @@ mod tests {
 
     #[test]
     fn sanitize_note_filename_appends_md() {
-        assert_eq!(sanitize_note_filename("fix-null-parser"), "fix-null-parser.md");
-        assert_eq!(sanitize_note_filename("fix-null-parser.md"), "fix-null-parser.md");
+        assert_eq!(
+            sanitize_note_filename("fix-null-parser"),
+            "fix-null-parser.md"
+        );
+        assert_eq!(
+            sanitize_note_filename("fix-null-parser.md"),
+            "fix-null-parser.md"
+        );
         assert_eq!(sanitize_note_filename("../escape"), "escape.md");
     }
 
@@ -700,9 +727,13 @@ mod tests {
         fs::create_dir_all(&other_dir).unwrap();
         fs::write(other_dir.join("note.md"), "# Other\n- needle\n").unwrap();
 
-        let results =
-            search_memory(dir.path(), "proj", &["needle".into()], MemoryBudget::default())
-                .unwrap();
+        let results = search_memory(
+            dir.path(),
+            "proj",
+            &["needle".into()],
+            MemoryBudget::default(),
+        )
+        .unwrap();
         assert!(results.is_empty(), "must not cross project boundaries");
     }
 
@@ -716,10 +747,18 @@ mod tests {
         fs::write(c1.join("note1.md"), "# Note1\n- needle in conv1\n").unwrap();
         fs::write(c2.join("note2.md"), "# Note2\n- needle in conv2\n").unwrap();
 
-        let results =
-            search_memory(dir.path(), "proj", &["needle".into()], MemoryBudget::default())
-                .unwrap();
-        assert_eq!(results.len(), 2, "should find notes from both conversations");
+        let results = search_memory(
+            dir.path(),
+            "proj",
+            &["needle".into()],
+            MemoryBudget::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "should find notes from both conversations"
+        );
     }
 
     #[test]
@@ -738,9 +777,13 @@ mod tests {
         )
         .unwrap();
 
-        let results =
-            search_memory(dir.path(), "proj", &["needle".into()], MemoryBudget::default())
-                .unwrap();
+        let results = search_memory(
+            dir.path(),
+            "proj",
+            &["needle".into()],
+            MemoryBudget::default(),
+        )
+        .unwrap();
         assert!(results.len() >= 2);
         assert!(
             results[0].filename.contains("needle-fix"),
@@ -790,7 +833,11 @@ mod tests {
         // With a tiny budget, some results may be dropped.
         let block = render_memory_block(&results, tiny_budget);
         if let Some(b) = &block {
-            assert!(b.len() <= 200, "should be within reasonable size: {}", b.len());
+            assert!(
+                b.len() <= 200,
+                "should be within reasonable size: {}",
+                b.len()
+            );
         }
     }
 

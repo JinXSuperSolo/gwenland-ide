@@ -571,96 +571,93 @@ async fn run_stream(
                 // We break out of the outer loop after the continuation so the
                 // guard `detect_search_trigger` is only reached once.
                 if let Some(query) = detect_search_trigger(&assistant) {
-                        drop(stream); // stop reading the current stream
+                    drop(stream); // stop reading the current stream
 
-                        // Park a oneshot resolver so `ai_search_result` can wake us.
-                        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-                        if let Ok(mut resolvers) = ai_manager.lock() {
-                            resolvers.insert(stream_id.clone(), tx);
-                        }
+                    // Park a oneshot resolver so `ai_search_result` can wake us.
+                    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+                    if let Ok(mut resolvers) = ai_manager.lock() {
+                        resolvers.insert(stream_id.clone(), tx);
+                    }
 
-                        // Tell the UI to fetch the search result.
-                        let _ = app.emit(
-                            "ai://search_request",
-                            AiSearchRequestEvent {
-                                stream_id: stream_id.clone(),
-                                query: query.clone(),
-                            },
-                        );
+                    // Tell the UI to fetch the search result.
+                    let _ = app.emit(
+                        "ai://search_request",
+                        AiSearchRequestEvent {
+                            stream_id: stream_id.clone(),
+                            query: query.clone(),
+                        },
+                    );
 
-                        // Wait for result (or timeout / cancellation).
-                        let search_text = tokio::time::timeout(
-                            std::time::Duration::from_secs(30),
-                            rx,
-                        )
+                    // Wait for result (or timeout / cancellation).
+                    let search_text = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
                         .await
                         .unwrap_or_else(|_| Ok(String::new()))
                         .unwrap_or_default();
 
-                        // Clean up resolver (may already be gone if cancelled).
-                        let _ = ai_manager.lock().map(|mut r| r.remove(&stream_id));
+                    // Clean up resolver (may already be gone if cancelled).
+                    let _ = ai_manager.lock().map(|mut r| r.remove(&stream_id));
 
-                        let search_block = if search_text.trim().is_empty() {
-                            format!("<search query=\"{query}\">\n[unavailable]\n</search>")
-                        } else {
-                            let capped = truncate_chars(&search_text, 2000);
-                            format!("<search query=\"{query}\">\n{capped}\n</search>")
-                        };
+                    let search_block = if search_text.trim().is_empty() {
+                        format!("<search query=\"{query}\">\n[unavailable]\n</search>")
+                    } else {
+                        let capped = truncate_chars(&search_text, 2000);
+                        format!("<search query=\"{query}\">\n{capped}\n</search>")
+                    };
 
-                        // Build continuation: original messages + assistant partial + search observation.
-                        let settings = gwenland_engine::settings::load_settings()
-                            .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()));
-                        let adapter2 = settings.and_then(|s| {
-                            gwenland_engine::ai::registry::resolve_provider(&provider_id, &s.ai)
-                                .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()))
-                        });
-                        let adapter2 = match adapter2 {
-                            Ok(a) => a,
-                            Err(e) => return emit_ai_error(&app, &stream_id, e),
-                        };
+                    // Build continuation: original messages + assistant partial + search observation.
+                    let settings = gwenland_engine::settings::load_settings()
+                        .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()));
+                    let adapter2 = settings.and_then(|s| {
+                        gwenland_engine::ai::registry::resolve_provider(&provider_id, &s.ai)
+                            .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()))
+                    });
+                    let adapter2 = match adapter2 {
+                        Ok(a) => a,
+                        Err(e) => return emit_ai_error(&app, &stream_id, e),
+                    };
 
-                        let mut cont_messages = prior_messages.clone();
-                        cont_messages.push(ChatMessage {
-                            role: "assistant".to_string(),
-                            content: assistant.clone(),
-                        });
-                        cont_messages.push(ChatMessage::user(search_block));
+                    let mut cont_messages = prior_messages.clone();
+                    cont_messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: assistant.clone(),
+                    });
+                    cont_messages.push(ChatMessage::user(search_block));
 
-                        let cont_request = MessageRequest {
-                            stream_id: stream_id.clone(),
-                            messages: cont_messages,
-                            system: system_prompt.clone(),
-                            attachments: Vec::new(),
-                            images: Vec::new(),
-                            model: model.clone(),
-                            max_tokens: None,
-                        };
+                    let cont_request = MessageRequest {
+                        stream_id: stream_id.clone(),
+                        messages: cont_messages,
+                        system: system_prompt.clone(),
+                        attachments: Vec::new(),
+                        images: Vec::new(),
+                        model: model.clone(),
+                        max_tokens: None,
+                    };
 
-                        let mut cont_stream = match adapter2.send_message(cont_request).await {
-                            Ok(s) => s,
-                            Err(e) => return emit_ai_error(&app, &stream_id, e),
-                        };
+                    let mut cont_stream = match adapter2.send_message(cont_request).await {
+                        Ok(s) => s,
+                        Err(e) => return emit_ai_error(&app, &stream_id, e),
+                    };
 
-                        // Continue emitting chunks on the same stream_id.
-                        loop {
-                            match cont_stream.next_chunk().await {
-                                Ok(Some(chunk)) => {
-                                    assistant.push_str(&chunk.text);
-                                    let _ = app.emit(
-                                        "ai://chunk",
-                                        AiChunkEvent {
-                                            stream_id: stream_id.clone(),
-                                            text: chunk.text,
-                                        },
-                                    );
-                                }
-                                Ok(None) => break,
-                                Err(e) => return emit_ai_error(&app, &stream_id, e),
+                    // Continue emitting chunks on the same stream_id.
+                    loop {
+                        match cont_stream.next_chunk().await {
+                            Ok(Some(chunk)) => {
+                                assistant.push_str(&chunk.text);
+                                let _ = app.emit(
+                                    "ai://chunk",
+                                    AiChunkEvent {
+                                        stream_id: stream_id.clone(),
+                                        text: chunk.text,
+                                    },
+                                );
                             }
+                            Ok(None) => break,
+                            Err(e) => return emit_ai_error(&app, &stream_id, e),
                         }
+                    }
 
-                        // Fall through to persist + done below.
-                        break;
+                    // Fall through to persist + done below.
+                    break;
                 }
             }
             Ok(None) => break,
@@ -827,9 +824,8 @@ async fn complete_once(
 ) -> Result<String, gwenland_engine::ai::AiError> {
     let settings = gwenland_engine::settings::load_settings()
         .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()))?;
-    let adapter =
-        gwenland_engine::ai::registry::resolve_provider(provider_id, &settings.ai)
-            .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()))?;
+    let adapter = gwenland_engine::ai::registry::resolve_provider(provider_id, &settings.ai)
+        .map_err(|e| gwenland_engine::ai::AiError::ProviderError(e.to_string()))?;
 
     let request = MessageRequest {
         stream_id: format!("mini-{}", gwenland_engine::agentic::new_id()),
@@ -881,7 +877,10 @@ async fn extract_keywords(
         if kw.is_empty() {
             continue;
         }
-        if !seen.iter().any(|s: &String| s.to_ascii_lowercase() == kw.to_ascii_lowercase()) {
+        if !seen
+            .iter()
+            .any(|s: &String| s.to_ascii_lowercase() == kw.to_ascii_lowercase())
+        {
             seen.push(kw);
         }
         if seen.len() >= 7 {
@@ -985,7 +984,8 @@ async fn ai_send(
 
     // M13: retrieve memory block for provider-only injection (non-fatal; skipped on failure).
     // `expanded` (the JSONL-persisted form) is kept unchanged.
-    let memory_block = retrieve_memory_block(&message, &meta.project_path, &provider_id, &model_id).await;
+    let memory_block =
+        retrieve_memory_block(&message, &meta.project_path, &provider_id, &model_id).await;
     let provider_user = match &memory_block {
         Some(block) => format!("{block}\n\n{expanded}"),
         None => expanded.clone(),
@@ -3662,8 +3662,8 @@ fn safety_evaluate(
     actor: String,
     strictness: String,
 ) -> Result<gwenland_engine::safety::SafetyDecision, String> {
-    use gwenland_engine::safety::{Actor, SafetyAction, SafetyActionKind};
     use gwenland_engine::safety::protected_paths::ProtectedPathRegistry;
+    use gwenland_engine::safety::{Actor, SafetyAction, SafetyActionKind};
     use gwenland_engine::workspace::SafetyStrictness;
 
     let kind: SafetyActionKind = serde_json::from_str(&action_kind_json)
@@ -3688,7 +3688,11 @@ fn safety_evaluate(
     let ws = std::path::Path::new(&workspace_root);
     let registry = ProtectedPathRegistry::load(ws);
     let action = SafetyAction::new(actor_val, kind, &workspace_root);
-    Ok(gwenland_engine::safety::evaluate(&action, &registry, strictness_val))
+    Ok(gwenland_engine::safety::evaluate(
+        &action,
+        &registry,
+        strictness_val,
+    ))
 }
 
 /// Check whether a path should be excluded from local search results.
@@ -3750,11 +3754,8 @@ fn permissions_record_approval(
         approved,
         target_summary,
     );
-    gwenland_engine::permissions::record_approval(
-        std::path::Path::new(&workspace_root),
-        &record,
-    )
-    .map_err(|e| e.to_string())
+    gwenland_engine::permissions::record_approval(std::path::Path::new(&workspace_root), &record)
+        .map_err(|e| e.to_string())
 }
 
 fn main() {

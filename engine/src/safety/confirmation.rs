@@ -133,101 +133,118 @@ pub fn evaluate(
 
             let risk = classify_command(command);
             match risk {
-                CommandRisk::SafeCheck => {
-                    maybe_ask(id, RiskLevel::Safe, "safe check command", strictness, SafetyStrictness::Paranoid)
-                }
-                CommandRisk::FileMutating => {
-                    SafetyDecision::ask(id, RiskLevel::Medium, "command mutates files", ConfirmationKind::Simple)
-                }
-                CommandRisk::DependencyChanging => {
-                    SafetyDecision::ask(id, RiskLevel::Medium, "command changes dependencies", ConfirmationKind::Simple)
-                }
-                CommandRisk::Destructive => {
-                    match strictness {
-                        SafetyStrictness::Paranoid => SafetyDecision::block(
-                            id, RiskLevel::Destructive,
-                            "destructive command blocked in paranoid mode",
-                        ),
-                        _ => SafetyDecision::ask(
-                            id, RiskLevel::Destructive,
-                            "destructive command requires confirmation",
-                            ConfirmationKind::DangerAck {
-                                warning: format!("This command may be irreversible: {}", truncate(command, 80)),
-                            },
-                        ),
-                    }
-                }
-                CommandRisk::Blocked => {
-                    SafetyDecision::ask(
-                        id, RiskLevel::Unknown,
-                        "unrecognized command requires confirmation",
-                        ConfirmationKind::Simple,
-                    )
-                }
+                CommandRisk::SafeCheck => maybe_ask(
+                    id,
+                    RiskLevel::Safe,
+                    "safe check command",
+                    strictness,
+                    SafetyStrictness::Paranoid,
+                ),
+                CommandRisk::FileMutating => SafetyDecision::ask(
+                    id,
+                    RiskLevel::Medium,
+                    "command mutates files",
+                    ConfirmationKind::Simple,
+                ),
+                CommandRisk::DependencyChanging => SafetyDecision::ask(
+                    id,
+                    RiskLevel::Medium,
+                    "command changes dependencies",
+                    ConfirmationKind::Simple,
+                ),
+                CommandRisk::Destructive => match strictness {
+                    SafetyStrictness::Paranoid => SafetyDecision::block(
+                        id,
+                        RiskLevel::Destructive,
+                        "destructive command blocked in paranoid mode",
+                    ),
+                    _ => SafetyDecision::ask(
+                        id,
+                        RiskLevel::Destructive,
+                        "destructive command requires confirmation",
+                        ConfirmationKind::DangerAck {
+                            warning: format!(
+                                "This command may be irreversible: {}",
+                                truncate(command, 80)
+                            ),
+                        },
+                    ),
+                },
+                CommandRisk::Blocked => SafetyDecision::ask(
+                    id,
+                    RiskLevel::Unknown,
+                    "unrecognized command requires confirmation",
+                    ConfirmationKind::Simple,
+                ),
             }
         }
 
         // ---- Git safe reads ----------------------------------------------
-        SafetyActionKind::GitRead => {
-            SafetyDecision::allow(id, RiskLevel::Safe, "local git read")
-        }
+        SafetyActionKind::GitRead => SafetyDecision::allow(id, RiskLevel::Safe, "local git read"),
 
         // ---- Git commit -------------------------------------------------
-        SafetyActionKind::GitCommit { .. } => {
-            maybe_ask(id, RiskLevel::Medium, "git commit", strictness, SafetyStrictness::Strict)
-        }
+        SafetyActionKind::GitCommit { .. } => maybe_ask(
+            id,
+            RiskLevel::Medium,
+            "git commit",
+            strictness,
+            SafetyStrictness::Strict,
+        ),
 
         // ---- Git checkout -----------------------------------------------
-        SafetyActionKind::GitCheckout { .. } => {
-            maybe_ask(id, RiskLevel::Medium, "git checkout", strictness, SafetyStrictness::Strict)
-        }
+        SafetyActionKind::GitCheckout { .. } => maybe_ask(
+            id,
+            RiskLevel::Medium,
+            "git checkout",
+            strictness,
+            SafetyStrictness::Strict,
+        ),
 
         // ---- Git branch delete ------------------------------------------
-        SafetyActionKind::GitBranchDelete { branch } => {
-            match strictness {
-                SafetyStrictness::Paranoid => SafetyDecision::block(
-                    id, RiskLevel::High,
-                    "branch delete blocked in paranoid mode",
-                ),
-                _ => SafetyDecision::ask(
-                    id, RiskLevel::High,
-                    format!("deleting branch '{branch}' is hard to reverse"),
-                    ConfirmationKind::Typed,
-                ),
-            }
-        }
+        SafetyActionKind::GitBranchDelete { branch } => match strictness {
+            SafetyStrictness::Paranoid => SafetyDecision::block(
+                id,
+                RiskLevel::High,
+                "branch delete blocked in paranoid mode",
+            ),
+            _ => SafetyDecision::ask(
+                id,
+                RiskLevel::High,
+                format!("deleting branch '{branch}' is hard to reverse"),
+                ConfirmationKind::Typed,
+            ),
+        },
 
         // ---- Git destructive --------------------------------------------
-        SafetyActionKind::GitDestructive { summary } => {
-            match strictness {
-                SafetyStrictness::Paranoid | SafetyStrictness::Strict => {
-                    SafetyDecision::block(
-                        id, RiskLevel::Destructive,
-                        format!("destructive git action blocked: {}", truncate(summary, 120)),
-                    )
-                }
-                _ => SafetyDecision::ask(
-                    id, RiskLevel::Destructive,
-                    format!("destructive git action: {}", truncate(summary, 120)),
-                    ConfirmationKind::DangerAck {
-                        warning: "This git operation may be irreversible.".to_string(),
-                    },
-                ),
-            }
-        }
+        SafetyActionKind::GitDestructive { summary } => match strictness {
+            SafetyStrictness::Paranoid | SafetyStrictness::Strict => SafetyDecision::block(
+                id,
+                RiskLevel::Destructive,
+                format!("destructive git action blocked: {}", truncate(summary, 120)),
+            ),
+            _ => SafetyDecision::ask(
+                id,
+                RiskLevel::Destructive,
+                format!("destructive git action: {}", truncate(summary, 120)),
+                ConfirmationKind::DangerAck {
+                    warning: "This git operation may be irreversible.".to_string(),
+                },
+            ),
+        },
 
         // ---- Git remote (always ask) ------------------------------------
-        SafetyActionKind::GitRemote { summary } => {
-            SafetyDecision::ask(
-                id,
-                RiskLevel::Remote,
-                format!("remote git operation: {}", truncate(summary, 120)),
-                ConfirmationKind::Simple,
-            )
-        }
+        SafetyActionKind::GitRemote { summary } => SafetyDecision::ask(
+            id,
+            RiskLevel::Remote,
+            format!("remote git operation: {}", truncate(summary, 120)),
+            ConfirmationKind::Simple,
+        ),
 
         // ---- AI context boundary ----------------------------------------
-        SafetyActionKind::AiContextInclude { has_secret_path, path_count } => {
+        SafetyActionKind::AiContextInclude {
+            has_secret_path,
+            path_count,
+        } => {
             if *has_secret_path {
                 return SafetyDecision::block(
                     id,
@@ -259,55 +276,81 @@ pub fn evaluate(
         SafetyActionKind::ExtensionPermission { permission, .. } => {
             // Mirrors Wave 6 default permission matrix (task 6.2).
             match permission.as_str() {
-                "read_workspace" => SafetyDecision::allow(id, RiskLevel::Low, "read_workspace: allowed"),
+                "read_workspace" => {
+                    SafetyDecision::allow(id, RiskLevel::Low, "read_workspace: allowed")
+                }
                 "write_file" => SafetyDecision::ask(
-                    id, RiskLevel::Medium, "extension write_file permission",
+                    id,
+                    RiskLevel::Medium,
+                    "extension write_file permission",
                     ConfirmationKind::Simple,
                 ),
-                "delete_file" => SafetyDecision::block(id, RiskLevel::Destructive, "extension delete_file: blocked"),
+                "delete_file" => SafetyDecision::block(
+                    id,
+                    RiskLevel::Destructive,
+                    "extension delete_file: blocked",
+                ),
                 "run_terminal" => SafetyDecision::ask(
-                    id, RiskLevel::High, "extension run_terminal permission",
+                    id,
+                    RiskLevel::High,
+                    "extension run_terminal permission",
                     ConfirmationKind::Simple,
                 ),
                 "access_git" => SafetyDecision::ask(
-                    id, RiskLevel::Medium, "extension access_git permission",
+                    id,
+                    RiskLevel::Medium,
+                    "extension access_git permission",
                     ConfirmationKind::Simple,
                 ),
-                "access_env" => SafetyDecision::block(id, RiskLevel::Secret, "extension access_env: blocked"),
-                "access_database" => SafetyDecision::block(id, RiskLevel::High, "extension access_database: blocked"),
+                "access_env" => {
+                    SafetyDecision::block(id, RiskLevel::Secret, "extension access_env: blocked")
+                }
+                "access_database" => {
+                    SafetyDecision::block(id, RiskLevel::High, "extension access_database: blocked")
+                }
                 _ => SafetyDecision::block(
-                    id, RiskLevel::Unknown,
+                    id,
+                    RiskLevel::Unknown,
                     "unknown extension permission: blocked by default",
                 ),
             }
         }
 
         // ---- Remote / export (always ask) --------------------------------
-        SafetyActionKind::RemoteExport { destination_summary } => {
-            SafetyDecision::ask(
-                id,
-                RiskLevel::Remote,
-                format!("exporting data remotely to: {}", truncate(destination_summary, 80)),
-                ConfirmationKind::DangerAck {
-                    warning: "Data will leave your machine.".to_string(),
-                },
-            )
-        }
+        SafetyActionKind::RemoteExport {
+            destination_summary,
+        } => SafetyDecision::ask(
+            id,
+            RiskLevel::Remote,
+            format!(
+                "exporting data remotely to: {}",
+                truncate(destination_summary, 80)
+            ),
+            ConfirmationKind::DangerAck {
+                warning: "Data will leave your machine.".to_string(),
+            },
+        ),
 
         // ---- Unknown (fail conservative) ---------------------------------
-        SafetyActionKind::Unknown { summary } => {
-            match strictness {
-                SafetyStrictness::Paranoid => SafetyDecision::block(
-                    id, RiskLevel::Unknown,
-                    format!("unknown action blocked in paranoid mode: {}", truncate(summary, 80)),
+        SafetyActionKind::Unknown { summary } => match strictness {
+            SafetyStrictness::Paranoid => SafetyDecision::block(
+                id,
+                RiskLevel::Unknown,
+                format!(
+                    "unknown action blocked in paranoid mode: {}",
+                    truncate(summary, 80)
                 ),
-                _ => SafetyDecision::ask(
-                    id, RiskLevel::Unknown,
-                    format!("unrecognized action requires confirmation: {}", truncate(summary, 80)),
-                    ConfirmationKind::Simple,
+            ),
+            _ => SafetyDecision::ask(
+                id,
+                RiskLevel::Unknown,
+                format!(
+                    "unrecognized action requires confirmation: {}",
+                    truncate(summary, 80)
                 ),
-            }
-        }
+                ConfirmationKind::Simple,
+            ),
+        },
     }
 }
 
@@ -335,7 +378,10 @@ fn protected_ask(
         SafetyStrictness::Paranoid => SafetyDecision::block(
             action_id,
             risk,
-            format!("protected path blocked in paranoid mode: {}", truncate(path, 80)),
+            format!(
+                "protected path blocked in paranoid mode: {}",
+                truncate(path, 80)
+            ),
         ),
         _ => SafetyDecision::ask(
             action_id,
@@ -417,7 +463,9 @@ mod tests {
     #[test]
     fn secret_path_read_is_blocked() {
         let d = eval(
-            SafetyActionKind::FileRead { path: ".env".into() },
+            SafetyActionKind::FileRead {
+                path: ".env".into(),
+            },
             SafetyStrictness::Standard,
         );
         assert_eq!(d.verdict, SafetyVerdict::Block);
@@ -428,7 +476,9 @@ mod tests {
     #[test]
     fn git_internals_read_asks_by_default() {
         let d = eval(
-            SafetyActionKind::FileRead { path: ".git/config".into() },
+            SafetyActionKind::FileRead {
+                path: ".git/config".into(),
+            },
             SafetyStrictness::Standard,
         );
         assert_eq!(d.verdict, SafetyVerdict::Ask);
@@ -438,16 +488,23 @@ mod tests {
     #[test]
     fn unknown_actions_fail_conservative() {
         let d = eval(
-            SafetyActionKind::Unknown { summary: "frobnicate".into() },
+            SafetyActionKind::Unknown {
+                summary: "frobnicate".into(),
+            },
             SafetyStrictness::Standard,
         );
-        assert!(matches!(d.verdict, SafetyVerdict::Ask | SafetyVerdict::Block));
+        assert!(matches!(
+            d.verdict,
+            SafetyVerdict::Ask | SafetyVerdict::Block
+        ));
     }
 
     #[test]
     fn paranoid_blocks_unknown_actions() {
         let d = eval(
-            SafetyActionKind::Unknown { summary: "frobnicate".into() },
+            SafetyActionKind::Unknown {
+                summary: "frobnicate".into(),
+            },
             SafetyStrictness::Paranoid,
         );
         assert_eq!(d.verdict, SafetyVerdict::Block);
@@ -456,7 +513,9 @@ mod tests {
     #[test]
     fn remote_export_always_asks() {
         let d = eval(
-            SafetyActionKind::RemoteExport { destination_summary: "cloud".into() },
+            SafetyActionKind::RemoteExport {
+                destination_summary: "cloud".into(),
+            },
             SafetyStrictness::Standard,
         );
         assert_eq!(d.verdict, SafetyVerdict::Ask);
@@ -504,15 +563,21 @@ mod tests {
     fn strictness_changes_decisions_predictably() {
         // A normal file write: Standard→allow, Strict→ask, Paranoid→block.
         let std = eval(
-            SafetyActionKind::FileWrite { path: "src/main.rs".into() },
+            SafetyActionKind::FileWrite {
+                path: "src/main.rs".into(),
+            },
             SafetyStrictness::Standard,
         );
         let strict = eval(
-            SafetyActionKind::FileWrite { path: "src/main.rs".into() },
+            SafetyActionKind::FileWrite {
+                path: "src/main.rs".into(),
+            },
             SafetyStrictness::Strict,
         );
         let paranoid = eval(
-            SafetyActionKind::FileWrite { path: "src/main.rs".into() },
+            SafetyActionKind::FileWrite {
+                path: "src/main.rs".into(),
+            },
             SafetyStrictness::Paranoid,
         );
         assert_eq!(std.verdict, SafetyVerdict::Allow);
@@ -528,7 +593,11 @@ mod tests {
             SafetyStrictness::Paranoid,
         ] {
             let d = eval(SafetyActionKind::GitRead, s);
-            assert_eq!(d.verdict, SafetyVerdict::Allow, "git_read must always be allowed");
+            assert_eq!(
+                d.verdict,
+                SafetyVerdict::Allow,
+                "git_read must always be allowed"
+            );
         }
     }
 }

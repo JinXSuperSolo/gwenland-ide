@@ -332,13 +332,34 @@ mod tests {
     // 6.6.1 — default matrix matches requirements
     #[test]
     fn default_matrix_matches_requirements() {
-        assert_eq!(default_for_permission(&Permission::ReadWorkspace), PermissionDefault::Allowed);
-        assert_eq!(default_for_permission(&Permission::WriteFile), PermissionDefault::Ask);
-        assert_eq!(default_for_permission(&Permission::DeleteFile), PermissionDefault::Blocked);
-        assert_eq!(default_for_permission(&Permission::RunTerminal), PermissionDefault::Ask);
-        assert_eq!(default_for_permission(&Permission::AccessGit), PermissionDefault::Ask);
-        assert_eq!(default_for_permission(&Permission::AccessEnv), PermissionDefault::Blocked);
-        assert_eq!(default_for_permission(&Permission::AccessDatabase), PermissionDefault::Blocked);
+        assert_eq!(
+            default_for_permission(&Permission::ReadWorkspace),
+            PermissionDefault::Allowed
+        );
+        assert_eq!(
+            default_for_permission(&Permission::WriteFile),
+            PermissionDefault::Ask
+        );
+        assert_eq!(
+            default_for_permission(&Permission::DeleteFile),
+            PermissionDefault::Blocked
+        );
+        assert_eq!(
+            default_for_permission(&Permission::RunTerminal),
+            PermissionDefault::Ask
+        );
+        assert_eq!(
+            default_for_permission(&Permission::AccessGit),
+            PermissionDefault::Ask
+        );
+        assert_eq!(
+            default_for_permission(&Permission::AccessEnv),
+            PermissionDefault::Blocked
+        );
+        assert_eq!(
+            default_for_permission(&Permission::AccessDatabase),
+            PermissionDefault::Blocked
+        );
     }
 
     // 6.6.2 — unknown permissions are blocked
@@ -385,7 +406,10 @@ mod tests {
         )
         .unwrap();
         let reg = PermissionRegistry::load(dir.path());
-        assert!(reg.extensions.is_empty(), "malformed → empty default registry");
+        assert!(
+            reg.extensions.is_empty(),
+            "malformed → empty default registry"
+        );
     }
 
     // 6.6.5 — approval history appends and redacts target summaries
