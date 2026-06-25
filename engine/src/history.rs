@@ -160,18 +160,19 @@ fn configured_excludes(workspace_root: &Path) -> Vec<String> {
         ".env.*".to_string(),
         ".gwenland/**".to_string(),
     ];
-    if let Some(value) = read_settings_json(workspace_root) {
-        if let Some(extra) = value
-            .pointer("/history/excludePatterns")
-            .and_then(|v| v.as_array())
-            .or_else(|| {
-                value
-                    .get("history_exclude_patterns")
-                    .and_then(|v| v.as_array())
-            })
-        {
-            patterns.extend(extra.iter().filter_map(|v| v.as_str().map(str::to_string)));
-        }
+    let Some(value) = read_settings_json(workspace_root) else {
+        return patterns;
+    };
+    if let Some(extra) = value
+        .pointer("/history/excludePatterns")
+        .and_then(|v| v.as_array())
+        .or_else(|| {
+            value
+                .get("history_exclude_patterns")
+                .and_then(|v| v.as_array())
+        })
+    {
+        patterns.extend(extra.iter().filter_map(|v| v.as_str().map(str::to_string)));
     }
     patterns
 }
