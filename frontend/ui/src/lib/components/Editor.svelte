@@ -126,6 +126,22 @@
     })
   }
 
+  // CSS tokens — reading getComputedStyle on every scroll frame forces a style
+  // recalc. Cache once after mount; these never change at runtime.
+  let minimapAccent = '#c28a64'
+  let minimapMuted = '#8f8984'
+  let minimapColorsCached = false
+
+  function ensureMinimapColors() {
+    if (minimapColorsCached || !minimapCanvas) return
+    const styles = getComputedStyle(minimapCanvas)
+    const a = styles.getPropertyValue('--primary').trim()
+    const m = styles.getPropertyValue('--muted-foreground').trim()
+    if (a) minimapAccent = a
+    if (m) minimapMuted = m
+    minimapColorsCached = true
+  }
+
   function drawEditorMinimap() {
     if (!view || !minimapCanvas || !$editorPreferences.editorMinimap) return
     const rect = minimapCanvas.getBoundingClientRect()
@@ -138,9 +154,9 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, rect.width, rect.height)
 
-    const styles = getComputedStyle(minimapCanvas)
-    const accent = styles.getPropertyValue('--primary').trim() || '#c28a64'
-    const muted = styles.getPropertyValue('--muted-foreground').trim() || '#8f8984'
+    ensureMinimapColors()
+    const accent = minimapAccent
+    const muted = minimapMuted
     const lines = view.state.doc.lines
     const lineHeight = Math.max(1, rect.height / Math.max(lines, 1))
     ctx.fillStyle = muted

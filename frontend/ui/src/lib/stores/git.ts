@@ -38,13 +38,17 @@ const POLL_MS = 10000
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let lastRoot: string | null = null
 
-/** Re-read git status for the open workspace. No-op when no folder is open. */
+let refreshing = false
+
+/** Re-read git status for the open workspace. No-op when already in-flight or no folder open. */
 export async function refreshGit(): Promise<void> {
+  if (refreshing) return
   const root = get(workspace).folderPath
   if (!root) {
     git.set(initial)
     return
   }
+  refreshing = true
   try {
     const isRepo = await gitIsRepo(root)
     if (!isRepo) {
@@ -61,9 +65,9 @@ export async function refreshGit(): Promise<void> {
       behind: status.behind,
     })
   } catch {
-    // Treat any failure (git missing, transient) as "not a repo" so the UI hides
-    // rather than showing a broken indicator.
     git.set(initial)
+  } finally {
+    refreshing = false
   }
 }
 
@@ -87,6 +91,7 @@ function stopPolling(): void {
 }
 
 let inited = false
+let agentDoneUnlisten: (() => void) | null = null
 
 /**
  * Wire git polling. It runs ONLY while a workspace is open and the window is
@@ -126,8 +131,12 @@ export function initGit(): void {
 
   // Refresh after any agent terminal command completes (npm install, etc.)
   // so file-tree badges and status bar update without waiting for the poll.
-  void listen(AGENT_CMD_DONE_EVENT, () => {
+  // Capture the unlisten so it doesn't leak across hot-reloads / re-inits.
+  listen(AGENT_CMD_DONE_EVENT, () => {
     if (get(workspace).folderPath) void refreshGit()
+  }).then((unlisten) => {
+    // Store for potential future cleanup; currently lives for the app lifetime.
+    agentDoneUnlisten = unlisten
   })
 }
 

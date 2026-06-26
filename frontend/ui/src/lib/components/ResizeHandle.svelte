@@ -16,6 +16,9 @@
   const vertical = $derived(edge === 'top') // a horizontal strip dragged up/down
 
   let dragging = $state(false)
+  let rafPending = false
+  let pendingClientX = 0
+  let pendingClientY = 0
 
   function onPointerDown(e: PointerEvent) {
     e.preventDefault()
@@ -25,32 +28,37 @@
 
   function onPointerMove(e: PointerEvent) {
     if (!dragging) return
+    // Coalesce all moves within a single frame — only the last position matters.
+    pendingClientX = e.clientX
+    pendingClientY = e.clientY
+    if (rafPending) return
+    rafPending = true
     const handle = e.currentTarget as HTMLElement
-    let size: number
-    if (edge === 'left') {
-      // File Tree sits to the LEFT (previous sibling): width = pointer − left edge.
-      const panel = handle.previousElementSibling as HTMLElement | null
-      const left = panel ? panel.getBoundingClientRect().left : 0
-      size = e.clientX - left
-    } else if (edge === 'right') {
-      // AI panel sits to the RIGHT (next sibling): width = panel right − pointer.
-      const panel = handle.nextElementSibling as HTMLElement | null
-      const right = panel ? panel.getBoundingClientRect().right : window.innerWidth
-      size = right - e.clientX
-    } else {
-      // Terminal sits BELOW (next sibling): height = panel bottom − pointer.
-      const panel = handle.nextElementSibling as HTMLElement | null
-      const bottom = panel ? panel.getBoundingClientRect().bottom : window.innerHeight
-      size = bottom - e.clientY
-    }
-    // Keep the panel from swallowing the window on small screens; the store
-    // additionally clamps to the panel's fixed [min, max].
-    const winMax = vertical ? window.innerHeight * 0.7 : window.innerWidth * 0.6
-    setPanelSize(target, Math.min(size, winMax))
+    requestAnimationFrame(() => {
+      rafPending = false
+      if (!dragging) return
+      let size: number
+      if (edge === 'left') {
+        const panel = handle.previousElementSibling as HTMLElement | null
+        const left = panel ? panel.getBoundingClientRect().left : 0
+        size = pendingClientX - left
+      } else if (edge === 'right') {
+        const panel = handle.nextElementSibling as HTMLElement | null
+        const right = panel ? panel.getBoundingClientRect().right : window.innerWidth
+        size = right - pendingClientX
+      } else {
+        const panel = handle.nextElementSibling as HTMLElement | null
+        const bottom = panel ? panel.getBoundingClientRect().bottom : window.innerHeight
+        size = bottom - pendingClientY
+      }
+      const winMax = vertical ? window.innerHeight * 0.7 : window.innerWidth * 0.6
+      setPanelSize(target, Math.min(size, winMax))
+    })
   }
 
   function onPointerUp(e: PointerEvent) {
     dragging = false
+    rafPending = false
     ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
   }
 </script>

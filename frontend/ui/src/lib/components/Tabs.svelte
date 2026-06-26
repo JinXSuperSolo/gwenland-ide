@@ -38,27 +38,36 @@
     })
   })
 
-  // Git status dot: returns the CSS modifier class for a tab's file path,
-  // or empty string when clean/not a repo/not an editor tab.
+  // Precomputed O(1) map: repo-relative path → CSS class.
+  // Rebuilt only when git state or workspace root changes, not per-tab per-render.
+  const gitDotMap = $derived.by(() => {
+    const state = $git
+    const root = $workspace.folderPath
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
+    const map = new Map<string, string>()
+    const rootN = root ? norm(root) : ''
+    if (state.isRepo && root) {
+      for (const f of state.files) {
+        let cls: string
+        switch (f.status) {
+          case 'M': case 'R': cls = 'git-modified'; break
+          case 'D': cls = 'git-deleted'; break
+          case 'U': case 'A': cls = 'git-added'; break
+          default: cls = 'git-modified'
+        }
+        map.set(f.path, cls)
+      }
+    }
+    return { map, rootN, norm }
+  })
+
   function gitDotClass(tab: Tab): string {
     if (tab.kind !== 'editor' || !tab.path) return ''
-    const state = $git
-    if (!state.isRepo) return ''
-    const root = $workspace.folderPath
-    if (!root) return ''
-    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
-    const rootN = norm(root)
-    const rel = norm(tab.path).startsWith(rootN + '/')
-      ? norm(tab.path).slice(rootN.length + 1)
-      : norm(tab.path)
-    const f = state.files.find((x) => x.path === rel)
-    if (!f) return ''
-    switch (f.status) {
-      case 'M': case 'R': return 'git-modified'
-      case 'D': return 'git-deleted'
-      case 'U': case 'A': return 'git-added'
-      default: return 'git-modified'
-    }
+    const { map, rootN, norm } = gitDotMap
+    if (!rootN) return ''
+    const normalized = norm(tab.path)
+    const rel = normalized.startsWith(rootN + '/') ? normalized.slice(rootN.length + 1) : normalized
+    return map.get(rel) ?? ''
   }
 
   // Hover tooltip: an editor tab's on-disk path, a diff tab's path, or a

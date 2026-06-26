@@ -82,7 +82,9 @@
   }
 
   function scheduleTerminalMinimapDraw() {
-    if (minimapFrame) return
+    // Skip canvas work when this terminal tab isn't visible — avoids background
+    // rAF churn while another session tab is active.
+    if (!visible || minimapFrame) return
     minimapFrame = requestAnimationFrame(() => {
       minimapFrame = 0
       drawTerminalMinimap()
