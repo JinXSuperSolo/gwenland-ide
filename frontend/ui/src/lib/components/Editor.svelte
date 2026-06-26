@@ -157,7 +157,11 @@
   // Using $effect so it runs after host is bound and on every activeId change.
   $effect(() => {
     const activeId = tabId ?? $tabs.activeId
-    if (activeId === mountedId) return
+    // Check if the tab's path changed even if the id is the same (preview slot
+    // replacement: the same slot id gets a new file's content).
+    const activeTab = activeId ? $tabs.tabs.find((t) => t.id === activeId) : null
+    const activePath = activeTab && isEditorTab(activeTab) ? activeTab.path : null
+    if (activeId === mountedId && activePath === mountedPath) return
     // Flush + persist whatever is currently mounted before switching away.
     flushLspChange()
     persistMounted()
