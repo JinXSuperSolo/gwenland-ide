@@ -111,8 +111,13 @@ export function revealInExplorer(path: string, workspaceRoot: string): Promise<v
   return invoke<void>('reveal_in_explorer', { path, workspaceRoot })
 }
 
-/** Move a path to the workspace-local `.gwenland/trash/` recovery area. */
+/** Move a path to the OS-native Recycle Bin / Trash. Manual file-tree action. */
 export function moveToTrash(path: string, workspaceRoot: string): Promise<void> {
+  return invoke<void>('move_path_to_os_trash', { path, workspaceRoot })
+}
+
+/** Move a path to the workspace-local `.gwenland/trash/` recovery area. */
+export function moveToWorkspaceTrash(path: string, workspaceRoot: string): Promise<void> {
   return invoke<void>('move_to_trash', { path, workspaceRoot })
 }
 

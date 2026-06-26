@@ -90,6 +90,7 @@ describe('registered action sets (real registry)', () => {
     const fileIds = registry.getActions(ctx('file_tree', { path: '/ws/a.ts', workspaceRoot: '/ws' })).map((a) => a.id)
     expect(fileIds).toContain('file.newFile')
     expect(fileIds).toContain('file.delete')
+    expect(fileIds).toContain('file.deletePermanently')
     expect(fileIds).toContain('file.copyRelativePath')
     expect(fileIds.every((id) => id.startsWith('file.'))).toBe(true)
 
@@ -118,6 +119,17 @@ describe('registered action sets (real registry)', () => {
     expect(onFolder.some((a) => a.id === 'file.openToSide')).toBe(false)
     const onFile = registry.getActions(ctx('file_tree', { path: '/ws/a.ts', isDirectory: false, workspaceRoot: '/ws' }))
     expect(onFile.some((a) => a.id === 'file.openToSide')).toBe(true)
+  })
+
+  it('manual delete actions keep separate recoverable and permanent paths', () => {
+    const actions = registry.getActions(ctx('file_tree', { path: '/ws/a.ts', workspaceRoot: '/ws' }))
+    const trash = actions.find((a) => a.id === 'file.delete')
+    const permanent = actions.find((a) => a.id === 'file.deletePermanently')
+
+    expect(trash?.label).toBe('Move to Trash')
+    expect(trash?.shortcut).toBe('Del')
+    expect(permanent?.label).toBe('Delete Permanently')
+    expect(permanent?.shortcut).toBe('Shift+Del')
   })
 
   it('LSP editor actions disable without a connected server and enable with one', () => {

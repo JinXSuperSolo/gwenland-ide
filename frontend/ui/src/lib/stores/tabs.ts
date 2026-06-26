@@ -779,6 +779,54 @@ export function setGroupSizes(sizes: Record<string, number>): void {
   }))
 }
 
+export function moveTabToGroup(tabId: string, targetGroupId: string, targetIndex?: number): boolean {
+  let moved = false
+  updateTabs((state) => {
+    const source = groupForTab(state, tabId)
+    const target = state.groups.find((group) => group.id === targetGroupId)
+    const tab = source?.tabs.find((candidate) => candidate.id === tabId)
+    if (!source || !target || !tab || target.isLocked) return state
+
+    const sourceIndex = source.tabs.findIndex((candidate) => candidate.id === tabId)
+    const sameGroup = source.id === target.id
+    const groups = state.groups.map((group) => {
+      if (sameGroup && group.id === source.id) {
+        const without = group.tabs.filter((candidate) => candidate.id !== tabId)
+        let desiredIndex = Number.isFinite(targetIndex) ? targetIndex! : without.length
+        if (sourceIndex < desiredIndex) desiredIndex -= 1
+        const insertAt = Math.max(0, Math.min(without.length, desiredIndex))
+        const nextTabs = [...without]
+        nextTabs.splice(insertAt, 0, tab)
+        return makeGroup({ ...group, tabs: nextTabs, activeId: tab.id })
+      }
+
+      if (group.id === source.id) {
+        const without = group.tabs.filter((candidate) => candidate.id !== tabId)
+        const nextActive =
+          group.activeId === tabId
+            ? without[sourceIndex]?.id ?? without[sourceIndex - 1]?.id ?? null
+            : group.activeId
+        return makeGroup({ ...group, tabs: without, activeId: nextActive })
+      }
+
+      if (group.id === target.id) {
+        const insertAt = Number.isFinite(targetIndex)
+          ? Math.max(0, Math.min(group.tabs.length, targetIndex!))
+          : group.tabs.length
+        const nextTabs = [...group.tabs]
+        nextTabs.splice(insertAt, 0, tab)
+        return makeGroup({ ...group, tabs: nextTabs, activeId: tab.id })
+      }
+
+      return group
+    })
+
+    moved = true
+    return { ...state, activeGroupId: target.id, groups }
+  })
+  return moved
+}
+
 export function showOpenedEditors(): void {
   const lines = get(tabs).groups.flatMap((group, index) =>
     group.tabs.map((tab) => {

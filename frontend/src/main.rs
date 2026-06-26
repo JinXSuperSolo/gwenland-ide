@@ -419,6 +419,102 @@ fn reveal_in_explorer(path: String, workspace_root: String) -> Result<(), String
     result.map(|_| ()).map_err(|e| e.to_string())
 }
 
+fn command_status(
+    name: &str,
+    status: std::io::Result<std::process::ExitStatus>,
+) -> Result<(), String> {
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("{name} exited with status {status}")),
+        Err(err) => Err(format!("{name} failed: {err}")),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn move_target_to_os_trash(target: &std::path::Path) -> Result<(), String> {
+    let path = target
+        .to_str()
+        .ok_or_else(|| "path is not valid UTF-8".to_string())?;
+    let script = r#"
+Add-Type -AssemblyName Microsoft.VisualBasic
+$p = $args[0]
+if (Test-Path -LiteralPath $p -PathType Container) {
+  [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
+} else {
+  [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
+}
+"#;
+    command_status(
+        "PowerShell recycle-bin move",
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script, path])
+            .status(),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn move_target_to_os_trash(target: &std::path::Path) -> Result<(), String> {
+    let path = target
+        .to_str()
+        .ok_or_else(|| "path is not valid UTF-8".to_string())?;
+    command_status(
+        "Finder trash move",
+        std::process::Command::new("osascript")
+            .args([
+                "-e",
+                "on run argv",
+                "-e",
+                "tell application \"Finder\" to delete POSIX file (item 1 of argv)",
+                "-e",
+                "end run",
+                path,
+            ])
+            .status(),
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn move_target_to_os_trash(target: &std::path::Path) -> Result<(), String> {
+    let attempts = [
+        ("gio trash", vec!["gio", "trash"]),
+        ("kioclient5 trash", vec!["kioclient5", "move"]),
+        ("kioclient trash", vec!["kioclient", "move"]),
+        ("trash-put", vec!["trash-put"]),
+    ];
+    let mut errors = Vec::new();
+    for (name, command) in attempts {
+        let mut cmd = std::process::Command::new(command[0]);
+        for arg in command.iter().skip(1) {
+            cmd.arg(arg);
+        }
+        cmd.arg(target);
+        if name.starts_with("kioclient") {
+            cmd.arg("trash:/");
+        }
+        match command_status(name, cmd.status()) {
+            Ok(()) => return Ok(()),
+            Err(err) => errors.push(err),
+        }
+    }
+    Err(format!(
+        "no OS trash command succeeded (tried gio, kioclient5, kioclient, trash-put): {}",
+        errors.join("; ")
+    ))
+}
+
+/// Move a path to the OS-native trash/recycle bin. This is for manual user
+/// file-tree deletion; agent deletes still use `.gwenland/trash/` recovery.
+#[tauri::command]
+fn move_path_to_os_trash(path: String, workspace_root: String) -> Result<(), String> {
+    let target = std::path::Path::new(&path);
+    gwenland_engine::fs::check_within_workspace(target, std::path::Path::new(&workspace_root))
+        .map_err(|e| e.to_string())?;
+    if !target.exists() {
+        return Err(format!("path not found: {path}"));
+    }
+    move_target_to_os_trash(target)
+}
+
 // --- AI key commands (Milestone 4, Wave 1) ---------------------------------
 // Write-only/status-only by design: `ai_check_key` returns a bool, never the
 // value; `ai_set_key` receives a key and hands it to the OS keychain.
@@ -1629,12 +1725,13 @@ fn apply_file_change(
             if !updated.trim().is_empty() {
                 return Err("delete diff did not reduce the file to empty content".to_string());
             }
-            gwenland_engine::fs::delete_path(&path, root).map_err(|e| e.to_string())?;
+            gwenland_engine::recovery::move_to_trash(&path, root, "agent")
+                .map_err(|e| e.to_string())?;
             Ok(apply_outcome(
                 file,
                 target,
                 hunk_ids,
-                "deleted file after confirmed review".to_string(),
+                "moved file to workspace trash after confirmed review".to_string(),
             ))
         }
         FileChangeKind::Rename => {
@@ -2814,7 +2911,7 @@ fn estimate_mutation_lines(call: &gwenland_engine::agentic::ToolCall) -> usize {
 }
 
 /// Apply an approved mutating tool (Apply Gate). All paths are workspace-scoped
-/// and secret-checked; delete uses the M9 workspace-safe deleter.
+/// and secret-checked; agent deletes move into `.gwenland/trash/` for recovery.
 fn apply_mutation_tool(
     root: &std::path::Path,
     call: &gwenland_engine::agentic::ToolCall,
@@ -2846,8 +2943,9 @@ fn apply_mutation_tool(
                 Err(e) => ToolResult::err(&call.id, format!("write failed: {e}")),
             }
         }
-        ToolKind::DeleteFile => match gwenland_engine::fs::delete_path(&abs, root) {
-            Ok(()) => ToolResult::ok(&call.id, format!("Deleted {path}")),
+        ToolKind::DeleteFile => match gwenland_engine::recovery::move_to_trash(&abs, root, "agent")
+        {
+            Ok(_) => ToolResult::ok(&call.id, format!("Moved {path} to workspace trash")),
             Err(e) => ToolResult::err(&call.id, format!("delete failed: {e}")),
         },
         ToolKind::EditFile => {
@@ -3927,6 +4025,7 @@ fn main() {
             delete_path,
             duplicate_path,
             reveal_in_explorer,
+            move_path_to_os_trash,
             move_to_trash,
             mark_protected_path,
             terminal_create,
