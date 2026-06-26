@@ -4,35 +4,46 @@ All notable changes to GwenLand IDE are documented here.
 
 ---
 
-## [Unreleased] — v0.1.9
+## [Unreleased]
+
+---
+
+## [0.1.12] — 2026-06-26
 
 ### Added
-- **File type icons in the file tree** — every tree node now shows a proper icon for its file type (55+ extensions, special filenames like `package.json` / `Cargo.toml` / `.gitignore`). Icons come from `material-icon-theme` (already a project dependency — zero new packages). Folder nodes show an open vs closed variant based on expand state.
-- **Git decorations in file tree** — modified files get an `M` badge, added `A`, untracked `U`, deleted `D`. Directories go amber when any child inside is dirty.
-- **Git dirty dots on tabs** — each tab shows a small colored dot (amber/green/red) next to the close button when its file has uncommitted changes. Hides when the tab's own unsaved `●` dot is already visible.
-- **Branch ahead/behind in status bar** — the git status bar shows `↑N` (green) and `↓N` (amber) when your branch is ahead or behind upstream. Returns `(0, 0)` gracefully on no upstream / detached HEAD. Backed by a new `ahead_behind()` in `engine/src/git.rs` with its own unit test.
-- **`CustomDropdown` component** — styled, keyboard-navigable replacement for all native `<select>` elements. Supports inline SVG icons per item, compact mode, full keyboard nav, and `role="listbox"/"option"` accessibility.
-- **Shell picker icons in terminal panel** — the shell selector now uses `CustomDropdown` and shows inline SVG icons for PowerShell, CMD, WSL, Bash, Zsh, Node, Python, and a generic terminal fallback.
-- **AI agent live command output** — while the agent runs a terminal command, a pulsing "executing" banner and a live scrollable output log (capped at 500 lines) replace the normal Run/Skip buttons.
-- **Agent command kill button** — a red ✕ button appears during execution. Fires `agent_kill_terminal`, which kills the process tree via `taskkill /F /T` on Windows or `kill -TERM` on Unix.
-- **`agent://cmd_output` / `agent://cmd_done` events** — the backend now streams stdout/stderr line-by-line while the agent command runs, then fires a done event on exit.
+- **File type icons in the file tree** — every tree node shows a proper icon for its file type (55+ extensions and special filenames like `package.json`, `Cargo.toml`, `.gitignore`). Folder nodes show open/closed variants based on expand state.
+- **Git status decorations** — `M` / `A` / `U` / `D` letter badges on tree nodes; colored dirty dots on tabs; `↑N ↓N` ahead/behind counter in the status bar. Engine: new `ahead_behind()` in `git.rs` + unit test (455 total).
+- **AI agent command streaming** — `run_terminal_tool` is now fully async. Stdout/stderr stream line-by-line via `agent://cmd_output` events; `agent://cmd_done` fires on exit. No more UI freeze during `npm install` or long builds.
+- **Agent kill button** — red ✕ in the command gate kills the running process tree (`taskkill /F /T` on Windows, `kill -TERM` on Unix) via new `agent_kill_terminal` Tauri command.
+- **`CustomDropdown` component** — fully styled replacement for all native `<select>` elements. Keyboard nav (Arrow Up/Down, Enter, Escape), inline SVG icons per item, compact mode, `role="listbox"/"option"` accessibility.
+- **Shell picker icons** — terminal panel shell selector uses `CustomDropdown` with inline SVGs for PowerShell, CMD, WSL, Bash, Zsh, Node, Python, and a generic fallback.
+- **Mermaid diagrams in markdown preview** — zero-dependency in-house renderer (`mermaid-lite.ts`, ~300 lines) handles flowchart / graph (all directions, four node shapes, four edge styles), sequenceDiagram (actors, lifelines, solid/dashed arrows, self-calls, notes, dividers), and pie charts (arc slices, percentage labels, legend, title). Renders as inline SVG in the GwenLand dark palette.
+- **Markdown preview panel** — live split-pane preview for `.md` files with GFM tables, task lists, blockquotes, images, and KaTeX math (lazy-loaded on first `$...$` token).
 
 ### Fixed
-- **AI agent UI freeze on long commands** — `run_terminal_tool` was a synchronous blocking call. Now fully async: stdout/stderr streamed line-by-line via `spawn_blocking`, so the Tauri runtime and UI stay responsive during `npm install` and similar operations.
-- **Multi-tab broken** — single-click on a file now always opens a permanent tab. The preview-slot system (one italic reusable slot) has been removed. Every click on a file tree entry creates a real tab; clicking an already-open file activates its existing tab. No more "replace the only tab" behaviour.
-- **Tab group locked on restore** — `isLocked` and `isMaximized` group state is no longer persisted to `layout.json` nor restored on startup. Lock/maximize are session-only. This eliminates the cold-start state where the group was silently locked, causing new tabs to route to an invisible secondary group.
+- **AI agent UI freeze** — `run_terminal_tool` was synchronous, blocking the entire Tauri runtime. Now async with `spawn_blocking` I/O readers.
+- **Multi-tab broken** — single click always opens a real permanent tab. The preview-slot reuse system has been removed.
+- **Tab group locked on restore** — `isLocked`/`isMaximized` group state is no longer persisted; lock/maximize are session-only, eliminating a cold-start deadlock where new tabs routed to an invisible group.
+- **Context menu hover style** — hovered item now fills with solid `var(--primary)` block (matching the screenshot reference), with dark text on the warm background. Previously was a faint rgba tint.
+- **Context menu radius** — container now uses `var(--radius)` (`1rem`) from global tokens instead of the old hardcoded `0.5rem`.
 
 ### Changed
-- **Context menus redesigned** — updated to GwenLand design tokens: `#1f1e1e` background, orange-tinted hover/active/border, `0.5rem` radius, `scaleY` pop animation. Danger items (Move to Trash, Delete Permanently) get a red label and red-tinted hover background.
-- **All `<select>` elements replaced** — terminal shell picker and font picker now use `CustomDropdown`.
-- **Git store refreshes after agent command** — `git.ts` listens for `agent://cmd_done` and re-polls, so tree badges update automatically after the agent runs a build or install.
-- **Undo / Redo buttons** — replaced split-pane icon buttons in the editor tab-row toolbar with Undo (↩) and Redo (↪) icon buttons. Clicking them is identical to `Ctrl+Z` / `Ctrl+Y`.
-- **Split pane removed** — `Split Editor`, `Split Editor Horizontal`, `Split Editor Vertical` commands removed from the command registry, View menu, editor right-click menu, and tab right-click menu. `splitHorizontal`/`splitVertical`/`openFileToSide` imports cleaned up.
-- **Terminal tab-strip scroll** — the terminal session tab strip now shows a thin scrollbar when sessions overflow; previously the overflow was invisible and unscrollable.
+- **Context menu tokens** — dark `#1f1e1e` background, solid primary hover block, `var(--radius)` corners, no border, `scaleY` pop animation. Danger items (Move to Trash, Delete Permanently) keep red label + red-tinted hover.
+- **All `<select>` elements replaced** — terminal shell picker and settings font picker now use `CustomDropdown`.
+- **Git store auto-refreshes after agent commands** — `agent://cmd_done` triggers a git re-poll so tree badges update after the agent runs a build or install.
+- **Undo / Redo in toolbar** — split-pane buttons replaced with Undo (↩) and Redo (↪). Clicking is identical to `Ctrl+Z` / `Ctrl+Y`.
+- **Split pane removed** — Split Editor commands removed from registry, View menu, editor and tab right-click menus.
+- **Terminal tab-strip now scrollable** — thin scrollbar appears when sessions overflow; was invisible and unscrollable before.
+
+### Performance
+- **Dropped `mermaid` npm package** — removed 3 MB of bundled diagram libraries (cytoscape, dagre, swimlanes, etc.). Replaced with `mermaid-lite.ts` at ~10 KB.
+- **KaTeX lazy-loaded** — moved from a static import to a dynamic import; only fetched when a markdown file containing `$` math syntax is opened. Stays out of the cold-start bundle.
+- **Release exe: 10.3 MB → 4.95 MB** — dist shrunk from 5.2 MB to 1.9 MB after the above changes.
 
 ### Infrastructure
-- `cargo test -p gwenland-engine`: **455 passed** (up from 454 — new `ahead_behind` parse test).
-- `pnpm test`: **82 passed** (9 suites) — unchanged.
+- Version bumped `0.1.10` → `0.1.12` across `tauri.conf.json`, `frontend/Cargo.toml`, `frontend/ui/package.json`.
+- `cargo test -p gwenland-engine`: **455 passed**.
+- `pnpm test`: **82 passed** (9 suites).
 
 ---
 

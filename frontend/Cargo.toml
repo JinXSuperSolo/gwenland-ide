@@ -1,6 +1,6 @@
 [package]
 name = "GwenLand-IDE"
-version = "0.1.10"
+version = "0.1.12"
 edition = "2024"
 
 [[bin]]
