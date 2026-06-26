@@ -3,9 +3,12 @@
 // tree-shaking and types. Behavior is intentionally identical: same extensions,
 // same custom VS Code-style search panel, no language grammars (@codemirror/lang-*).
 
-import { EditorState, Facet } from '@codemirror/state'
+import { EditorState, Facet, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state'
 import {
+  Decoration,
+  type DecorationSet,
   EditorView,
+  WidgetType,
   keymap,
   lineNumbers,
   highlightActiveLine,
@@ -42,6 +45,8 @@ import { indentOnInput, bracketMatching, indentUnit } from '@codemirror/language
 import { lintGutter, setDiagnostics, type Diagnostic as CmDiagnostic } from '@codemirror/lint'
 import {
   autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
   completionKeymap,
   type CompletionContext,
   type CompletionResult,
@@ -216,6 +221,75 @@ export const lspPath = Facet.define<string, string>({
   combine: (values) => values[0] ?? '',
 })
 
+const setInlineDiagnostics = StateEffect.define<LspDiagnostic[]>()
+
+class InlineDiagnosticWidget extends WidgetType {
+  constructor(private readonly diagnostic: LspDiagnostic) {
+    super()
+  }
+
+  eq(other: InlineDiagnosticWidget): boolean {
+    return (
+      other.diagnostic.message === this.diagnostic.message &&
+      other.diagnostic.severity === this.diagnostic.severity
+    )
+  }
+
+  toDOM(): HTMLElement {
+    const dom = document.createElement('div')
+    dom.className = `cm-inline-diagnostic cm-inline-diagnostic-${this.diagnostic.severity}`
+    dom.textContent = this.diagnostic.message
+    return dom
+  }
+}
+
+function inlineDiagnosticDecorations(doc: Text, diagnostics: LspDiagnostic[]): DecorationSet {
+  const byLine = new Map<number, LspDiagnostic>()
+  for (const diagnostic of diagnostics) {
+    const line = Math.min(Math.max(diagnostic.range.start_line + 1, 1), doc.lines)
+    const existing = byLine.get(line)
+    if (!existing || severityRank(diagnostic.severity) < severityRank(existing.severity)) {
+      byLine.set(line, diagnostic)
+    }
+  }
+
+  const builder = new RangeSetBuilder<Decoration>()
+  for (const [lineNo, diagnostic] of [...byLine.entries()].sort((a, b) => a[0] - b[0])) {
+    const line = doc.line(lineNo)
+    builder.add(
+      line.to,
+      line.to,
+      Decoration.widget({
+        widget: new InlineDiagnosticWidget(diagnostic),
+        block: true,
+        side: 1,
+      }),
+    )
+  }
+  return builder.finish()
+}
+
+function severityRank(severity: LspDiagnostic['severity']): number {
+  if (severity === 'error') return 0
+  if (severity === 'warning') return 1
+  if (severity === 'information') return 2
+  return 3
+}
+
+const inlineDiagnosticsField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(value, tr) {
+    let next = tr.docChanged ? value.map(tr.changes) : value
+    for (const effect of tr.effects) {
+      if (effect.is(setInlineDiagnostics)) {
+        next = inlineDiagnosticDecorations(tr.state.doc, effect.value)
+      }
+    }
+    return next
+  },
+  provide: (field) => EditorView.decorations.from(field),
+})
+
 function tokenAt(doc: Text, pos: number): string {
   const line = doc.lineAt(pos)
   const stop = /[\s"'`<>()\[\]{}]/
@@ -233,6 +307,7 @@ function maybeOpenCtrlClickTarget(
   event: MouseEvent,
   view: EditorView,
   onOpenPath?: (path: string) => void,
+  onGoToDefinition?: (line: number, character: number) => void,
 ): boolean {
   if (!event.ctrlKey && !event.metaKey) return false
   const pos = view.posAtCoords({ x: event.clientX, y: event.clientY })
@@ -245,6 +320,11 @@ function maybeOpenCtrlClickTarget(
   }
   if ((text.includes('/') || text.includes('\\') || text.includes('.')) && onOpenPath) {
     onOpenPath(text)
+    return true
+  }
+  if (onGoToDefinition) {
+    const line = view.state.doc.lineAt(pos)
+    onGoToDefinition(line.number - 1, pos - line.from)
     return true
   }
   return false
@@ -313,11 +393,13 @@ export function createEditorState(
   onSelectionChange?: () => void,
   path?: string,
   onOpenPath?: (path: string) => void,
+  onGoToDefinition?: (line: number, character: number) => void,
 ): EditorState {
   const extensions = [
     lspPath.of(path ?? ''),
     getLanguageExtension(path ?? ''),
     autocompletion({ override: [lspCompletionSource] }),
+    closeBrackets(),
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightActiveLine(),
@@ -332,6 +414,7 @@ export function createEditorState(
     // M6: gutter markers for LSP diagnostics. The inline squiggle extension is
     // enabled on demand by `setDiagnostics` (see applyDiagnostics).
     lintGutter(),
+    inlineDiagnosticsField,
     // M8: diff-review overlay (idle until a review session sets decorations).
     // A separate field from lint, so it never clears LSP diagnostics.
     reviewExtension,
@@ -341,6 +424,7 @@ export function createEditorState(
     // through to indent/default behavior when the popup is closed.
     keymap.of([
       ...completionKeymap,
+      ...closeBracketsKeymap,
       ...defaultKeymap,
       ...historyKeymap,
       ...searchKeymap,
@@ -357,7 +441,7 @@ export function createEditorState(
     }),
     EditorView.domEventHandlers({
       click(event, view) {
-        return maybeOpenCtrlClickTarget(event, view, onOpenPath)
+        return maybeOpenCtrlClickTarget(event, view, onOpenPath, onGoToDefinition)
       },
     }),
   ]
@@ -411,7 +495,9 @@ function lspToCmDiagnostic(doc: Text, d: LspDiagnostic): CmDiagnostic {
  */
 export function applyDiagnostics(view: EditorView, diagnostics: LspDiagnostic[]): void {
   const cm = diagnostics.map((d) => lspToCmDiagnostic(view.state.doc, d))
-  view.dispatch(setDiagnostics(view.state, cm))
+  view.dispatch(setDiagnostics(view.state, cm), {
+    effects: setInlineDiagnostics.of(diagnostics),
+  })
 }
 
 export { EditorView, EditorState, undo, redo, openSearchPanel }

@@ -45,6 +45,8 @@
   import collapse from 'iconoir/icons/regular/collapse.svg?raw'
   import undo from 'iconoir/icons/regular/undo.svg?raw'
   import redo from 'iconoir/icons/regular/redo.svg?raw'
+  import moreHoriz from 'iconoir/icons/regular/more-horiz.svg?raw'
+  import minus from 'iconoir/icons/regular/minus.svg?raw'
 
   export const ICONS = {
     plus,
@@ -89,6 +91,8 @@
     collapse,
     undo,
     redo,
+    'more-horiz': moreHoriz,
+    minus,
   } as const
 
   export type IconName = keyof typeof ICONS

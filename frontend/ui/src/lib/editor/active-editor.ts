@@ -17,7 +17,9 @@ import {
   selectNextOccurrence,
   selectSelectionMatches,
 } from '@codemirror/search'
-import { openSearchPanel as openCustomSearchPanel } from './codemirror-setup'
+import { lspPath, openSearchPanel as openCustomSearchPanel } from './codemirror-setup'
+import { lspDefinition, type LspDefinitionLocation } from '../tauri/commands'
+import { lspChangePath } from '../stores/lsp'
 
 type View = EditorView
 
@@ -148,8 +150,46 @@ export function editorFormatDocument(): void {
   pendingEditorFeature('Format Document')
 }
 
+function samePath(a: string, b: string): boolean {
+  const norm = (value: string) => value.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
+  return norm(a) === norm(b)
+}
+
+function emitDefinitionNavigation(location: LspDefinitionLocation): void {
+  window.dispatchEvent(new CustomEvent('gwenland:open-definition', { detail: location }))
+}
+
+export async function editorGoToDefinitionAt(
+  path: string,
+  line: number,
+  character: number,
+): Promise<void> {
+  if (!path) return
+  if (active && samePath(active.state.facet(lspPath), path)) {
+    await lspChangePath(path, active.state.doc.toString())
+  }
+  const location = await lspDefinition(path, line, character, 0).catch(() => null)
+  if (!location) return
+  if (samePath(location.path, path) && active) {
+    const target = active.state.doc.line(Math.min(location.line + 1, active.state.doc.lines))
+    const pos = Math.min(target.from + location.character, target.to)
+    active.dispatch({ selection: { anchor: pos }, scrollIntoView: true })
+    active.focus()
+    return
+  }
+  emitDefinitionNavigation(location)
+}
+
 export function editorGoToDefinition(): void {
-  pendingEditorFeature('Go to Definition')
+  if (!active) return
+  const path = active.state.facet(lspPath)
+  if (!path) {
+    pendingEditorFeature('Go to Definition')
+    return
+  }
+  const pos = active.state.selection.main.head
+  const line = active.state.doc.lineAt(pos)
+  void editorGoToDefinitionAt(path, line.number - 1, pos - line.from)
 }
 
 export function editorRenameSymbol(): void {

@@ -1,7 +1,8 @@
 import { writable, get } from 'svelte/store'
 import { workspace } from './workspace'
 import { subscribeFocus, isAppActive } from './app-focus'
-import { gitIsRepo, gitStatus, type GitFileStatus } from '../tauri/commands'
+import { gitIsRepo, gitStatus, type GitFileStatus, AGENT_CMD_DONE_EVENT } from '../tauri/commands'
+import { listen } from '@tauri-apps/api/event'
 
 /**
  * Git status state (Wave 2 — GWEN-327/329). Polls the open workspace every 4s
@@ -21,9 +22,13 @@ export interface GitState {
   dirtyCount: number
   /** Per-file status, keyed for quick lookup by the file tree. */
   files: GitFileStatus[]
+  /** Commits ahead of upstream (0 when no upstream or not a repo). */
+  ahead: number
+  /** Commits behind upstream (0 when no upstream or not a repo). */
+  behind: number
 }
 
-const initial: GitState = { isRepo: false, branch: '', dirtyCount: 0, files: [] }
+const initial: GitState = { isRepo: false, branch: '', dirtyCount: 0, files: [], ahead: 0, behind: 0 }
 
 export const git = writable<GitState>(initial)
 
@@ -52,6 +57,8 @@ export async function refreshGit(): Promise<void> {
       branch: status.branch,
       dirtyCount: status.dirty_count,
       files: status.files,
+      ahead: status.ahead,
+      behind: status.behind,
     })
   } catch {
     // Treat any failure (git missing, transient) as "not a repo" so the UI hides
@@ -115,6 +122,12 @@ export function initGit(): void {
     } else {
       stopPolling()
     }
+  })
+
+  // Refresh after any agent terminal command completes (npm install, etc.)
+  // so file-tree badges and status bar update without waiting for the poll.
+  void listen(AGENT_CMD_DONE_EVENT, () => {
+    if (get(workspace).folderPath) void refreshGit()
   })
 }
 

@@ -15,7 +15,13 @@
 import { get } from 'svelte/store'
 import { registry } from '../context-menu/actionRegistry'
 import type { ContextAction, ContextMenuContext } from '../context-menu/contextTypes'
-import { activeDoc, editorCut, editorCopy, editorPaste } from '../editor/active-editor'
+import {
+  activeDoc,
+  editorCut,
+  editorCopy,
+  editorGoToDefinition,
+  editorPaste,
+} from '../editor/active-editor'
 import { openPalette } from '../stores/ui'
 import {
   closeActiveTab,
@@ -130,7 +136,7 @@ const editorActions: ContextAction[] = [
     shortcut: 'F12',
     when: (ctx) => ctx.scope === 'editor',
     enabled: isLspConnected,
-    run: () => lspFeaturePending('Go to Definition'),
+    run: () => editorGoToDefinition(),
   },
   {
     id: 'editor.findReferences',

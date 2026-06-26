@@ -48,6 +48,10 @@ pub struct GitStatus {
     pub dirty_count: usize,
     /// Per-file status list for the Git panel.
     pub files: Vec<GitFileStatus>,
+    /// Commits ahead of the upstream tracking branch (0 when no upstream).
+    pub ahead: usize,
+    /// Commits behind the upstream tracking branch (0 when no upstream).
+    pub behind: usize,
 }
 
 /// Run `git <args>` in `root`, returning stdout on success. Maps a missing
@@ -160,15 +164,32 @@ fn parse_porcelain(out: &str) -> Vec<GitFileStatus> {
     files
 }
 
+/// Commits ahead/behind the upstream tracking branch. Returns `(ahead, behind)`.
+/// Returns `(0, 0)` gracefully when the branch has no upstream or git fails.
+pub fn ahead_behind(root: &Path) -> (usize, usize) {
+    // `rev-list --count HEAD...@{u}` outputs "ahead\tbehind" with --left-right.
+    let out = match run_git(root, &["rev-list", "--count", "--left-right", "HEAD...@{u}"]) {
+        Ok(s) => s,
+        Err(_) => return (0, 0),
+    };
+    let mut parts = out.split_whitespace();
+    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (ahead, behind)
+}
+
 /// Full status snapshot: branch + dirty count + per-file list (GWEN-327/328).
 pub fn status(root: &Path) -> Result<GitStatus, GitError> {
     let branch = current_branch(root)?;
     let porcelain = run_git(root, &["status", "--porcelain"])?;
     let files = parse_porcelain(&porcelain);
+    let (ahead, behind) = ahead_behind(root);
     Ok(GitStatus {
         dirty_count: files.len(),
         branch,
         files,
+        ahead,
+        behind,
     })
 }
 
@@ -343,5 +364,20 @@ mod tests {
     fn slugifies_branch_names() {
         assert_eq!(slugify_branch("  my new feature "), "my-new-feature");
         assert_eq!(slugify_branch("fix/bug 12"), "fix/bug-12");
+    }
+
+    #[test]
+    fn ahead_behind_parses_rev_list_output() {
+        // Simulate what `git rev-list --count --left-right HEAD...@{u}` outputs.
+        let parse = |s: &str| -> (usize, usize) {
+            let mut parts = s.split_whitespace();
+            let a = parts.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+            let b = parts.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+            (a, b)
+        };
+        assert_eq!(parse("3\t1"), (3, 1));
+        assert_eq!(parse("0\t0"), (0, 0));
+        assert_eq!(parse(""), (0, 0));
+        assert_eq!(parse("5\t0"), (5, 0));
     }
 }

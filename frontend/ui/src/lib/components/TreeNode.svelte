@@ -140,38 +140,41 @@
   // Indent each level; base padding keeps the first level off the edge.
   const indent = $derived(8 + depth * 14)
 
-  // GWEN-329: git status color for this node. Files get their own badge letter;
-  // folders go amber when any child below them is dirty. Hidden when not a repo.
-  const gitClass = $derived.by(() => {
+  // GWEN-329: git status color + badge letter for this node.
+  // Files get their own badge letter; folders go amber when any child is dirty.
+  const gitInfo = $derived.by(() => {
     const state = $git
-    if (!state.isRepo) return ''
+    if (!state.isRepo) return { cls: '', badge: '' }
     const root = $workspace.folderPath
-    if (!root) return ''
+    if (!root) return { cls: '', badge: '' }
     const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
     const rootN = norm(root)
     const selfRel = norm(entry.path).startsWith(rootN + '/')
       ? norm(entry.path).slice(rootN.length + 1)
       : norm(entry.path)
     if (entry.is_dir) {
-      // Amber if any changed file lives under this folder.
       const prefix = selfRel + '/'
-      return state.files.some((f) => f.path.startsWith(prefix)) ? 'git-dir-dirty' : ''
+      const dirty = state.files.some((f) => f.path.startsWith(prefix))
+      return { cls: dirty ? 'git-dir-dirty' : '', badge: '' }
     }
     const f = state.files.find((x) => x.path === selfRel)
-    if (!f) return ''
+    if (!f) return { cls: '', badge: '' }
     switch (f.status) {
       case 'M':
       case 'R':
-        return 'git-modified'
+        return { cls: 'git-modified', badge: 'M' }
       case 'D':
-        return 'git-deleted'
+        return { cls: 'git-deleted', badge: 'D' }
       case 'U':
+        return { cls: 'git-added', badge: 'U' }
       case 'A':
-        return 'git-added'
+        return { cls: 'git-added', badge: 'A' }
       default:
-        return 'git-modified'
+        return { cls: 'git-modified', badge: 'M' }
     }
   })
+  const gitClass = $derived(gitInfo.cls)
+  const gitBadge = $derived(gitInfo.badge)
 
   // Right-click opens the registry-driven context menu (M9). It only sends the
   // node's context; the registry decides which actions apply.
@@ -188,7 +191,7 @@
 <div
   class="node-row gw-anim-fade"
   class:is-dir={entry.is_dir}
-  style:padding-left={`${indent}px`}
+  style={`padding-left: ${indent}px; --tree-depth: ${depth};`}
   role="treeitem"
   aria-selected={false}
   aria-expanded={entry.is_dir ? expanded : undefined}
@@ -220,6 +223,9 @@
     <FileIcon name={entry.name} size={16} />
   {/if}
   <span class={`node-name ${gitClass}`}>{entry.name}</span>
+  {#if gitBadge}
+    <span class={`git-badge ${gitClass}`}>{gitBadge}</span>
+  {/if}
 </div>
 
 {#if entry.is_dir && expanded}
@@ -238,6 +244,7 @@
 
 <style>
   .node-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 4px;
@@ -248,6 +255,21 @@
     cursor: pointer;
     white-space: nowrap;
     user-select: none;
+  }
+  .node-row::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 8px;
+    width: calc(var(--tree-depth) * 14px);
+    pointer-events: none;
+    background-image: repeating-linear-gradient(
+      to right,
+      transparent 0,
+      transparent 13px,
+      color-mix(in srgb, var(--sidebar-border) 82%, transparent) 13px,
+      color-mix(in srgb, var(--sidebar-border) 82%, transparent) 14px
+    );
+    opacity: 0.8;
   }
   .node-row:hover {
     background-color: var(--sidebar-accent);
@@ -290,6 +312,30 @@
   .node-name.git-deleted {
     color: #f14c4c;
     text-decoration: line-through;
+  }
+  /* Git status letter badge — flush right after the filename. */
+  .git-badge {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding: 0 3px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 14px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    letter-spacing: 0;
+  }
+  .git-badge.git-modified {
+    color: #e5c07b;
+    background: color-mix(in srgb, #e5c07b 14%, transparent);
+  }
+  .git-badge.git-added {
+    color: #98c379;
+    background: color-mix(in srgb, #98c379 14%, transparent);
+  }
+  .git-badge.git-deleted {
+    color: #e06c75;
+    background: color-mix(in srgb, #e06c75 14%, transparent);
   }
   .node-info {
     height: 22px;

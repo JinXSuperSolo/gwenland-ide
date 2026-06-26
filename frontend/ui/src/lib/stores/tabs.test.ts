@@ -1,6 +1,14 @@
 import { get } from 'svelte/store'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { moveTabToGroup, tabs, type Tab, type TabsState } from './tabs'
+import {
+  closeSplitPane,
+  moveTabToGroup,
+  splitHorizontal,
+  splitVertical,
+  tabs,
+  type Tab,
+  type TabsState,
+} from './tabs'
 
 const previewA: Tab = {
   id: 'a',
@@ -22,6 +30,7 @@ function reset(next?: Partial<TabsState>) {
     activeId: 'a',
     activeGroupId: 'left',
     orientation: 'horizontal',
+    mruTabIds: ['a', 'b'],
     groups: [
       {
         id: 'left',
@@ -105,5 +114,41 @@ describe('tabs store group moves', () => {
     expect(moveTabToGroup('a', 'right')).toBe(false)
     expect(get(tabs).groups[0].tabs.map((tab) => tab.id)).toEqual(['a'])
     expect(get(tabs).groups[1].tabs.map((tab) => tab.id)).toEqual(['b'])
+  })
+})
+
+describe('tabs store split panes', () => {
+  beforeEach(() => reset())
+
+  it('creates horizontal and vertical split groups from the active tab', () => {
+    splitHorizontal()
+
+    let state = get(tabs)
+    expect(state.orientation).toBe('horizontal')
+    expect(state.groups).toHaveLength(3)
+    expect(state.activeGroupId).toBe(state.groups[1].id)
+    expect(state.groups[1].tabs.map((tab) => tab.name)).toEqual(['a.png'])
+
+    splitVertical()
+
+    state = get(tabs)
+    expect(state.orientation).toBe('vertical')
+    expect(state.groups).toHaveLength(4)
+    expect(state.activeGroupId).toBe(state.groups[2].id)
+  })
+
+  it('collapses split groups into a single root group without dropping tabs', () => {
+    splitHorizontal()
+    const before = get(tabs)
+
+    closeSplitPane()
+
+    const state = get(tabs)
+    expect(state.orientation).toBe('horizontal')
+    expect(state.activeGroupId).toBe('group-root')
+    expect(state.groups).toHaveLength(1)
+    expect(state.groups[0].tabs.map((tab) => tab.name)).toEqual(
+      before.groups.flatMap((group) => group.tabs.map((tab) => tab.name)),
+    )
   })
 })

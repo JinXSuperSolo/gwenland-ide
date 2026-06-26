@@ -15,6 +15,14 @@
       <Icon name="git-branch" size={12} />
       <span class="git-branch-name">{$git.branch}</span>
     </button>
+
+    {#if $git.ahead > 0 || $git.behind > 0}
+      <span class="git-sync" title={`${$git.ahead} ahead, ${$git.behind} behind upstream`}>
+        {#if $git.ahead > 0}<span class="sync-ahead">↑{$git.ahead}</span>{/if}
+        {#if $git.behind > 0}<span class="sync-behind">↓{$git.behind}</span>{/if}
+      </span>
+    {/if}
+
     {#if $git.dirtyCount > 0}
       <button
         class="git-dirty"
@@ -65,5 +73,21 @@
     color: var(--primary);
     font-size: 8px;
     line-height: 1;
+  }
+  /* Ahead/behind sync counts */
+  .git-sync {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 18px;
+    padding: 0 4px;
+    font-size: 11px;
+    font-family: var(--font-sans);
+  }
+  .sync-ahead {
+    color: #89d185;
+  }
+  .sync-behind {
+    color: #e2c08d;
   }
 </style>

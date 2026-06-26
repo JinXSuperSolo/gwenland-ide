@@ -81,6 +81,8 @@ export interface ContextAction {
   /** Command id to pull the live display shortcut from (M2 registry, Task 5.2).
    *  Takes precedence over `shortcut` so menus match the palette/menu-bar hint. */
   commandId?: string
+  /** Mark the action as destructive — renders in danger red with matching hover. */
+  danger?: boolean
   /** Visibility predicate — return false to omit the action entirely. */
   when: (ctx: ContextMenuContext) => boolean
   /** Enablement predicate — return false to render disabled. Defaults to true. */

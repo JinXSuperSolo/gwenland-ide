@@ -10,9 +10,11 @@
   import Icon from './Icon.svelte'
   import AiSettingsSection from './AiSettingsSection.svelte'
   import LspSettingsSection from './LspSettingsSection.svelte'
+  import CustomDropdown from './CustomDropdown.svelte'
 
   const presetEntries = Object.entries(THEME_PRESETS)
   const fontNames = Object.keys(FONT_OPTIONS)
+  const fontItems = fontNames.map((name) => ({ value: name, label: name }))
 
   // GWEN-323: search filters which sections are visible. Each section declares a
   // title + keyword string; an empty query shows everything.
@@ -140,15 +142,14 @@
           <div class="settings-section-title">Editor — Font</div>
           <div class="settings-row">
             <div class="settings-label">Monospace font (loaded via CDN)</div>
-            <select
-              class="font-select"
-              value={$settings.fontMono}
-              onchange={(e) => setSettings({ fontMono: (e.target as HTMLSelectElement).value })}
-            >
-              {#each fontNames as name}
-                <option value={name}>{name}</option>
-              {/each}
-            </select>
+            <div class="font-dropdown-wrap">
+              <CustomDropdown
+                items={fontItems}
+                value={$settings.fontMono}
+                onSelect={(v) => setSettings({ fontMono: v })}
+                label="Monospace font"
+              />
+            </div>
             <div class="font-preview" style:font-family={FONT_OPTIONS[$settings.fontMono]}>
               fn main() &#123; println!("GwenLand 123"); &#125;
             </div>
@@ -379,20 +380,9 @@
     background: transparent;
     cursor: pointer;
   }
-  .font-select {
-    background-color: var(--secondary);
-    color: var(--foreground);
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    padding: 7px 10px;
-    font-size: 13px;
+  .font-dropdown-wrap {
     max-width: 240px;
-    transition: border-color 0.12s ease;
-  }
-  .font-select:hover,
-  .font-select:focus {
-    outline: none;
-    border-color: var(--border);
+    min-width: 160px;
   }
   .font-preview {
     margin-top: 4px;

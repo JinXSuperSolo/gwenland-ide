@@ -44,6 +44,7 @@
 pub mod client;
 pub mod completion;
 pub mod config;
+pub mod definition;
 pub mod diagnostics;
 pub mod error;
 pub mod json_rpc;
@@ -57,6 +58,7 @@ pub use client::{
 };
 pub use completion::LspCompletionOption;
 pub use config::{LanguageServerSettings, LspSettings};
+pub use definition::LspDefinitionLocation;
 pub use diagnostics::{DiagnosticSeverity, LspDiagnostic, LspRange};
 pub use error::LspError;
 pub use language::LanguageId;

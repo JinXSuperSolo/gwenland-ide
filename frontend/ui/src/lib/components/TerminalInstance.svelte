@@ -16,6 +16,7 @@
   } from '../terminal/xterm-setup'
   import { bindPtyId, setDetectedPort, terminalSessions } from '../stores/terminal-sessions'
   import { workspace } from '../stores/workspace'
+  import { editorPreferences } from '../stores/editor-preferences'
   import { subscribeFocus, isAppActive } from '../stores/app-focus'
   import { registerTerminalHandle, unregisterTerminalHandle } from '../terminal/terminal-registry'
   import { openContextMenu } from '../context-menu/contextMenuStore'
@@ -33,6 +34,10 @@
   let unsubscribeFocus: (() => void) | null = null
   let resizeObserver: ResizeObserver | null = null
   let disposed = false
+  let minimapCanvas = $state<HTMLCanvasElement | null>(null)
+  let minimapFrame = 0
+  let minimapDragging = false
+  let activityBins: number[] = []
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   let portBuffer = ''
@@ -49,6 +54,7 @@
   /** Write a chunk now, or buffer it while inactive. */
   function renderOutput(bytes: Uint8Array) {
     const text = decoder.decode(bytes, { stream: true })
+    recordTerminalActivity(bytes, text)
     if (text) {
       portBuffer = (portBuffer + text).slice(-4096)
       const preview = detectPreviewTarget(portBuffer)
@@ -67,6 +73,79 @@
     }
   }
 
+  function recordTerminalActivity(bytes: Uint8Array, text: string) {
+    const count = Math.max(1, text.split(/\r?\n/).length)
+    const weight = Math.min(1, Math.max(0.18, bytes.length / 900))
+    for (let i = 0; i < count; i += 1) activityBins.push(weight)
+    if (activityBins.length > 800) activityBins = activityBins.slice(-800)
+    scheduleTerminalMinimapDraw()
+  }
+
+  function scheduleTerminalMinimapDraw() {
+    if (minimapFrame) return
+    minimapFrame = requestAnimationFrame(() => {
+      minimapFrame = 0
+      drawTerminalMinimap()
+    })
+  }
+
+  function drawTerminalMinimap() {
+    if (!bundle || !minimapCanvas || !$editorPreferences.terminalMinimap) return
+    const rect = minimapCanvas.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    const dpr = window.devicePixelRatio || 1
+    minimapCanvas.width = Math.max(1, Math.floor(rect.width * dpr))
+    minimapCanvas.height = Math.max(1, Math.floor(rect.height * dpr))
+    const ctx = minimapCanvas.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, rect.width, rect.height)
+    const styles = getComputedStyle(minimapCanvas)
+    const accent = styles.getPropertyValue('--primary').trim() || '#c28a64'
+    ctx.fillStyle = accent
+    ctx.globalAlpha = 0.5
+    const binHeight = Math.max(1, rect.height / Math.max(activityBins.length, 1))
+    activityBins.forEach((weight, index) => {
+      const y = index * binHeight
+      ctx.fillRect(2, y, Math.max(2, (rect.width - 4) * weight), Math.max(1, binHeight * 0.8))
+    })
+
+    const term = bundle.term
+    const buffer = term.buffer.active
+    const total = Math.max(1, buffer.baseY + term.rows)
+    const viewportY = buffer.viewportY ?? buffer.baseY
+    const top = (viewportY / total) * rect.height
+    const height = Math.max(12, (term.rows / total) * rect.height)
+    ctx.globalAlpha = 1
+    ctx.strokeStyle = accent
+    ctx.strokeRect(1.5, top + 0.5, rect.width - 3, height - 1)
+  }
+
+  function scrollTerminalFromMinimap(e: PointerEvent) {
+    if (!bundle || !minimapCanvas) return
+    const rect = minimapCanvas.getBoundingClientRect()
+    const ratio = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(rect.height, 1)))
+    const buffer = bundle.term.buffer.active
+    const total = Math.max(1, buffer.baseY + bundle.term.rows)
+    bundle.term.scrollToLine(Math.floor(ratio * total))
+    scheduleTerminalMinimapDraw()
+  }
+
+  function startMinimapDrag(e: PointerEvent) {
+    minimapDragging = true
+    minimapCanvas?.setPointerCapture(e.pointerId)
+    scrollTerminalFromMinimap(e)
+  }
+
+  function dragMinimap(e: PointerEvent) {
+    if (minimapDragging) scrollTerminalFromMinimap(e)
+  }
+
+  function stopMinimapDrag(e: PointerEvent) {
+    minimapDragging = false
+    minimapCanvas?.releasePointerCapture(e.pointerId)
+  }
+
   /** Flush buffered output to XTerm in one repaint (called on focus). */
   function flushPending() {
     if (!bundle || pendingChunks.length === 0) return
@@ -79,6 +158,7 @@
     if (!bundle || !sessionId) return
     const dims = fitTerminal(bundle)
     if (dims) void terminalResize(sessionId, dims.rows, dims.cols).catch(() => {})
+    scheduleTerminalMinimapDraw()
   }
 
   // Becoming visible after being hidden: an element with display:none can't be
@@ -91,6 +171,11 @@
         bundle?.term.focus()
       })
     }
+  })
+
+  $effect(() => {
+    void $editorPreferences.terminalMinimap
+    scheduleTerminalMinimapDraw()
   })
 
   // Expose this terminal to the M9 context-menu actions (Copy/Paste/Clear/
@@ -159,7 +244,7 @@
         // current project folder (snapshot at spawn time).
         const session = get(terminalSessions).sessions.find((s) => s.key === key)
         const cwd = session?.cwd ?? get(workspace).folderPath
-        const id = await terminalCreate(rows, cols, cwd)
+        const id = await terminalCreate(rows, cols, cwd, session?.shellCommand ?? null)
         if (disposed) {
           void terminalKill(id) // torn down mid-spawn; don't leak the PTY.
           return
@@ -223,16 +308,45 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="term-instance"
+  class:with-minimap={$editorPreferences.terminalMinimap}
   class:hidden={!visible}
   bind:this={host}
   oncontextmenu={onTermContextMenu}
-></div>
+>
+  {#if $editorPreferences.terminalMinimap}
+    <canvas
+      bind:this={minimapCanvas}
+      class="terminal-minimap"
+      aria-label="Terminal minimap"
+      onpointerdown={startMinimapDrag}
+      onpointermove={dragMinimap}
+      onpointerup={stopMinimapDrag}
+      onpointercancel={stopMinimapDrag}
+    ></canvas>
+  {/if}
+</div>
 
 <style>
   .term-instance {
     height: 100%;
     width: 100%;
     overflow: hidden;
+    position: relative;
+  }
+  .term-instance.with-minimap :global(.xterm) {
+    width: calc(100% - 14px);
+  }
+  .terminal-minimap {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 4;
+    width: 12px;
+    border-left: 1px solid var(--border);
+    background: color-mix(in srgb, var(--background) 86%, #1c1c1c);
+    cursor: pointer;
+    touch-action: none;
   }
   .term-instance.hidden {
     display: none;

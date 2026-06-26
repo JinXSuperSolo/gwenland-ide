@@ -58,6 +58,13 @@ struct TerminalDevServerEvent {
     port: u16,
 }
 
+#[derive(Clone, Serialize)]
+struct TerminalShellInfo {
+    id: String,
+    label: String,
+    command: String,
+}
+
 /// Holds every open PTY session, keyed by a string id handed back to the
 /// frontend at creation. Guarded by a `Mutex` since Tauri commands may run on
 /// different threads. Registered as Tauri managed state.
@@ -147,6 +154,7 @@ fn terminal_create(
     rows: u16,
     cols: u16,
     cwd: Option<String>,
+    shell: Option<String>,
 ) -> Result<String, String> {
     let id = manager.alloc_id();
     let output_id = id.clone();
@@ -157,10 +165,11 @@ fn terminal_create(
     // Open the shell in the project folder when one is provided; the engine
     // ignores a non-existent path and falls back to the default directory.
     let cwd_path = cwd.as_deref().map(std::path::Path::new);
-    let session = PtySession::spawn_with_callback(
+    let session = PtySession::spawn_shell_with_callback(
         rows,
         cols,
         cwd_path,
+        shell.as_deref(),
         Box::new(move |chunk: &[u8]| {
             // Emit failures (e.g. window gone) are not fatal to the PTY; ignore.
             let _ = output_app.emit(
@@ -207,6 +216,47 @@ fn terminal_create(
         .map_err(|_| "terminal manager lock poisoned".to_string())?
         .insert(id.clone(), session);
     Ok(id)
+}
+
+#[tauri::command]
+fn terminal_detect_shells() -> Result<Vec<TerminalShellInfo>, String> {
+    let candidates: &[(&str, &str, &str)] = if cfg!(windows) {
+        &[
+            ("powershell", "PowerShell", "powershell.exe"),
+            ("pwsh", "PowerShell 7", "pwsh.exe"),
+            ("cmd", "Command Prompt", "cmd.exe"),
+            ("wsl", "WSL", "wsl.exe"),
+            ("bun", "Bun", "bun.exe"),
+            ("node", "Node", "node.exe"),
+            ("python", "Python", "python.exe"),
+        ]
+    } else {
+        &[
+            ("bash", "Bash", "bash"),
+            ("zsh", "Zsh", "zsh"),
+            ("fish", "Fish", "fish"),
+            ("sh", "Sh", "sh"),
+            ("bun", "Bun", "bun"),
+            ("node", "Node", "node"),
+            ("python", "Python", "python3"),
+        ]
+    };
+
+    let mut shells = Vec::new();
+    let mut seen = std::collections::HashSet::<String>::new();
+    for (id, label, command) in candidates {
+        if let Some(path) = gwenland_engine::lsp::resolve_command(command) {
+            let key = path.to_string_lossy().to_lowercase();
+            if seen.insert(key) {
+                shells.push(TerminalShellInfo {
+                    id: (*id).to_string(),
+                    label: (*label).to_string(),
+                    command: path.to_string_lossy().into_owned(),
+                });
+            }
+        }
+    }
+    Ok(shells)
 }
 
 /// Sends raw input bytes (keystrokes / pasted text) to a session's PTY.
@@ -1237,12 +1287,16 @@ struct AgentStream {
 /// Wave 7 adds the ReAct tool loops (`loops`, keyed by session) and the gated
 /// tool awaiting user resolution (`pending`, keyed by session). Both are
 /// in-memory only — no keys, no provider headers.
+///
+/// `cmd_pids` maps session_id → child PID for the currently-running agent
+/// terminal command so `agent_kill_terminal` can kill it mid-flight.
 #[derive(Default, Clone)]
 struct AgentManager {
     sessions: Arc<Mutex<HashMap<String, AgentSession>>>,
     streams: Arc<Mutex<HashMap<String, AgentStream>>>,
     loops: Arc<Mutex<HashMap<String, gwenland_engine::agentic::AgentLoop>>>,
     pending: Arc<Mutex<HashMap<String, gwenland_engine::agentic::ToolCall>>>,
+    cmd_pids: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl AgentManager {
@@ -2988,9 +3042,34 @@ fn apply_mutation_tool(
     }
 }
 
+/// `agent://cmd_output` — one line of stdout/stderr from a running agent terminal
+/// command. Lets the UI render a live output stream without blocking.
+#[derive(Clone, Serialize)]
+struct AgentCmdOutputEvent {
+    session_id: String,
+    line: String,
+}
+
+/// `agent://cmd_done` — process exited; carries success flag and final output.
+#[derive(Clone, Serialize)]
+struct AgentCmdDoneEvent {
+    session_id: String,
+    success: bool,
+    output: String,
+}
+
 /// Run an approved terminal command (Validation Gate). Blocked commands are
-/// refused even after approval; output is bounded + redacted.
-fn run_terminal_tool(
+/// refused even after approval. Output is streamed line-by-line as
+/// `agent://cmd_output` events so the UI can display live progress, then
+/// `agent://cmd_done` is emitted on exit. The full output is also returned in
+/// the `ToolResult` for the model's next turn (bounded + redacted as before).
+///
+/// The child PID is registered in `cmd_pids` while running so
+/// `agent_kill_terminal` can kill it mid-flight.
+async fn run_terminal_tool(
+    app: &AppHandle,
+    cmd_pids: Arc<Mutex<HashMap<String, u32>>>,
+    session_id: &str,
     root: &std::path::Path,
     call: &gwenland_engine::agentic::ToolCall,
 ) -> gwenland_engine::agentic::ToolResult {
@@ -3009,12 +3088,157 @@ fn run_terminal_tool(
     ) {
         return ToolResult::err(&call.id, "refused: command could not be classified as safe");
     }
-    match run_shell(root, command) {
-        Ok((code, out)) => {
-            ToolResult::ok(&call.id, format!("exit {code}\n{}", redact_and_bound(out)))
-        }
-        Err(e) => ToolResult::err(&call.id, format!("command failed to run: {e}")),
+
+    // Spawn the child with piped stdout+stderr so we can stream line-by-line.
+    #[cfg(windows)]
+    let child_result = std::process::Command::new("cmd")
+        .args(["/c", command])
+        .current_dir(root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    #[cfg(not(windows))]
+    let child_result = std::process::Command::new("sh")
+        .args(["-c", command])
+        .current_dir(root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let mut child = match child_result {
+        Ok(c) => c,
+        Err(e) => return ToolResult::err(&call.id, format!("command failed to start: {e}")),
+    };
+
+    // Register PID so `agent_kill_terminal` can kill it.
+    let pid = child.id();
+    if let Ok(mut pids) = cmd_pids.lock() {
+        pids.insert(session_id.to_string(), pid);
     }
+
+    // Read stdout and stderr concurrently via spawn_blocking (no tokio line readers
+    // without extra deps). We collect both into a single interleaved output string
+    // while emitting lines as events. `spawn_blocking` runs in the blocking thread
+    // pool so it never stalls the async runtime.
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let app_out = app.clone();
+    let app_err = app.clone();
+    let sid_out = session_id.to_string();
+    let sid_err = session_id.to_string();
+
+    use std::io::BufRead;
+    let stdout_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let stdout_capture = stdout_lines.clone();
+    let stderr_capture = stderr_lines.clone();
+
+    let stdout_task = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(out) = stdout {
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                let _ = app_out.emit(
+                    "agent://cmd_output",
+                    AgentCmdOutputEvent { session_id: sid_out.clone(), line: line.clone() },
+                );
+                if let Ok(mut v) = stdout_capture.lock() {
+                    v.push(line);
+                }
+            }
+        }
+    });
+    let stderr_task = tauri::async_runtime::spawn_blocking(move || {
+        if let Some(err) = stderr {
+            for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+                let _ = app_err.emit(
+                    "agent://cmd_output",
+                    AgentCmdOutputEvent { session_id: sid_err.clone(), line: line.clone() },
+                );
+                if let Ok(mut v) = stderr_capture.lock() {
+                    v.push(line);
+                }
+            }
+        }
+    });
+
+    // Wait for both readers then reap the child.
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+    let exit_status = tauri::async_runtime::spawn_blocking(move || child.wait())
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+    let code = exit_status
+        .as_ref()
+        .and_then(|s| s.code())
+        .unwrap_or(-1);
+    let success = exit_status.map(|s| s.success()).unwrap_or(false);
+
+    // Deregister PID.
+    if let Ok(mut pids) = cmd_pids.lock() {
+        pids.remove(session_id);
+    }
+
+    // Assemble combined output (stdout then stderr, bounded + redacted).
+    let mut combined = String::new();
+    if let Ok(out) = stdout_lines.lock() {
+        for l in out.iter() {
+            combined.push_str(l);
+            combined.push('\n');
+        }
+    }
+    if let Ok(err) = stderr_lines.lock() {
+        for l in err.iter() {
+            combined.push_str(l);
+            combined.push('\n');
+        }
+    }
+    let output = redact_and_bound(combined.clone());
+
+    let _ = app.emit(
+        "agent://cmd_done",
+        AgentCmdDoneEvent {
+            session_id: session_id.to_string(),
+            success,
+            output: output.clone(),
+        },
+    );
+
+    ToolResult::ok(&call.id, format!("exit {code}\n{output}"))
+}
+
+/// Kill the child process currently running an agent terminal command for
+/// `session_id` (best-effort; tolerates an already-exited child). Uses only
+/// OS shell tools — no new Rust crates required.
+#[tauri::command]
+fn agent_kill_terminal(
+    manager: State<'_, AgentManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let pid = manager
+        .cmd_pids
+        .lock()
+        .map_err(|_| "agent manager lock poisoned".to_string())?
+        .get(&session_id)
+        .copied();
+    if let Some(pid) = pid {
+        #[cfg(windows)]
+        {
+            // Force-terminate the process tree so sub-shells (npm, npx) also die.
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .output();
+        }
+        #[cfg(not(windows))]
+        {
+            // SIGTERM the process group. `kill` is available on every Unix target
+            // in the Rust standard library via std::process — we call it through
+            // the shell so we don't need libc.
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .output();
+        }
+    }
+    Ok(())
 }
 
 /// Stream one provider turn for the tool loop: emit each token as `agent://chunk`
@@ -3258,7 +3482,7 @@ async fn agent_tool_step(
             // (Full Control / high-confidence Accept-for-Me), running them inline.
             if !requires_user_approval(gate_side, gate_risk, confidence, session.tier) {
                 let result = if matches!(call.tool, ToolKind::RunTerminalCmd) {
-                    run_terminal_tool(&root, &call)
+                    run_terminal_tool(&app, manager.cmd_pids.clone(), &session_id, &root, &call).await
                 } else {
                     apply_mutation_tool(&root, &call)
                 };
@@ -3363,7 +3587,7 @@ async fn agent_tool_step(
 /// ask_user, the chosen `selection`. The observation is recorded so the next
 /// `agent_tool_step` continues the loop.
 #[tauri::command]
-fn agent_tool_resolve(
+async fn agent_tool_resolve(
     app: AppHandle,
     manager: State<'_, AgentManager>,
     session_id: String,
@@ -3391,7 +3615,7 @@ fn agent_tool_resolve(
         }
         ToolKind::RunTerminalCmd => {
             if go {
-                run_terminal_tool(&root, &call)
+                run_terminal_tool(&app, manager.cmd_pids.clone(), &session_id, &root, &call).await
             } else {
                 ToolResult::ok(&call.id, "User rejected the command; it was not run.")
             }
@@ -3491,6 +3715,20 @@ fn lsp_completion(
 ) -> Result<Vec<gwenland_engine::lsp::LspCompletionOption>, String> {
     let _ = version;
     Ok(manager.completion(std::path::Path::new(&path), line, character))
+}
+
+/// Request the first definition location at a position. Fail-soft: returns
+/// `None` for missing servers, unsupported languages, or timeouts.
+#[tauri::command]
+fn lsp_definition(
+    manager: State<'_, LspManager>,
+    path: String,
+    line: u32,
+    character: u32,
+    version: i32,
+) -> Result<Option<gwenland_engine::lsp::LspDefinitionLocation>, String> {
+    let _ = version;
+    Ok(manager.definition(std::path::Path::new(&path), line, character))
 }
 
 /// Manually restart the server bucket for `language` (`"rust"`, `"typescript"`,
@@ -4029,6 +4267,7 @@ fn main() {
             move_to_trash,
             mark_protected_path,
             terminal_create,
+            terminal_detect_shells,
             terminal_write,
             terminal_resize,
             terminal_kill,
@@ -4057,6 +4296,7 @@ fn main() {
             agent_cancel,
             agent_tool_step,
             agent_tool_resolve,
+            agent_kill_terminal,
             open_browser,
             parse_diff,
             conversation_new,
@@ -4072,6 +4312,7 @@ fn main() {
             lsp_change_document,
             lsp_close_document,
             lsp_completion,
+            lsp_definition,
             git_is_repo,
             git_status,
             git_stage,

@@ -34,17 +34,21 @@ import {
   closeActiveTab,
   closeAllTabs,
   closeSavedTabs,
+  closeSplitPane,
   newUntitledFile,
   openPreview,
   saveActiveTab,
   saveActiveTabAs,
   showOpenedEditors,
+  splitHorizontal,
+  splitVertical,
   toggleLockActiveGroup,
   toggleMaximizeActiveGroup,
 } from '../stores/tabs'
 import { terminalSessions, createSession, removeSession } from '../stores/terminal-sessions'
 import { openFolder, workspace } from '../stores/workspace'
 import { openPalette, openSettings } from '../stores/ui'
+import { toggleEditorMinimap, toggleTerminalMinimap } from '../stores/editor-preferences'
 import {
   clearLocalHistory,
   createManualHistorySnapshot,
@@ -334,7 +338,28 @@ const COMMANDS: Command[] = [
     id: 'editor.closeSaved',
     title: 'Close Saved in Group',
     category: 'View',
+    defaultKeybinding: 'Ctrl+K U',
     handler: closeSavedTabs,
+  },
+  {
+    id: 'editor.splitHorizontal',
+    title: 'Split Editor Horizontal',
+    category: 'View',
+    defaultKeybinding: 'Ctrl+\\',
+    handler: splitHorizontal,
+  },
+  {
+    id: 'editor.splitVertical',
+    title: 'Split Editor Vertical',
+    category: 'View',
+    defaultKeybinding: 'Ctrl+K Ctrl+\\',
+    handler: splitVertical,
+  },
+  {
+    id: 'editor.closeSplit',
+    title: 'Close Split Pane',
+    category: 'View',
+    handler: closeSplitPane,
   },
   {
     id: 'edit.undo',
@@ -454,6 +479,18 @@ const COMMANDS: Command[] = [
     title: 'Show Opened Editors',
     category: 'View',
     handler: showOpenedEditors,
+  },
+  {
+    id: 'view.toggleEditorMinimap',
+    title: 'Toggle Editor Minimap',
+    category: 'View',
+    handler: toggleEditorMinimap,
+  },
+  {
+    id: 'view.toggleTerminalMinimap',
+    title: 'Toggle Terminal Minimap',
+    category: 'View',
+    handler: toggleTerminalMinimap,
   },
   {
     id: 'selection.selectAll',
@@ -782,10 +819,16 @@ export const MENUS: { name: string; items: MenuItem[] }[] = [
       { label: 'Toggle Terminal', commandId: 'panel.terminal' },
       { label: 'Toggle Explorer', commandId: 'view.showExplorer' },
       { type: 'divider' },
+      { label: 'Split Editor Horizontal', commandId: 'editor.splitHorizontal' },
+      { label: 'Split Editor Vertical', commandId: 'editor.splitVertical' },
+      { label: 'Close Split Pane', commandId: 'editor.closeSplit' },
+      { type: 'divider' },
       { label: 'Close Saved in Group', commandId: 'editor.closeSaved' },
       { label: 'Lock Editor Group', commandId: 'editor.lockGroup' },
       { label: 'Maximize Editor Group', commandId: 'editor.maximizeGroup' },
       { label: 'Show Opened Editors', commandId: 'workbench.showOpenedEditors' },
+      { label: 'Toggle Editor Minimap', commandId: 'view.toggleEditorMinimap' },
+      { label: 'Toggle Terminal Minimap', commandId: 'view.toggleTerminalMinimap' },
       { type: 'divider' },
       { label: 'Command Palette', commandId: 'workbench.action.showCommands' },
       { label: 'Open Web Preview', commandId: 'workbench.openWebPreview' },

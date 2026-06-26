@@ -28,6 +28,7 @@
 <button
   type="button"
   class="cm-item"
+  class:cm-danger={action.danger}
   role="menuitem"
   tabindex="-1"
   disabled={!enabled}
@@ -50,11 +51,11 @@
     align-items: center;
     gap: 32px;
     width: 100%;
-    height: 24px;
+    height: 26px;
     padding: 0 8px;
     background: transparent;
     border: none;
-    border-radius: 0;
+    border-radius: calc(var(--radius) - 6px);
     color: var(--cm-text);
     font-family: var(--font-sans);
     font-size: 13px;
@@ -76,6 +77,18 @@
     color: var(--cm-text-muted);
     cursor: default;
     pointer-events: none;
+  }
+  /* Danger / destructive actions — red label, red-tinted hover. */
+  .cm-item.cm-danger {
+    color: #e06c75;
+  }
+  .cm-item.cm-danger:hover:not(:disabled),
+  .cm-item.cm-danger:focus-visible:not(:disabled) {
+    background-color: rgba(224, 108, 117, 0.15);
+    color: #e06c75;
+  }
+  .cm-item.cm-danger:active:not(:disabled) {
+    background-color: rgba(224, 108, 117, 0.25);
   }
   .cm-item-label {
     flex: 1;

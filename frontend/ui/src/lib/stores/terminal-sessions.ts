@@ -1,4 +1,5 @@
 import { writable, get } from 'svelte/store'
+import type { TerminalShellInfo } from '../tauri/commands'
 
 /**
  * Multi-terminal session state (Milestone 3, Wave 4 — GWEN-248).
@@ -25,6 +26,8 @@ export interface TerminalSession {
    * (the default). Set by "Open in Terminal" (M9) to a specific folder.
    */
   cwd: string | null
+  shellCommand: string | null
+  shellLabel: string | null
 }
 
 export interface TerminalSessionsState {
@@ -61,11 +64,21 @@ let nextOrdinal = 1
  * {@link bindPtyId}. Pass `cwd` to start the shell in a specific directory
  * (e.g. "Open in Terminal" on a folder); omit it to use the project folder.
  */
-export function createSession(cwd: string | null = null): string {
+export function createSession(cwd: string | null = null, shell: TerminalShellInfo | null = null): string {
   const key = genKey()
-  const title = `Terminal ${nextOrdinal++}`
+  const title = shell?.label ?? `Terminal ${nextOrdinal++}`
   terminalSessions.update((s) => ({
-    sessions: [...s.sessions, { key, title, ptyId: null, cwd }],
+    sessions: [
+      ...s.sessions,
+      {
+        key,
+        title,
+        ptyId: null,
+        cwd,
+        shellCommand: shell?.command ?? null,
+        shellLabel: shell?.label ?? null,
+      },
+    ],
     activeKey: key,
     detectedPort: s.detectedPort,
     detectedUrl: s.detectedUrl,

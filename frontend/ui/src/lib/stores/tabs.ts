@@ -3,10 +3,12 @@ import type { EditorState } from '@codemirror/state'
 import { createEditorState } from '../editor/codemirror-setup'
 import { activeDoc } from '../editor/active-editor'
 import { readFile, writeFile } from '../tauri/commands'
+import { refreshGit } from './git'
 import { lspOpenPath, lspClosePath } from './lsp'
 import { openPrompt } from './prompt-dialog'
 import { workspace } from './workspace'
 import { scheduleHistorySnapshot } from './history-snapshots'
+import { editorPreferences } from './editor-preferences'
 
 export type TabKind = 'editor' | 'preview' | 'diff'
 export type EditorGroupOrientation = 'horizontal' | 'vertical'
@@ -62,6 +64,7 @@ export interface TabsState {
   groups: EditorGroup[]
   activeGroupId: string
   orientation: EditorGroupOrientation
+  mruTabIds: string[]
 }
 
 export interface OpenFileOptions {
@@ -99,6 +102,7 @@ export interface PersistedEditorGroup {
 
 const ROOT_GROUP_ID = 'group-root'
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'bmp'])
+const NATIVE_PREVIEW_EXTS = new Set(['pdf'])
 const BINARY_FILE = 'binary file'
 
 function genId(prefix = 'tab'): string {
@@ -156,12 +160,25 @@ function derive(state: Partial<TabsState>): TabsState {
     ? state.activeGroupId!
     : groups.find((group) => group.activeId)?.id ?? groups[0].id
   const activeGroup = groups.find((group) => group.id === activeGroupId) ?? groups[0]
+  const flatTabs = flatten(groups)
+  const tabIds = new Set(flatTabs.map((tab) => tab.id))
+  let mruTabIds = (state.mruTabIds ?? []).filter((id) => tabIds.has(id))
+  if (activeGroup.activeId && tabIds.has(activeGroup.activeId)) {
+    mruTabIds = [
+      activeGroup.activeId,
+      ...mruTabIds.filter((id) => id !== activeGroup.activeId),
+    ]
+  }
+  for (const tab of flatTabs) {
+    if (!mruTabIds.includes(tab.id)) mruTabIds.push(tab.id)
+  }
   return {
     groups,
     activeGroupId,
     orientation: state.orientation ?? 'horizontal',
-    tabs: flatten(groups),
+    tabs: flatTabs,
     activeId: activeGroup.activeId,
+    mruTabIds,
   }
 }
 
@@ -278,6 +295,11 @@ export function isImagePath(path: string): boolean {
   return IMAGE_EXTS.has(ext)
 }
 
+export function isNativePreviewPath(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() ?? ''
+  return NATIVE_PREVIEW_EXTS.has(ext)
+}
+
 export function setActiveGroup(groupId: string): void {
   updateTabs((state) => ({
     ...state,
@@ -322,12 +344,13 @@ export async function openFile(
   filePath: string,
   options: OpenFileOptions = {},
 ): Promise<OpenFileResult> {
-  if (isImagePath(filePath)) {
+  if (isImagePath(filePath) || isNativePreviewPath(filePath)) {
     openPreview({ kind: 'static-file', path: filePath }, options)
     return { ok: true }
   }
 
   const groupId = ensureWritableGroupId(options.groupId, options.ignoreLock)
+  const shouldPreview = options.preview ?? get(editorPreferences).previewEditors
   const existing = get(tabs)
     .groups.find((group) => group.id === groupId)
     ?.tabs.find((tab) => isEditorTab(tab) && tab.path === filePath)
@@ -338,6 +361,11 @@ export async function openFile(
       groups: mapGroup(state, groupId, (group) => ({
         ...group,
         activeId: existing.id,
+        tabs: group.tabs.map((tab) =>
+          tab.id === existing.id && isEditorTab(tab) && !shouldPreview
+            ? { ...tab, preview: false }
+            : tab,
+        ),
       })),
     }))
     return { ok: true }
@@ -354,15 +382,30 @@ export async function openFile(
     return { ok: false, error: 'Could not open file: ' + msg }
   }
 
-  const tab = createEditorTab(filePath, content, false)
+  const tab = createEditorTab(filePath, content, shouldPreview)
   updateTabs((state) => ({
     ...state,
     activeGroupId: groupId,
-    groups: mapGroup(state, groupId, (group) => ({
-      ...group,
-      tabs: [...group.tabs, tab],
-      activeId: tab.id,
-    })),
+    groups: mapGroup(state, groupId, (group) => {
+      if (shouldPreview) {
+        const preview = group.tabs.find((candidate) => candidate.preview)
+        if (preview) {
+          if (isEditorTab(preview)) closeLspIfLast(preview.path, state.tabs.filter((t) => t.id !== preview.id))
+          return {
+            ...group,
+            tabs: group.tabs.map((candidate) =>
+              candidate.id === preview.id ? { ...tab, id: preview.id } : candidate,
+            ),
+            activeId: preview.id,
+          }
+        }
+      }
+      return {
+        ...group,
+        tabs: [...group.tabs, tab],
+        activeId: tab.id,
+      }
+    }),
   }))
   void lspOpenPath(filePath, content)
   return { ok: true }
@@ -526,6 +569,7 @@ export async function saveTab(id: string, currentContent: string): Promise<OpenF
     ),
   }))
   scheduleHistorySnapshot(tab.path, currentContent, 'save')
+  void refreshGit()
   return { ok: true }
 }
 
@@ -748,6 +792,31 @@ export function splitHorizontal(): void {
 
 export function splitVertical(): void {
   splitEditorGroup('vertical')
+}
+
+export function closeSplitPane(): void {
+  const state = get(tabs)
+  if (state.groups.length <= 1) return
+
+  const active = activeGroup(state)
+  const mergedTabs = state.groups.flatMap((group) => group.tabs)
+  const activeId =
+    active.activeId && mergedTabs.some((tab) => tab.id === active.activeId)
+      ? active.activeId
+      : mergedTabs.at(-1)?.id ?? null
+
+  updateTabs(() => ({
+    groups: [
+      makeGroup({
+        id: ROOT_GROUP_ID,
+        tabs: mergedTabs,
+        activeId,
+        size: 1,
+      }),
+    ],
+    activeGroupId: ROOT_GROUP_ID,
+    orientation: 'horizontal',
+  }))
 }
 
 export async function openFileToSide(path: string): Promise<void> {

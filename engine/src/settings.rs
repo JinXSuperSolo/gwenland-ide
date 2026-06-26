@@ -112,7 +112,11 @@ pub fn settings_path(app_data_dir: &Path) -> PathBuf {
 
 pub fn load_settings() -> Result<Settings, SettingsError> {
     let app_data_dir = crate::app_data::get_app_data_dir()?;
-    let path = settings_path(&app_data_dir);
+    load_settings_from(&app_data_dir)
+}
+
+fn load_settings_from(app_data_dir: &Path) -> Result<Settings, SettingsError> {
+    let path = settings_path(app_data_dir);
 
     if !path.exists() {
         return Ok(Settings::default());
@@ -140,7 +144,11 @@ pub fn load_settings() -> Result<Settings, SettingsError> {
 
 pub fn save_settings(settings: &Settings) -> Result<(), SettingsError> {
     let app_data_dir = crate::app_data::get_app_data_dir()?;
-    let path = settings_path(&app_data_dir);
+    save_settings_to(settings, &app_data_dir)
+}
+
+fn save_settings_to(settings: &Settings, app_data_dir: &Path) -> Result<(), SettingsError> {
+    let path = settings_path(app_data_dir);
     let tmp_path = path.with_extension("toml.tmp");
 
     let content = toml::to_string(settings)?;
@@ -154,6 +162,20 @@ pub fn save_settings(settings: &Settings) -> Result<(), SettingsError> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn isolated_app_data_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gwenland-settings-test-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     #[test]
     fn ai_settings_defaults() {
@@ -222,19 +244,21 @@ mod tests {
 
     #[test]
     fn test_missing_file_returns_default() {
+        let app_data_dir = isolated_app_data_dir();
         let mut s = Settings::default();
         s.theme.mode = "dark".to_string();
-        save_settings(&s).unwrap();
-        let loaded = load_settings().unwrap();
+        save_settings_to(&s, &app_data_dir).unwrap();
+        let loaded = load_settings_from(&app_data_dir).unwrap();
         assert_eq!(s, loaded);
     }
 
     proptest! {
         #[test]
         fn test_settings_roundtrip(mode in prop_oneof![Just("dark".to_string()), Just("light".to_string()), Just("system".to_string())]) {
+            let app_data_dir = isolated_app_data_dir();
             let s = Settings { version: 1, theme: ThemeSettings { mode }, ai: AiSettings::default(), lsp: Default::default() };
-            save_settings(&s).unwrap();
-            let loaded = load_settings().unwrap();
+            save_settings_to(&s, &app_data_dir).unwrap();
+            let loaded = load_settings_from(&app_data_dir).unwrap();
             assert_eq!(s, loaded);
         }
     }

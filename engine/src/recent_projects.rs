@@ -46,7 +46,11 @@ pub fn filter_existing(projects: Vec<RecentProject>) -> Vec<RecentProject> {
 
 pub fn load_raw() -> Result<Vec<RecentProject>, RecentProjectsError> {
     let app_data_dir = crate::app_data::get_app_data_dir()?;
-    let path = recent_projects_path(&app_data_dir);
+    load_raw_from(&app_data_dir)
+}
+
+fn load_raw_from(app_data_dir: &Path) -> Result<Vec<RecentProject>, RecentProjectsError> {
+    let path = recent_projects_path(app_data_dir);
 
     if !path.exists() {
         return Ok(vec![]);
@@ -69,8 +73,16 @@ pub fn get_recent_projects() -> Result<Vec<RecentProject>, RecentProjectsError> 
 }
 
 pub fn add_recent_project(path: &Path) -> Result<(), RecentProjectsError> {
-    let mut projects = load_raw()?;
-    let normalized = normalize_for_dedup(path);
+    let app_data_dir = crate::app_data::get_app_data_dir()?;
+    add_recent_project_to(path, &app_data_dir)
+}
+
+fn add_recent_project_to(
+    project_path: &Path,
+    app_data_dir: &Path,
+) -> Result<(), RecentProjectsError> {
+    let mut projects = load_raw_from(app_data_dir)?;
+    let normalized = normalize_for_dedup(project_path);
 
     projects.retain(|p| normalize_for_dedup(&p.path) != normalized);
 
@@ -80,15 +92,14 @@ pub fn add_recent_project(path: &Path) -> Result<(), RecentProjectsError> {
         .as_secs();
 
     let entry = RecentProject {
-        path: path.to_path_buf(),
+        path: project_path.to_path_buf(),
         last_opened: format!("{}", now),
     };
 
     projects.insert(0, entry);
     projects.truncate(MAX_RECENT_PROJECTS);
 
-    let app_data_dir = crate::app_data::get_app_data_dir()?;
-    let path_out = recent_projects_path(&app_data_dir);
+    let path_out = recent_projects_path(app_data_dir);
 
     let content = serde_json::to_string(&projects)?;
     std::fs::write(&path_out, content)?;
@@ -100,18 +111,33 @@ pub fn add_recent_project(path: &Path) -> Result<(), RecentProjectsError> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn isolated_app_data_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "gwenland-recent-projects-test-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     #[test]
     fn test_recent_projects_crud() {
+        let app_data_dir = isolated_app_data_dir();
         let p = std::env::temp_dir();
-        add_recent_project(&p).unwrap();
+        add_recent_project_to(&p, &app_data_dir).unwrap();
 
-        let loaded = load_raw().unwrap();
+        let loaded = load_raw_from(&app_data_dir).unwrap();
         assert!(!loaded.is_empty());
         assert_eq!(loaded[0].path, p);
 
-        add_recent_project(&p).unwrap();
-        let loaded = load_raw().unwrap();
+        add_recent_project_to(&p, &app_data_dir).unwrap();
+        let loaded = load_raw_from(&app_data_dir).unwrap();
         assert_eq!(
             loaded
                 .iter()
@@ -124,12 +150,13 @@ mod tests {
     proptest! {
         #[test]
         fn test_recent_projects_invariants(paths in proptest::collection::vec("[a-zA-Z0-9]{1,5}", 0..20)) {
+            let app_data_dir = isolated_app_data_dir();
             // we execute the addition and check invariants
             for p_str in &paths {
                 let p = PathBuf::from(p_str);
-                let _ = add_recent_project(&p);
+                let _ = add_recent_project_to(&p, &app_data_dir);
             }
-            let loaded = load_raw().unwrap();
+            let loaded = load_raw_from(&app_data_dir).unwrap();
             assert!(loaded.len() <= MAX_RECENT_PROJECTS);
         }
     }

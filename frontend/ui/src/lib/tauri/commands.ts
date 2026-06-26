@@ -153,9 +153,20 @@ interface TerminalOutputPayload {
 export function terminalCreate(
   rows: number,
   cols: number,
-  cwd?: string | null
+  cwd?: string | null,
+  shell?: string | null
 ): Promise<string> {
-  return invoke<string>('terminal_create', { rows, cols, cwd: cwd ?? null })
+  return invoke<string>('terminal_create', { rows, cols, cwd: cwd ?? null, shell: shell ?? null })
+}
+
+export interface TerminalShellInfo {
+  id: string
+  label: string
+  command: string
+}
+
+export function terminalDetectShells(): Promise<TerminalShellInfo[]> {
+  return invoke<TerminalShellInfo[]>('terminal_detect_shells')
 }
 
 /** Sends raw input bytes (keystrokes / pasted text) to a session's PTY. */
@@ -674,6 +685,10 @@ export interface GitStatus {
   branch: string
   dirty_count: number
   files: GitFileStatus[]
+  /** Commits ahead of the upstream tracking branch (0 when no upstream). */
+  ahead: number
+  /** Commits behind the upstream tracking branch (0 when no upstream). */
+  behind: number
 }
 
 /** Whether `root` is inside a git work tree. */
@@ -847,6 +862,26 @@ export function lspCompletion(
   version: number
 ): Promise<LspCompletionOption[]> {
   return invoke<LspCompletionOption[]>('lsp_completion', { path, line, character, version })
+}
+
+export interface LspDefinitionLocation {
+  path: string
+  line: number
+  character: number
+}
+
+export function lspDefinition(
+  path: string,
+  line: number,
+  character: number,
+  version: number
+): Promise<LspDefinitionLocation | null> {
+  return invoke<LspDefinitionLocation | null>('lsp_definition', {
+    path,
+    line,
+    character,
+    version,
+  })
 }
 
 // --- Events ----------------------------------------------------------------
@@ -1422,6 +1457,57 @@ export async function onAgentAsk(
 }
 
 // ===========================================================================
+// Agent terminal streaming (anti-freeze fix)
+//
+// When an agent run_terminal_cmd executes (npm install, npx create-next-app,
+// etc.), the Rust side streams stdout/stderr lines as `agent://cmd_output`
+// events and emits `agent://cmd_done` on process exit. The UI listens to these
+// to show live progress and a kill button without blocking the webview thread.
+// ===========================================================================
+
+export const AGENT_CMD_OUTPUT_EVENT = 'agent://cmd_output'
+export const AGENT_CMD_DONE_EVENT = 'agent://cmd_done'
+
+export interface AgentCmdOutputPayload {
+  session_id: string
+  line: string
+}
+
+export interface AgentCmdDonePayload {
+  session_id: string
+  success: boolean
+  output: string
+}
+
+/** Subscribe to live stdout/stderr lines for one session's running command. */
+export async function onAgentCmdOutput(
+  sessionId: string,
+  handler: (line: string) => void
+): Promise<UnlistenFn> {
+  return listen<AgentCmdOutputPayload>(AGENT_CMD_OUTPUT_EVENT, (event) => {
+    if (event.payload.session_id === sessionId) handler(event.payload.line)
+  })
+}
+
+/** Subscribe to command completion for one session. */
+export async function onAgentCmdDone(
+  sessionId: string,
+  handler: (payload: AgentCmdDonePayload) => void
+): Promise<UnlistenFn> {
+  return listen<AgentCmdDonePayload>(AGENT_CMD_DONE_EVENT, (event) => {
+    if (event.payload.session_id === sessionId) handler(event.payload)
+  })
+}
+
+/**
+ * Kill the child process currently running an agent terminal command.
+ * Best-effort: if no command is running for this session, it's a no-op.
+ */
+export function agentKillTerminal(sessionId: string): Promise<void> {
+  return invoke<void>('agent_kill_terminal', { sessionId })
+}
+
+// ===========================================================================
 // Workspace Settings (M14 Wave 1)
 //
 // Per-workspace settings overlay stored under `.gwenland/settings.json`.
@@ -1442,6 +1528,7 @@ export interface WorkspaceSettings {
   accent_color?: string | null
   editor_font?: string | null
   terminal_font?: string | null
+  last_terminal_shell?: string | null
   layout_state?: unknown | null
   sidebar_open?: boolean | null
   panel_open?: boolean | null

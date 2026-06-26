@@ -107,6 +107,11 @@ export interface AgenticState {
   /** Id of the live run, matched against a message's `agent.runId` to tell
    *  which agent message in the unified stream renders from this live engine. */
   runId: string | null
+  /** True while an agent run_terminal_cmd child process is executing.
+   *  Set when the gate is approved; cleared on agent://cmd_done. */
+  isRunningCommand: boolean
+  /** Live stdout/stderr lines from the running command (capped at 500 lines). */
+  cmdOutputLines: string[]
 }
 
 const initial: AgenticState = {
@@ -131,6 +136,8 @@ const initial: AgenticState = {
   toolActive: false,
   tier: 'ask',
   runId: null,
+  isRunningCommand: false,
+  cmdOutputLines: [],
 }
 
 export const agentic = writable<AgenticState>(initial)
@@ -349,6 +356,27 @@ export function setToolExhausted(): void {
 /** End the loop without a final answer (e.g. on error). */
 export function endToolLoop(): void {
   agentic.update((s) => ({ ...s, toolActive: false }))
+}
+
+// --- Running command state (agent run_terminal_cmd streaming) --------------
+
+/** Mark a terminal command as in-flight (set on gate approval, cleared on done). */
+export function setRunningCommand(running: boolean): void {
+  agentic.update((s) => ({
+    ...s,
+    isRunningCommand: running,
+    cmdOutputLines: running ? [] : s.cmdOutputLines,
+  }))
+}
+
+/** Append a stdout/stderr line from the running command (capped at 500 lines). */
+export function appendCmdOutputLine(line: string): void {
+  agentic.update((s) => {
+    const lines = s.cmdOutputLines.length >= 500
+      ? [...s.cmdOutputLines.slice(1), line]
+      : [...s.cmdOutputLines, line]
+    return { ...s, cmdOutputLines: lines }
+  })
 }
 
 // --- Derived selectors (pure) ----------------------------------------------

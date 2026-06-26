@@ -26,8 +26,67 @@
   // iframe.contentWindow.location.reload() because the previewed origin
   // (localhost / asset) differs from the app's, so the DOM access is blocked.
   let reloadNonce = $state(0)
+  let zoom = $state(1)
+  let fit = $state(true)
+  let panX = $state(0)
+  let panY = $state(0)
+  let dragging = $state(false)
+  let dragStart = { x: 0, y: 0, panX: 0, panY: 0 }
+  let imageMeta = $state<{ width: number; height: number; size: number | null } | null>(null)
+
   function reload() {
     reloadNonce += 1
+  }
+
+  function zoomBy(delta: number) {
+    fit = false
+    zoom = Math.min(6, Math.max(0.1, Math.round((zoom + delta) * 100) / 100))
+  }
+
+  function toggleFit() {
+    fit = !fit
+    if (fit) {
+      zoom = 1
+      panX = 0
+      panY = 0
+    }
+  }
+
+  function startPan(e: PointerEvent) {
+    if (fit) return
+    dragging = true
+    dragStart = { x: e.clientX, y: e.clientY, panX, panY }
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  }
+
+  function movePan(e: PointerEvent) {
+    if (!dragging) return
+    panX = dragStart.panX + e.clientX - dragStart.x
+    panY = dragStart.panY + e.clientY - dragStart.y
+  }
+
+  function stopPan(e: PointerEvent) {
+    dragging = false
+    ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  }
+
+  async function loadImageMeta(e: Event) {
+    const img = e.currentTarget as HTMLImageElement
+    let size: number | null = null
+    try {
+      const blob = await fetch(frameSrc).then((response) => response.blob())
+      size = blob.size
+    } catch {
+      size = null
+    }
+    imageMeta = { width: img.naturalWidth, height: img.naturalHeight, size }
+  }
+
+  function formatBytes(value: number | null): string {
+    if (value === null) return ''
+    if (value < 1024) return `${value} B`
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+    return `${(value / 1024 / 1024).toFixed(1)} MB`
   }
 </script>
 
@@ -44,11 +103,64 @@
     >
       <Icon name="refresh" size={14} />
     </button>
+    {#if isImagePreview}
+      <button
+        type="button"
+        class="preview-action gw-transition"
+        title="Zoom out"
+        aria-label="Zoom out"
+        onclick={() => zoomBy(-0.1)}
+      ><Icon name="minus" size={14} /></button>
+      <button
+        type="button"
+        class="preview-action gw-transition"
+        title="Zoom in"
+        aria-label="Zoom in"
+        onclick={() => zoomBy(0.1)}
+      ><Icon name="plus" size={14} /></button>
+      <button
+        type="button"
+        class="preview-action fit-action gw-transition"
+        class:active={fit}
+        title="Fit image"
+        aria-label="Fit image"
+        onclick={toggleFit}
+      ><Icon name="collapse" size={14} /></button>
+    {/if}
   </div>
 
   {#if isImagePreview}
-    <div class="image-stage">
-      <img class="image-preview" src={frameSrc} alt={displayUrl} />
+    <div
+      class="image-stage"
+      class:pannable={!fit}
+      role="application"
+      aria-label="Image preview"
+      onpointerdown={startPan}
+      onpointermove={movePan}
+      onpointerup={stopPan}
+      onpointercancel={stopPan}
+      onwheel={(e) => {
+        if (!e.ctrlKey) return
+        e.preventDefault()
+        zoomBy(e.deltaY > 0 ? -0.1 : 0.1)
+      }}
+    >
+      <img
+        class="image-preview"
+        class:fit={fit}
+        src={frameSrc}
+        alt={displayUrl}
+        style:transform={fit ? undefined : `translate(${panX}px, ${panY}px) scale(${zoom})`}
+        onload={loadImageMeta}
+        draggable="false"
+      />
+      {#if imageMeta}
+        <div class="image-status">
+          {imageMeta.width}x{imageMeta.height}
+          {#if imageMeta.size !== null}<span>{formatBytes(imageMeta.size)}</span>{/if}
+          {#if !fit}<span>{Math.round(zoom * 100)}%</span>{/if}
+        </div>
+      {/if}
     </div>
   {:else}
     {#key `${frameSrc}::${reloadNonce}`}
@@ -106,6 +218,10 @@
     background-color: var(--secondary);
     color: var(--foreground);
   }
+  .preview-action.active {
+    color: var(--foreground);
+    background-color: var(--secondary);
+  }
   .preview-frame {
     flex: 1;
     min-height: 0;
@@ -115,6 +231,7 @@
     background-color: #ffffff;
   }
   .image-stage {
+    position: relative;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -123,11 +240,37 @@
     overflow: auto;
     padding: 24px;
     background-color: var(--background);
+    touch-action: none;
+  }
+  .image-stage.pannable {
+    cursor: grab;
+  }
+  .image-stage.pannable:active {
+    cursor: grabbing;
   }
   .image-preview {
-    max-width: 100%;
-    max-height: 100%;
     object-fit: contain;
     image-rendering: auto;
+    transform-origin: center center;
+    user-select: none;
+  }
+  .image-preview.fit {
+    max-width: 100%;
+    max-height: 100%;
+  }
+  .image-status {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 24px;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    pointer-events: none;
   }
 </style>

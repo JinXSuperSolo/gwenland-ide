@@ -12,11 +12,13 @@
   } from '../stores/tabs'
   import { workspace } from '../stores/workspace'
   import { setCursorFromState, clearCursor } from '../stores/cursor'
-  import { setActiveEditor } from '../editor/active-editor'
+  import { editorGoToDefinitionAt, setActiveEditor } from '../editor/active-editor'
   import { lsp, lspChangePath, languageForPath } from '../stores/lsp'
+  import { editorPreferences } from '../stores/editor-preferences'
   import { openContextMenuSmart } from '../context-menu/globalContextMenu'
   import { diffReview, acceptHunk, rejectHunk, sameFilePath } from '../stores/diff-review'
   import { applyReviewOverlay, clearReviewOverlay } from '../editor/diff-overlay'
+  import MarkdownPreview from './MarkdownPreview.svelte'
   import {
     createEditorState,
     mountEditorView,
@@ -34,9 +36,16 @@
   // The tab id currently mounted in `view` — drives swap-on-switch.
   let mountedId: string | null = null
   // The mounted tab's file path (for routing LSP changes/diagnostics).
-  let mountedPath: string | null = null
+  let mountedPath = $state<string | null>(null)
   // Debounce handle for didChange notifications (Requirement 9.8).
   let changeTimer: ReturnType<typeof setTimeout> | null = null
+  let stickyScope = $state('')
+  let scrollDom: HTMLElement | null = null
+  let minimapCanvas = $state<HTMLCanvasElement | null>(null)
+  let minimapFrame = 0
+  let minimapDragging = false
+  let markdownPreviewText = $state('')
+  let markdownTimer: ReturnType<typeof setTimeout> | null = null
 
   /** Snapshot the live view back into the store for the tab it belongs to. */
   function persistMounted() {
@@ -52,6 +61,14 @@
     }, 250)
   }
 
+  function scheduleMarkdownPreview() {
+    if (markdownTimer) clearTimeout(markdownTimer)
+    markdownTimer = setTimeout(() => {
+      markdownTimer = null
+      markdownPreviewText = view?.state.doc.toString() ?? ''
+    }, 300)
+  }
+
   /** Send any pending change immediately (before a switch/teardown). */
   function flushLspChange() {
     if (!changeTimer) return
@@ -64,6 +81,141 @@
   function applyDiagnosticsToView() {
     if (!view || mountedPath === null) return
     applyDiagnostics(view, get(lsp).diagnostics[mountedPath] ?? [])
+  }
+
+  function scopeLabel(line: string): string | null {
+    const trimmed = line.trim()
+    let match = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/)
+    if (match) return `function ${match[1]}`
+    match = trimmed.match(/^(?:export\s+)?(class|interface|type|enum|struct|trait|impl)\s+([A-Za-z_$][\w$]*)/)
+    if (match) return `${match[1]} ${match[2]}`
+    match = trimmed.match(/^(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_$][\w$]*)/)
+    if (match) return `fn ${match[1]}`
+    match = trimmed.match(/^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/)
+    if (match) return `function ${match[1]}`
+    return null
+  }
+
+  function updateStickyScope() {
+    if (!view) {
+      stickyScope = ''
+      return
+    }
+    const topLine = view.state.doc.lineAt(view.viewport.from).number
+    const limit = Math.max(1, topLine - 160)
+    for (let lineNo = topLine; lineNo >= limit; lineNo -= 1) {
+      const label = scopeLabel(view.state.doc.line(lineNo).text)
+      if (label) {
+        stickyScope = label
+        return
+      }
+    }
+    stickyScope = ''
+  }
+
+  function onEditorScroll() {
+    updateStickyScope()
+    scheduleMinimapDraw()
+  }
+
+  function scheduleMinimapDraw() {
+    if (minimapFrame) return
+    minimapFrame = requestAnimationFrame(() => {
+      minimapFrame = 0
+      drawEditorMinimap()
+    })
+  }
+
+  function drawEditorMinimap() {
+    if (!view || !minimapCanvas || !$editorPreferences.editorMinimap) return
+    const rect = minimapCanvas.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+    const dpr = window.devicePixelRatio || 1
+    minimapCanvas.width = Math.max(1, Math.floor(rect.width * dpr))
+    minimapCanvas.height = Math.max(1, Math.floor(rect.height * dpr))
+    const ctx = minimapCanvas.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, rect.width, rect.height)
+
+    const styles = getComputedStyle(minimapCanvas)
+    const accent = styles.getPropertyValue('--primary').trim() || '#c28a64'
+    const muted = styles.getPropertyValue('--muted-foreground').trim() || '#8f8984'
+    const lines = view.state.doc.lines
+    const lineHeight = Math.max(1, rect.height / Math.max(lines, 1))
+    ctx.fillStyle = muted
+    ctx.globalAlpha = 0.35
+    const stride = Math.max(1, Math.ceil(lines / 900))
+    for (let lineNo = 1; lineNo <= lines; lineNo += stride) {
+      const text = view.state.doc.line(lineNo).text.trimEnd()
+      if (!text) continue
+      const y = (lineNo - 1) * lineHeight
+      const width = Math.min(rect.width - 8, 8 + text.length * 0.42)
+      ctx.fillRect(4, y, Math.max(2, width), Math.max(1, lineHeight * stride * 0.6))
+    }
+    const scroll = view.scrollDOM
+    const maxScroll = Math.max(scroll.scrollHeight, 1)
+    const viewportTop = (scroll.scrollTop / maxScroll) * rect.height
+    const viewportHeight = Math.max(18, (scroll.clientHeight / maxScroll) * rect.height)
+    ctx.globalAlpha = 1
+    ctx.fillStyle = colorMix(accent, 0.28)
+    ctx.fillRect(1, viewportTop, rect.width - 2, viewportHeight)
+    ctx.strokeStyle = accent
+    ctx.strokeRect(1.5, viewportTop + 0.5, rect.width - 3, viewportHeight - 1)
+  }
+
+  function colorMix(color: string, alpha: number): string {
+    if (/^#([0-9a-f]{6})$/i.test(color)) {
+      const hex = color.slice(1)
+      const r = parseInt(hex.slice(0, 2), 16)
+      const g = parseInt(hex.slice(2, 4), 16)
+      const b = parseInt(hex.slice(4, 6), 16)
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`
+    }
+    return color
+  }
+
+  function scrollFromMinimap(e: PointerEvent) {
+    if (!view || !minimapCanvas) return
+    const rect = minimapCanvas.getBoundingClientRect()
+    const ratio = Math.min(1, Math.max(0, (e.clientY - rect.top) / Math.max(rect.height, 1)))
+    const scroll = view.scrollDOM
+    scroll.scrollTop = ratio * Math.max(0, scroll.scrollHeight - scroll.clientHeight)
+    scheduleMinimapDraw()
+  }
+
+  function startMinimapDrag(e: PointerEvent) {
+    minimapDragging = true
+    minimapCanvas?.setPointerCapture(e.pointerId)
+    scrollFromMinimap(e)
+  }
+
+  function dragMinimap(e: PointerEvent) {
+    if (minimapDragging) scrollFromMinimap(e)
+  }
+
+  function stopMinimapDrag(e: PointerEvent) {
+    minimapDragging = false
+    minimapCanvas?.releasePointerCapture(e.pointerId)
+  }
+
+  function attachStickyScroll() {
+    scrollDom = view?.scrollDOM ?? null
+    scrollDom?.addEventListener('scroll', onEditorScroll, { passive: true })
+    updateStickyScope()
+    scheduleMinimapDraw()
+  }
+
+  function destroyView() {
+    if (scrollDom) {
+      scrollDom.removeEventListener('scroll', onEditorScroll)
+      scrollDom = null
+    }
+    if (view) {
+      view.destroy()
+      view = null
+    }
+    stickyScope = ''
   }
 
   /** Drive the diff-review overlay for the mounted file (Req 12). */
@@ -111,10 +263,7 @@
 
   /** Tear down the current view and mount the given tab's stored state. */
   function mountTab(id: string) {
-    if (view) {
-      view.destroy()
-      view = null
-    }
+    destroyView()
     const tab = get(tabs).tabs.find((t) => t.id === id)
     // Defensive: the Editor is only rendered for an editor-kind active tab, but
     // guard anyway so a preview tab can never be treated as a document.
@@ -129,16 +278,31 @@
     // recompute dirty against this tab's baseline. Seed from the tab's stored
     // doc so cursor/scroll/undo are preserved across switches.
     const doc = tab.state.doc.toString()
+    markdownPreviewText = doc
     const onDocChange = () => {
       if (view) recomputeDirty(id, view.state.doc.toString())
+      updateStickyScope()
+      scheduleMinimapDraw()
+      if (/\.md(?:own)?$/i.test(tab.path)) scheduleMarkdownPreview()
       scheduleLspChange()
     }
     // Mirror this tab's cursor into the status bar on every selection change.
     const onSelectionChange = () => {
       if (view) setCursorFromState(view.state)
     }
-    const state = createEditorState(doc, onDocChange, onSelectionChange, tab.path, openLinkedPath)
+    const goToDefinition = (line: number, character: number) => {
+      void editorGoToDefinitionAt(tab.path, line, character)
+    }
+    const state = createEditorState(
+      doc,
+      onDocChange,
+      onSelectionChange,
+      tab.path,
+      openLinkedPath,
+      goToDefinition,
+    )
     view = mountEditorView(state, host)
+    attachStickyScroll()
     mountedId = id
     mountedPath = tab.path
     if (active) {
@@ -171,8 +335,7 @@
     if (activeId) mountTab(activeId)
     else {
       if (view) {
-        view.destroy()
-        view = null
+        destroyView()
       }
       mountedId = null
       mountedPath = null
@@ -202,11 +365,17 @@
     updateReviewOverlay()
   })
 
+  $effect(() => {
+    void $editorPreferences.editorMinimap
+    scheduleMinimapDraw()
+  })
+
   onDestroy(() => {
     flushLspChange()
     persistMounted()
     if (changeTimer) clearTimeout(changeTimer)
-    if (view) view.destroy()
+    if (markdownTimer) clearTimeout(markdownTimer)
+    destroyView()
     if (active) {
       setActiveEditor(null)
       clearCursor()
@@ -234,15 +403,45 @@
 <!-- Background throttle: `inactive` halts the cursor-blink animation (a
      repaint loop) while the window is unfocused/hidden. No behavior change. -->
 <div
-  class="editor-host"
-  class:inactive={!$appActive}
-  bind:this={host}
-  onmousedown={activateThisEditor}
-  onfocusin={activateThisEditor}
-  oncontextmenu={onEditorContextMenu}
-></div>
+  class="editor-frame"
+  class:has-minimap={$editorPreferences.editorMinimap}
+  class:markdown-split={$editorPreferences.markdownPreview && !!mountedPath && /\.md(?:own)?$/i.test(mountedPath)}
+>
+  {#if stickyScope}
+    <div class="sticky-scope" title={stickyScope}>{stickyScope}</div>
+  {/if}
+  <div
+    class="editor-host"
+    class:inactive={!$appActive}
+    bind:this={host}
+    onmousedown={activateThisEditor}
+    onfocusin={activateThisEditor}
+    oncontextmenu={onEditorContextMenu}
+  ></div>
+  {#if $editorPreferences.editorMinimap}
+    <canvas
+      bind:this={minimapCanvas}
+      class="editor-minimap"
+      aria-label="Editor minimap"
+      onpointerdown={startMinimapDrag}
+      onpointermove={dragMinimap}
+      onpointerup={stopMinimapDrag}
+      onpointercancel={stopMinimapDrag}
+    ></canvas>
+  {/if}
+  {#if $editorPreferences.markdownPreview && mountedPath && /\.md(?:own)?$/i.test(mountedPath)}
+    <MarkdownPreview source={markdownPreviewText} />
+  {/if}
+</div>
 
 <style>
+  .editor-frame {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+  }
   .editor-host {
     flex: 1;
     min-height: 0;
@@ -251,6 +450,45 @@
     color: var(--foreground);
     font-family: var(--font-mono);
     font-size: 13px;
+  }
+  .editor-frame.has-minimap .editor-host :global(.cm-scroller) {
+    margin-right: 82px;
+  }
+  .editor-frame.markdown-split .editor-host {
+    flex-basis: 50%;
+  }
+  .editor-minimap {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 78px;
+    z-index: 5;
+    border-left: 1px solid var(--border);
+    background: color-mix(in srgb, var(--background) 88%, var(--card));
+    cursor: pointer;
+    touch-action: none;
+  }
+  .sticky-scope {
+    position: absolute;
+    top: 0;
+    left: 42px;
+    right: 0;
+    z-index: 4;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--background) 94%, var(--card));
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.18);
   }
   /* CM6 chrome theming — ported from the legacy #cm-host rules. */
   .editor-host :global(.cm-editor) {
@@ -349,6 +587,25 @@
   }
   .editor-host :global(.cm-gutter-lint) {
     width: 0.8em;
+  }
+  .editor-host :global(.cm-inline-diagnostic) {
+    margin: 1px 0 3px 0;
+    padding: 2px 10px 2px 14px;
+    border-left: 2px solid var(--primary);
+    color: var(--muted-foreground);
+    background: color-mix(in srgb, var(--background) 82%, var(--card));
+    font-family: var(--font-sans);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+  }
+  .editor-host :global(.cm-inline-diagnostic-error) {
+    border-left-color: var(--destructive);
+    color: color-mix(in srgb, var(--destructive) 78%, var(--foreground));
+  }
+  .editor-host :global(.cm-inline-diagnostic-warning) {
+    border-left-color: var(--chart-4, #d29922);
+    color: color-mix(in srgb, var(--chart-4, #d29922) 82%, var(--foreground));
   }
 
   /* ── M8 diff-review overlay (Req 12.2-12.5) ──────────────────────────────

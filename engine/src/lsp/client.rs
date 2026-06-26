@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 use super::completion::{LspCompletionOption, normalize_completion};
 use super::config::LspSettings;
+use super::definition::{LspDefinitionLocation, normalize_definition};
 use super::diagnostics::{DiagnosticsStore, LspDiagnostic, parse_publish_diagnostics};
 use super::error::LspError;
 use super::language::LanguageId;
@@ -33,6 +34,7 @@ const INIT_TIMEOUT: Duration = Duration::from_secs(15);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Completion deadline — fail-soft so typing never freezes (Requirement 11.9).
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFINITION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Per-file/per-language LSP state shown in the editor (Requirement 12.2). The
 /// serde tag is `state` so the UI can discriminate.
@@ -321,6 +323,35 @@ impl LspClient {
         Ok(normalize_completion(&result))
     }
 
+    fn definition(
+        &self,
+        uri: &str,
+        line: u32,
+        character: u32,
+        timeout: Duration,
+    ) -> Result<Option<LspDefinitionLocation>, LspError> {
+        if !matches!(self.status(), LspStatus::Connected { .. }) {
+            return Err(LspError::NotInitialized);
+        }
+        let is_open = self
+            .shared
+            .versions
+            .lock()
+            .map(|v| v.contains_key(uri))
+            .unwrap_or(false);
+        if !is_open {
+            return Ok(None);
+        }
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+        });
+        let result = self
+            .process
+            .request("textDocument/definition", params, timeout)?;
+        Ok(normalize_definition(&result))
+    }
+
     fn shutdown(&mut self) {
         self.process.shutdown(SHUTDOWN_TIMEOUT);
     }
@@ -592,6 +623,28 @@ impl LspManager {
         };
         client
             .completion(&uri, line, character, COMPLETION_TIMEOUT)
+            .unwrap_or_default()
+    }
+
+    /// Request the first definition location for `path` at `line`/`character`.
+    /// Fail-soft: missing servers, unsupported files, and timeouts return None.
+    pub fn definition(
+        &self,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> Option<LspDefinitionLocation> {
+        let uri = path_to_file_uri(path);
+        let key = self
+            .doc_index
+            .lock()
+            .expect("doc_index poisoned")
+            .get(&uri)
+            .cloned()?;
+        let mut clients = self.clients.lock().expect("clients poisoned");
+        let client = clients.get_mut(&key)?;
+        client
+            .definition(&uri, line, character, DEFINITION_TIMEOUT)
             .unwrap_or_default()
     }
 
@@ -898,6 +951,12 @@ mod tests {
         let mgr = noop_manager();
         assert!(mgr.completion(Path::new("src/main.rs"), 0, 0).is_empty());
         assert!(mgr.completion(Path::new("notes.txt"), 0, 0).is_empty());
+    }
+
+    #[test]
+    fn definition_for_unopened_document_is_none() {
+        let mgr = noop_manager();
+        assert_eq!(mgr.definition(Path::new("src/main.rs"), 0, 0), None);
     }
 
     #[test]

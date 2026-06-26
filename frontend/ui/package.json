@@ -1,7 +1,7 @@
 {
   "name": "ui",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.10",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,7 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tsconfig/svelte": "^5.0.8",
+    "@types/katex": "^0.16.8",
     "@types/node": "^24.12.3",
     "material-icon-theme": "^5.35.0",
     "svelte": "^5.55.5",
@@ -33,6 +34,9 @@
     "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
-    "iconoir": "^7.11.1"
+    "iconoir": "^7.11.1",
+    "katex": "^0.17.0",
+    "marked": "^18.0.5",
+    "mermaid": "^11.16.0"
   }
 }

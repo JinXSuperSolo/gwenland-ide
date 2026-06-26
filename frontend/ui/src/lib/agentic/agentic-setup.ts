@@ -32,6 +32,8 @@ import {
   setToolFinal,
   setToolExhausted,
   setTierLocal,
+  setRunningCommand,
+  appendCmdOutputLine,
 } from '../stores/agentic'
 
 /**
@@ -69,6 +71,8 @@ let unlistenToolCall: UnlistenFn | null = null
 let unlistenToolResult: UnlistenFn | null = null
 let unlistenToolAsk: UnlistenFn | null = null
 let unlistenToolError: UnlistenFn | null = null
+let unlistenCmdOutput: UnlistenFn | null = null
+let unlistenCmdDone: UnlistenFn | null = null
 /** Stream id shared by every step of the active loop, or null when idle. */
 let activeToolStreamId: string | null = null
 /** Set by Stop/cancel to halt the re-entrant loop between steps (best-effort:
@@ -88,7 +92,12 @@ export function teardownToolListeners(): void {
   unlistenToolAsk = null
   unlistenToolError?.()
   unlistenToolError = null
+  unlistenCmdOutput?.()
+  unlistenCmdOutput = null
+  unlistenCmdDone?.()
+  unlistenCmdDone = null
   activeToolStreamId = null
+  setRunningCommand(false)
 }
 
 /** Open project root, or null when no folder is open. */
@@ -571,6 +580,12 @@ export async function runAgentTools(): Promise<void> {
     teardownToolListeners()
     setAgentBusy(false)
   })
+  unlistenCmdOutput = await cmd.onAgentCmdOutput(session.id, (line) =>
+    appendCmdOutputLine(line)
+  )
+  unlistenCmdDone = await cmd.onAgentCmdDone(session.id, () =>
+    setRunningCommand(false)
+  )
 
   await driveToolLoop(session.id)
 }
@@ -584,14 +599,19 @@ export async function runAgentTools(): Promise<void> {
 export async function resolveToolGate(
   decision: 'approve' | 'confirm' | 'reject'
 ): Promise<void> {
-  const session = agenticState().session
-  if (!session || !agenticState().pendingTool) return
+  const state = agenticState()
+  const session = state.session
+  if (!session || !state.pendingTool) return
+  const isTerminal = state.pendingTool.side === 'terminal'
   setPendingTool(null)
+  // Mark a running command so the UI shows the live output banner.
+  if (decision !== 'reject' && isTerminal) setRunningCommand(true)
   setAgentBusy(true)
   try {
     await cmd.agentToolResolve(session.id, decision, [])
   } catch (e) {
     setAgentError({ kind: 'provider_error', data: String(e) })
+    setRunningCommand(false)
     setAgentBusy(false)
     return
   }

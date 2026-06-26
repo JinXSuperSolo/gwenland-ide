@@ -137,14 +137,19 @@ pub struct PtySession {
 /// at `cwd` so the shell opens in the project folder rather than the app's cwd.
 /// A `cwd` that doesn't exist is ignored (the shell would otherwise fail to
 /// spawn); the shell then starts in its default directory.
-fn default_shell_command(cwd: Option<&std::path::Path>) -> CommandBuilder {
-    let mut cmd = CommandBuilder::new(default_shell());
+fn shell_command(shell: Option<&str>, cwd: Option<&std::path::Path>) -> CommandBuilder {
+    let command = shell.map(str::to_string).unwrap_or_else(default_shell);
+    let mut cmd = CommandBuilder::new(command);
     if let Some(dir) = cwd
         && dir.is_dir()
     {
         cmd.cwd(dir);
     }
     cmd
+}
+
+fn default_shell_command(cwd: Option<&std::path::Path>) -> CommandBuilder {
+    shell_command(None, cwd)
 }
 
 impl PtySession {
@@ -181,6 +186,26 @@ impl PtySession {
     ) -> Result<Self, TerminalError> {
         Self::spawn_inner(
             default_shell_command(cwd),
+            rows,
+            cols,
+            DEFAULT_MAX_LINES,
+            Some(on_output),
+            on_error,
+            on_dev_server,
+        )
+    }
+
+    pub fn spawn_shell_with_callback(
+        rows: u16,
+        cols: u16,
+        cwd: Option<&std::path::Path>,
+        shell: Option<&str>,
+        on_output: OutputCallback,
+        on_error: Option<ErrorCallback>,
+        on_dev_server: Option<DevServerCallback>,
+    ) -> Result<Self, TerminalError> {
+        Self::spawn_inner(
+            shell_command(shell, cwd),
             rows,
             cols,
             DEFAULT_MAX_LINES,

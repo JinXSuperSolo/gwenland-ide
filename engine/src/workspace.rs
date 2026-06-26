@@ -171,6 +171,9 @@ pub struct WorkspaceSettings {
     /// Terminal font family override.
     #[serde(default)]
     pub terminal_font: Option<String>,
+    /// Last shell selected for new terminal tabs (command name/path only).
+    #[serde(default)]
+    pub last_terminal_shell: Option<String>,
     /// Serialized layout state blob (opaque to engine; owned by the UI).
     #[serde(default)]
     pub layout_state: Option<serde_json::Value>,

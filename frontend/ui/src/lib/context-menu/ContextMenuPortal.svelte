@@ -116,26 +116,24 @@
 
 <style>
   .cm-menu {
-    /* GWEN-322: VS Code-compact tokens. Hover is a subtle dark surface lift
-       (NOT a solid accent block). 4px container padding/radius, 1px muted
-       separators. */
-    --cm-bg: #1f1d1c;
-    --cm-item-hover: rgba(255, 255, 255, 0.07);
-    --cm-item-hover-text: var(--cm-text);
-    --cm-item-active: rgba(255, 255, 255, 0.11);
-    --cm-text: #e8e0d8;
-    --cm-text-muted: rgba(232, 224, 216, 0.4);
-    --cm-separator: rgba(255, 255, 255, 0.08);
-    --cm-radius: 4px;
-    --cm-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
-    --cm-shortcut-text: rgba(232, 224, 216, 0.42);
+    /* GwenLand design tokens — dark background, primary hover highlight. */
+    --cm-bg:              #1f1e1e;
+    --cm-item-hover:      var(--primary);
+    --cm-item-hover-text: var(--primary-foreground);
+    --cm-item-active:     color-mix(in srgb, var(--primary) 80%, #000);
+    --cm-text:            rgba(255, 255, 255, 0.88);
+    --cm-text-muted:      rgba(255, 255, 255, 0.40);
+    --cm-separator:       rgba(255, 255, 255, 0.08);
+    --cm-radius:          var(--radius);
+    --cm-shadow:          0 8px 24px rgba(0, 0, 0, 0.5);
+    --cm-shortcut-text:   rgba(255, 255, 255, 0.38);
 
     position: fixed;
     z-index: 1000;
     min-width: 200px;
     max-width: 320px;
     padding: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: none;
     background-color: var(--cm-bg);
     border-radius: var(--cm-radius);
     box-shadow: var(--cm-shadow);
@@ -150,14 +148,8 @@
     animation: cm-pop 0.1s ease-out;
   }
   @keyframes cm-pop {
-    from {
-      opacity: 0;
-      transform: scale(0.96);
-    }
-    to {
-      opacity: 1;
-      transform: scale(1);
-    }
+    from { opacity: 0; transform: scaleY(0.95); }
+    to   { opacity: 1; transform: scaleY(1); }
   }
   .cm-empty {
     padding: 8px 10px;

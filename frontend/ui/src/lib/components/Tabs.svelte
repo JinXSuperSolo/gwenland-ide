@@ -1,6 +1,8 @@
 <script lang="ts">
   import { activateTab, moveTabToGroup, pinTab, setActiveGroup, type Tab } from '../stores/tabs'
   import { openContextMenu } from '../context-menu/contextMenuStore'
+  import { git } from '../stores/git'
+  import { workspace } from '../stores/workspace'
   import Icon from './Icon.svelte'
   import FileIcon from './FileIcon.svelte'
 
@@ -35,6 +37,29 @@
       })
     })
   })
+
+  // Git status dot: returns the CSS modifier class for a tab's file path,
+  // or empty string when clean/not a repo/not an editor tab.
+  function gitDotClass(tab: Tab): string {
+    if (tab.kind !== 'editor' || !tab.path) return ''
+    const state = $git
+    if (!state.isRepo) return ''
+    const root = $workspace.folderPath
+    if (!root) return ''
+    const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
+    const rootN = norm(root)
+    const rel = norm(tab.path).startsWith(rootN + '/')
+      ? norm(tab.path).slice(rootN.length + 1)
+      : norm(tab.path)
+    const f = state.files.find((x) => x.path === rel)
+    if (!f) return ''
+    switch (f.status) {
+      case 'M': case 'R': return 'git-modified'
+      case 'D': return 'git-deleted'
+      case 'U': case 'A': return 'git-added'
+      default: return 'git-modified'
+    }
+  }
 
   // Hover tooltip: an editor tab's on-disk path, a diff tab's path, or a
   // preview's source target.
@@ -148,6 +173,9 @@
     >
       <FileIcon name={tab.name} size={15} />
       <span class="tab-title">{tab.name}</span>
+      {#if gitDotClass(tab)}
+        <span class={`tab-git-dot ${gitDotClass(tab)}`} aria-hidden="true"></span>
+      {/if}
       <span class="tab-dirty-dot"></span>
       <button
         type="button"
@@ -176,13 +204,21 @@
     overflow-x: auto;
     overflow-y: hidden;
     min-width: 0;
-    scrollbar-width: none;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
   }
   .tabs-bar.drag-over {
     background-color: color-mix(in srgb, var(--primary) 8%, var(--background));
   }
   .tabs-bar::-webkit-scrollbar {
-    height: 0;
+    height: 4px;
+  }
+  .tabs-bar::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 999px;
+  }
+  .tabs-bar::-webkit-scrollbar-track {
+    background-color: transparent;
   }
   .tab-item {
     display: flex;
@@ -246,6 +282,27 @@
   .tab-close:hover {
     background-color: var(--border);
   }
+  /* Git status dot: 2px colored square shown after the filename when git-dirty.
+     Hidden while the unsaved-edit dot is showing (.dirty) to avoid clutter. */
+  .tab-git-dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 1px;
+  }
+  .tab-git-dot.git-modified {
+    background: #e5c07b;
+  }
+  .tab-git-dot.git-added {
+    background: #98c379;
+  }
+  .tab-git-dot.git-deleted {
+    background: #e06c75;
+  }
+  .tab-item.dirty .tab-git-dot {
+    display: none;
+  }
+
   /* Dirty indicator: a filled dot occupies the close slot until hovered. */
   .tab-dirty-dot {
     display: none;
