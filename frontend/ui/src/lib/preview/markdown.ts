@@ -1,4 +1,5 @@
 import { marked } from 'marked'
+import { renderMermaid } from './mermaid-lite'
 
 // ---------------------------------------------------------------------------
 // KaTeX — loaded lazily on first math token, never touches the main bundle.
@@ -55,6 +56,9 @@ marked.setOptions({ gfm: true, breaks: false })
 
 const renderer = new marked.Renderer()
 renderer.code = ({ text, lang }) => {
+  if (lang === 'mermaid') {
+    return `<div class="mermaid-diagram">${renderMermaid(text)}</div>`
+  }
   const escapedLang = lang ? ` class="language-${lang}"` : ''
   const escaped = text
     .replace(/&/g, '&amp;')

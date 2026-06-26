@@ -137,4 +137,15 @@
     font-family: var(--font-mono);
     font-size: 0.9em;
   }
+  .markdown-preview :global(.mermaid-diagram) {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+    margin: 0 0 14px;
+    padding: 8px 0;
+  }
+  .markdown-preview :global(.mermaid-diagram svg) {
+    max-width: 100%;
+    height: auto;
+  }
 </style>
