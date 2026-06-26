@@ -6,7 +6,7 @@
   import { refreshWorkspace, workspace } from '../stores/workspace'
   import { refreshSignal, collapseSignal, revealSignal, requestTreeRefresh } from '../stores/file-tree'
   import { openContextMenu } from '../context-menu/contextMenuStore'
-  import { git } from '../stores/git'
+  import { git, gitDirtyPrefixes } from '../stores/git'
   import Icon from './Icon.svelte'
   import FileIcon from './FileIcon.svelte'
 
@@ -141,7 +141,7 @@
   const indent = $derived(8 + depth * 14)
 
   // GWEN-329: git status color + badge letter for this node.
-  // Files get their own badge letter; folders go amber when any child is dirty.
+  // Files: O(1) map lookup. Folders: O(1) set lookup via precomputed prefix set.
   const gitInfo = $derived.by(() => {
     const state = $git
     if (!state.isRepo) return { cls: '', badge: '' }
@@ -153,8 +153,7 @@
       ? norm(entry.path).slice(rootN.length + 1)
       : norm(entry.path)
     if (entry.is_dir) {
-      const prefix = selfRel + '/'
-      const dirty = state.files.some((f) => f.path.startsWith(prefix))
+      const dirty = $gitDirtyPrefixes.has(selfRel + '/')
       return { cls: dirty ? 'git-dir-dirty' : '', badge: '' }
     }
     const f = state.files.find((x) => x.path === selfRel)

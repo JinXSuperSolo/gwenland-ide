@@ -38,6 +38,8 @@
   let minimapFrame = 0
   let minimapDragging = false
   let activityBins: number[] = []
+  let terminalMinimapAccent = '#c28a64'
+  let terminalMinimapColorCached = false
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   let portBuffer = ''
@@ -102,8 +104,12 @@
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, rect.width, rect.height)
-    const styles = getComputedStyle(minimapCanvas)
-    const accent = styles.getPropertyValue('--primary').trim() || '#c28a64'
+    if (!terminalMinimapColorCached) {
+      const a = getComputedStyle(minimapCanvas).getPropertyValue('--primary').trim()
+      if (a) terminalMinimapAccent = a
+      terminalMinimapColorCached = true
+    }
+    const accent = terminalMinimapAccent
     ctx.fillStyle = accent
     ctx.globalAlpha = 0.5
     const binHeight = Math.max(1, rect.height / Math.max(activityBins.length, 1))

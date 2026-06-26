@@ -144,6 +144,17 @@
   let mentionQuery = $state<{ at: number; query: string } | null>(null)
   const mentionOpen = $derived(mentionQuery !== null && mentionCandidates.length > 0)
 
+  let mentionDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+  /** Debounced wrapper — collapses rapid oninput/onclick calls to one execution. */
+  function scheduleMentionRefresh(): void {
+    if (mentionDebounceTimer) clearTimeout(mentionDebounceTimer)
+    mentionDebounceTimer = setTimeout(() => {
+      mentionDebounceTimer = null
+      void refreshMentions()
+    }, 80)
+  }
+
   /** Recompute the `@` query + candidate list from the caret position. */
   async function refreshMentions(): Promise<void> {
     const caret = inputEl?.selectionStart ?? composerText.length
@@ -447,7 +458,7 @@
 
   function onInput(e: Event) {
     setUnsentInput((e.currentTarget as HTMLTextAreaElement).value)
-    void refreshMentions()
+    scheduleMentionRefresh()
   }
   function onSend() {
     // A fully-typed slash command runs instead of sending a chat message.
@@ -846,11 +857,10 @@
           value={agentGoal}
           oninput={(e) => {
             agentGoal = (e.currentTarget as HTMLTextAreaElement).value
-            void refreshMentions()
+            scheduleMentionRefresh()
           }}
           onkeydown={onKeydown}
-          onkeyup={() => void refreshMentions()}
-          onclick={() => void refreshMentions()}
+          onclick={scheduleMentionRefresh}
           disabled={agentStreaming}
         ></textarea>
       {:else}
@@ -862,8 +872,7 @@
           value={$aiChat.unsentInput}
           oninput={onInput}
           onkeydown={onKeydown}
-          onkeyup={() => void refreshMentions()}
-          onclick={() => void refreshMentions()}
+          onclick={scheduleMentionRefresh}
         ></textarea>
       {/if}
 

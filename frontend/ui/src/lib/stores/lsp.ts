@@ -26,6 +26,15 @@ interface LspStoreState {
 
 export const lsp = writable<LspStoreState>({ status: {}, diagnostics: {} })
 
+/** Normalize a file path to forward-slash form for use as a store key.
+ *  The Rust side emits paths from `to_string_lossy()` on a PathBuf that was
+ *  built from a forward-slash URI string, so it always arrives with `/`.
+ *  The frontend file tree uses OS-native separators (backslashes on Windows).
+ *  Keying both sides through this helper makes lookups separator-agnostic. */
+export function normPath(p: string): string {
+  return p.replace(/\\/g, '/')
+}
+
 /** Monotonic document versions per path (Requirement 9.4). UI-generated so Rust
  *  never invents conflicting versions (Requirement 13.5). */
 const versions = new Map<string, number>()
@@ -66,7 +75,7 @@ export function serverKeyForLanguage(language: LspLanguage): string {
 }
 
 function setStatus(path: string, status: LspStatus): void {
-  lsp.update((s) => ({ ...s, status: { ...s.status, [path]: status } }))
+  lsp.update((s) => ({ ...s, status: { ...s.status, [normPath(path)]: status } }))
 }
 
 /**
@@ -81,8 +90,9 @@ export async function lspOpenPath(path: string, text: string): Promise<void> {
     setStatus(path, { state: 'unsupported_language' })
     return
   }
-  versions.delete(path)
-  const version = nextVersion(path) // 1
+  const npath = normPath(path)
+  versions.delete(npath)
+  const version = nextVersion(npath) // 1
   // Optimistic "starting" so the indicator reacts immediately on slow servers.
   setStatus(path, { state: 'starting', language })
   try {
@@ -96,7 +106,7 @@ export async function lspOpenPath(path: string, text: string): Promise<void> {
 /** Push a full-text change for an open LSP document (debounced by the caller). */
 export async function lspChangePath(path: string, text: string): Promise<void> {
   if (!path || !languageForPath(path)) return
-  const version = nextVersion(path)
+  const version = nextVersion(normPath(path))
   try {
     await lspChangeDocument(path, text, version)
   } catch {
@@ -107,12 +117,13 @@ export async function lspChangePath(path: string, text: string): Promise<void> {
 /** Close an LSP document (called when a tab closes): clears its UI state. */
 export async function lspClosePath(path: string): Promise<void> {
   if (!path) return
-  versions.delete(path)
+  const npath = normPath(path)
+  versions.delete(npath)
   lsp.update((s) => {
     const status = { ...s.status }
     const diagnostics = { ...s.diagnostics }
-    delete status[path]
-    delete diagnostics[path]
+    delete status[npath]
+    delete diagnostics[npath]
     return { status, diagnostics }
   })
   if (!languageForPath(path)) return
@@ -137,7 +148,7 @@ export function initLsp(): void {
   onLspDiagnostics((event) => {
     lsp.update((s) => ({
       ...s,
-      diagnostics: { ...s.diagnostics, [event.path]: event.diagnostics },
+      diagnostics: { ...s.diagnostics, [normPath(event.path)]: event.diagnostics },
     }))
   }).catch(() => {})
 

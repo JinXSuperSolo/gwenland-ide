@@ -32,6 +32,27 @@ const initial: GitState = { isRepo: false, branch: '', dirtyCount: 0, files: [],
 
 export const git = writable<GitState>(initial)
 
+/**
+ * Precomputed set of repo-relative directory prefixes that contain at least
+ * one dirty file. E.g. if `src/foo/bar.ts` is modified, this set contains
+ * `"src/"` and `"src/foo/"`. TreeNode folder nodes subscribe here instead of
+ * calling state.files.some() on every render — O(1) lookup vs O(n) scan.
+ */
+export const gitDirtyPrefixes = writable<Set<string>>(new Set())
+
+function recomputeDirtyPrefixes(files: GitFileStatus[]): void {
+  const s = new Set<string>()
+  for (const f of files) {
+    const parts = f.path.split('/')
+    let prefix = ''
+    for (let i = 0; i < parts.length - 1; i++) {
+      prefix += parts[i] + '/'
+      s.add(prefix)
+    }
+  }
+  gitDirtyPrefixes.set(s)
+}
+
 /** Poll cadence in ms. 10s keeps idle cost low; the 4s version was wasteful. */
 const POLL_MS = 10000
 
@@ -53,6 +74,7 @@ export async function refreshGit(): Promise<void> {
     const isRepo = await gitIsRepo(root)
     if (!isRepo) {
       git.set({ ...initial, isRepo: false })
+      gitDirtyPrefixes.set(new Set())
       return
     }
     const status = await gitStatus(root)
@@ -64,8 +86,10 @@ export async function refreshGit(): Promise<void> {
       ahead: status.ahead,
       behind: status.behind,
     })
+    recomputeDirtyPrefixes(status.files)
   } catch {
     git.set(initial)
+    gitDirtyPrefixes.set(new Set())
   } finally {
     refreshing = false
   }

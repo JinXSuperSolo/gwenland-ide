@@ -13,7 +13,7 @@
   import { workspace } from '../stores/workspace'
   import { setCursorFromState, clearCursor } from '../stores/cursor'
   import { editorGoToDefinitionAt, setActiveEditor } from '../editor/active-editor'
-  import { lsp, lspChangePath, languageForPath } from '../stores/lsp'
+  import { lsp, lspChangePath, languageForPath, normPath } from '../stores/lsp'
   import { editorPreferences } from '../stores/editor-preferences'
   import { openContextMenuSmart } from '../context-menu/globalContextMenu'
   import { diffReview, acceptHunk, rejectHunk, sameFilePath } from '../stores/diff-review'
@@ -80,7 +80,7 @@
   /** Push the current store diagnostics for the mounted path into the view. */
   function applyDiagnosticsToView() {
     if (!view || mountedPath === null) return
-    applyDiagnostics(view, get(lsp).diagnostics[mountedPath] ?? [])
+    applyDiagnostics(view, get(lsp).diagnostics[normPath(mountedPath)] ?? [])
   }
 
   function scopeLabel(line: string): string | null {
