@@ -162,9 +162,12 @@
     const activeTab = activeId ? $tabs.tabs.find((t) => t.id === activeId) : null
     const activePath = activeTab && isEditorTab(activeTab) ? activeTab.path : null
     if (activeId === mountedId && activePath === mountedPath) return
-    // Flush + persist whatever is currently mounted before switching away.
+    const isPreviewSlotReplacement = activeId === mountedId && activePath !== mountedPath
     flushLspChange()
-    persistMounted()
+    // Skip persist when the preview slot is being replaced in-place: the slot
+    // already holds the new file's fresh EditorState, and calling persistMounted
+    // here would overwrite it with the old file's stale view state.
+    if (!isPreviewSlotReplacement) persistMounted()
     if (activeId) mountTab(activeId)
     else {
       if (view) {

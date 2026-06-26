@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { activateTab, moveTabToGroup, setActiveGroup, type Tab } from '../stores/tabs'
+  import { activateTab, moveTabToGroup, pinTab, setActiveGroup, type Tab } from '../stores/tabs'
   import { openContextMenu } from '../context-menu/contextMenuStore'
   import Icon from './Icon.svelte'
   import FileIcon from './FileIcon.svelte'
@@ -136,6 +136,7 @@
         dragOver = false
       }}
       onmousedown={() => activateTab(tab.id, groupId)}
+      ondblclick={(e) => { e.preventDefault(); pinTab(tab.id, groupId) }}
       oncontextmenu={(e) => onTabContextMenu(e, tab)}
       onkeydown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {

@@ -221,8 +221,8 @@ async function restoreWorkspace(
     resetEditorGroups(
       groupLayouts.map((group) => ({
         id: group.id,
-        isLocked: group.isLocked,
-        isMaximized: group.isMaximized,
+        isLocked: false,
+        isMaximized: false,
         size: group.size ?? 1,
       })),
       layoutState?.editorGroupOrientation ?? 'horizontal',

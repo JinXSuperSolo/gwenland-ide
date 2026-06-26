@@ -23,8 +23,6 @@ import {
   closeOtherTabs,
   closeTabsToRight,
   closeSavedTabs,
-  openFileToSide,
-  splitHorizontal,
   isEditorTab,
   tabs,
 } from '../stores/tabs'
@@ -210,15 +208,6 @@ const editorActions: ContextAction[] = [
 
   // ── layout ──────────────────────────────────────────────────────────────
   {
-    id: 'editor.split',
-    label: 'Split Editor',
-    icon: 'open-in-window',
-    group: 'layout',
-    order: 100,
-    when: (ctx) => ctx.scope === 'editor',
-    run: () => splitHorizontal(),
-  },
-  {
     id: 'editor.close',
     label: 'Close Editor',
     icon: 'xmark',
@@ -307,19 +296,6 @@ const tabActions: ContextAction[] = [
     },
   },
 
-  // ── layout ──────────────────────────────────────────────────────────────
-  {
-    id: 'tab.splitRight',
-    label: 'Split Right',
-    icon: 'open-in-window',
-    group: 'layout',
-    order: 70,
-    when: (ctx) => ctx.scope === 'editor_tab',
-    run: async (ctx) => {
-      if (ctx.path) await openFileToSide(ctx.path)
-      else splitHorizontal()
-    },
-  },
 ]
 
 /** Register the editor + tab action sets into the shared registry (called at init). */

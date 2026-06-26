@@ -12,8 +12,9 @@
   } from '../stores/tabs'
   import { workspace } from '../stores/workspace'
   import { openContextMenu } from '../context-menu/contextMenuStore'
-  import { setActiveEditor } from '../editor/active-editor'
+  import { setActiveEditor, editorUndo, editorRedo } from '../editor/active-editor'
   import { clearCursor } from '../stores/cursor'
+  import Icon from './Icon.svelte'
   import Tabs from './Tabs.svelte'
   import Editor from './Editor.svelte'
   import PreviewPane from './PreviewPane.svelte'
@@ -108,12 +109,26 @@
     >
       <div class="group-tabs-row">
         <Tabs groupId={group.id} tabs={group.tabs} activeId={group.activeId} {onClose} />
-        {#if group.isLocked || group.isMaximized}
-          <div class="group-flags">
-            {#if group.isLocked}<span title="Group locked">Locked</span>{/if}
-            {#if group.isMaximized}<span title="Group maximized">Max</span>{/if}
-          </div>
-        {/if}
+        <div class="group-toolbar">
+          <button
+            type="button"
+            class="toolbar-btn"
+            title="Undo (Ctrl+Z)"
+            aria-label="Undo"
+            onclick={() => editorUndo()}
+          ><Icon name="undo" size={14} /></button>
+          <button
+            type="button"
+            class="toolbar-btn"
+            title="Redo (Ctrl+Y)"
+            aria-label="Redo"
+            onclick={() => editorRedo()}
+          ><Icon name="redo" size={14} /></button>
+          {#if group.isLocked || group.isMaximized}
+            {#if group.isLocked}<span class="group-flag" title="Group locked">Locked</span>{/if}
+            {#if group.isMaximized}<span class="group-flag" title="Group maximized">Max</span>{/if}
+          {/if}
+        </div>
       </div>
 
       {#if activeTab && isEditorTab(activeTab)}
@@ -181,14 +196,36 @@
     flex: 1;
     border-bottom: none;
   }
-  .group-flags {
+  .group-toolbar {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 8px;
+    gap: 2px;
+    padding: 0 4px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--border);
+  }
+  .toolbar-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: color 0.12s ease, background-color 0.12s ease;
+  }
+  .toolbar-btn:hover {
+    color: var(--foreground);
+    background-color: var(--secondary);
+  }
+  .group-flag {
     font-size: 10px;
     color: var(--muted-foreground);
-    border-left: 1px solid var(--border);
+    padding: 0 4px;
     white-space: nowrap;
   }
   .group-divider {

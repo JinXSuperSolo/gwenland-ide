@@ -43,6 +43,8 @@
   import list from 'iconoir/icons/regular/list.svg?raw'
   import reply from 'iconoir/icons/regular/reply.svg?raw'
   import collapse from 'iconoir/icons/regular/collapse.svg?raw'
+  import undo from 'iconoir/icons/regular/undo.svg?raw'
+  import redo from 'iconoir/icons/regular/redo.svg?raw'
 
   export const ICONS = {
     plus,
@@ -85,6 +87,8 @@
     list,
     reply,
     collapse,
+    undo,
+    redo,
   } as const
 
   export type IconName = keyof typeof ICONS

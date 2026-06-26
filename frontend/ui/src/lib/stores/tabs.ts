@@ -301,6 +301,23 @@ export function activateTab(id: string, groupId?: string): void {
   })
 }
 
+/** Promote a preview tab to a permanent pinned tab (strips the preview flag). */
+export function pinTab(id: string, groupId?: string): void {
+  updateTabs((state) => {
+    const group = groupId
+      ? state.groups.find((candidate) => candidate.id === groupId)
+      : groupForTab(state, id)
+    if (!group) return state
+    return {
+      ...state,
+      groups: mapGroup(state, group.id, (g) => ({
+        ...g,
+        tabs: g.tabs.map((tab) => (tab.id === id ? { ...tab, preview: false } : tab)),
+      })),
+    }
+  })
+}
+
 export async function openFile(
   filePath: string,
   options: OpenFileOptions = {},
@@ -321,11 +338,6 @@ export async function openFile(
       groups: mapGroup(state, groupId, (group) => ({
         ...group,
         activeId: existing.id,
-        tabs: group.tabs.map((tab) =>
-          tab.id === existing.id && isEditorTab(tab) && !options.preview
-            ? { ...tab, preview: false }
-            : tab,
-        ),
       })),
     }))
     return { ok: true }
@@ -342,23 +354,15 @@ export async function openFile(
     return { ok: false, error: 'Could not open file: ' + msg }
   }
 
-  const tab = createEditorTab(filePath, content, !!options.preview)
+  const tab = createEditorTab(filePath, content, false)
   updateTabs((state) => ({
     ...state,
     activeGroupId: groupId,
-    groups: mapGroup(state, groupId, (group) => {
-      let nextTabs = group.tabs
-      if (options.preview) {
-        const preview = group.tabs.find((candidate) => candidate.preview)
-        if (preview) {
-          if (isEditorTab(preview)) closeLspIfLast(preview.path, state.tabs.filter((t) => t.id !== preview.id))
-          nextTabs = group.tabs.map((candidate) => (candidate.id === preview.id ? { ...tab, id: preview.id } : candidate))
-          return { ...group, tabs: nextTabs, activeId: preview.id }
-        }
-      }
-      nextTabs = [...group.tabs, tab]
-      return { ...group, tabs: nextTabs, activeId: tab.id }
-    }),
+    groups: mapGroup(state, groupId, (group) => ({
+      ...group,
+      tabs: [...group.tabs, tab],
+      activeId: tab.id,
+    })),
   }))
   void lspOpenPath(filePath, content)
   return { ok: true }
@@ -843,8 +847,8 @@ export function editorGroupsSnapshot(): PersistedEditorGroup[] {
     return {
       id: group.id,
       activeTabPath: active ? tabRestoreKey(active) : '',
-      isLocked: group.isLocked,
-      isMaximized: group.isMaximized,
+      isLocked: false,
+      isMaximized: false,
       size: group.size,
       tabs: group.tabs
         .map((tab) => ({

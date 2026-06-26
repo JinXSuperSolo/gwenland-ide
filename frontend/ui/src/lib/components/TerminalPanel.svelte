@@ -117,9 +117,15 @@
     overflow-x: auto;
     overflow-y: hidden;
     min-width: 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
   }
   .tab-strip::-webkit-scrollbar {
-    height: 0;
+    height: 4px;
+  }
+  .tab-strip::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 2px;
   }
   .term-tab {
     display: flex;

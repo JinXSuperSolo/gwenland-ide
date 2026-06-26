@@ -24,16 +24,16 @@
   let error = $state<string | null>(null)
   let children = $state<DirEntry[]>([])
 
-  async function toggle(permanent = false) {
+  async function toggle() {
     if (!entry.is_dir) {
-      const res = await openFile(entry.path, { preview: !permanent })
+      const res = await openFile(entry.path)
       if (!res.ok && res.error) console.error(res.error)
       return
     }
     expanded = !expanded
     if (expanded && !loaded && !loading) {
       const ok = await loadChildren()
-      if (!ok) expanded = false // collapse again so the chevron reflects no children
+      if (!ok) expanded = false
     }
   }
 
@@ -193,12 +193,8 @@
   aria-selected={false}
   aria-expanded={entry.is_dir ? expanded : undefined}
   tabindex="0"
-  onclick={() => toggle(false)}
-  ondblclick={(e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!entry.is_dir) void toggle(true)
-  }}
+  onclick={() => void toggle()}
+  ondblclick={(e) => { e.preventDefault(); e.stopPropagation() }}
   oncontextmenu={onContextMenu}
   onkeydown={(e) => {
     if (e.key === 'Delete') {
@@ -210,7 +206,7 @@
     }
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
-      toggle(false)
+      void toggle()
     }
   }}
 >
