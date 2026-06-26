@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "GwenLand-IDE"
-version = "0.1.0"
+version = "0.1.8"
 dependencies = [
  "gwenland-engine",
  "serde",
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "gwenland-engine"
-version = "0.1.0"
+version = "0.1.7"
 dependencies = [
  "async-trait",
  "bytes",
