@@ -14,6 +14,7 @@ import {
   createFile,
   createDir,
   renamePath,
+  deletePath,
   duplicatePath,
   revealInExplorer,
   moveToTrash,
@@ -29,6 +30,7 @@ import { openTreeInput } from '../stores/tree-input'
 import { openLocalHistory } from '../stores/local-history'
 import { explainFile, refactorFile } from '../stores/ai-actions'
 import { openSimpleDiff } from '../stores/simple-diff'
+import { toast } from '../stores/toast'
 
 // --- Path helpers (OS-separator aware: engine paths use the native separator) ---
 
@@ -76,6 +78,41 @@ function refreshDir(dir: string, workspaceRoot?: string): void {
 /** Common guard: file-tree scope with a usable path + workspace root. */
 function inWorkspace(ctx: ContextMenuContext): boolean {
   return ctx.scope === 'file_tree' && !!ctx.path && !!ctx.workspaceRoot
+}
+
+async function moveContextPathToTrash(ctx: ContextMenuContext): Promise<void> {
+  if (!ctx.path || !ctx.workspaceRoot) return
+  if (!confirm(`Move "${basename(ctx.path)}" to Trash?`)) return
+  const name = basename(ctx.path)
+  const dir = dirname(ctx.path)
+  // Yield to the render thread before the blocking operation begins, keeping
+  // the UI responsive. A toast shows on completion so the user knows it's done.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  try {
+    await moveToTrash(ctx.path, ctx.workspaceRoot)
+    refreshDir(dir, ctx.workspaceRoot)
+    toast(`"${name}" moved to Trash`, 'success')
+  } catch (e) {
+    alert(`Could not move to trash: ${e}`)
+  }
+}
+
+async function deleteContextPathPermanently(ctx: ContextMenuContext): Promise<void> {
+  if (!ctx.path || !ctx.workspaceRoot) return
+  if (!confirm(`Are you sure? This cannot be undone.\n\nDelete "${basename(ctx.path)}" permanently?`)) {
+    return
+  }
+  const name = basename(ctx.path)
+  const dir = dirname(ctx.path)
+  // Yield to the render thread before the blocking operation begins.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  try {
+    await deletePath(ctx.path, ctx.workspaceRoot)
+    refreshDir(dir, ctx.workspaceRoot)
+    toast(`"${name}" deleted permanently`, 'success')
+  } catch (e) {
+    alert(`Could not delete permanently: ${e}`)
+  }
 }
 
 const fileTreeActions: ContextAction[] = [
@@ -165,17 +202,18 @@ const fileTreeActions: ContextAction[] = [
     shortcut: 'Del',
     when: (ctx) => ctx.scope === 'file_tree',
     enabled: inWorkspace,
-    run: async (ctx) => {
-      if (!ctx.path || !ctx.workspaceRoot) return
-      if (!confirm(`Move "${basename(ctx.path)}" to workspace trash?`)) return
-      const dir = dirname(ctx.path)
-      try {
-        await moveToTrash(ctx.path, ctx.workspaceRoot)
-        refreshDir(dir, ctx.workspaceRoot)
-      } catch (e) {
-        alert(`Could not move to trash: ${e}`)
-      }
-    },
+    run: moveContextPathToTrash,
+  },
+  {
+    id: 'file.deletePermanently',
+    label: 'Delete Permanently',
+    icon: 'bin',
+    group: 'edit',
+    order: 45,
+    shortcut: 'Shift+Del',
+    when: (ctx) => ctx.scope === 'file_tree',
+    enabled: inWorkspace,
+    run: deleteContextPathPermanently,
   },
   {
     id: 'file.duplicate',

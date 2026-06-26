@@ -1,9 +1,10 @@
 <script lang="ts">
   import Self from './TreeNode.svelte'
-  import { listDirectory, type DirEntry } from '../tauri/commands'
+  import { deletePath, listDirectory, moveToTrash, type DirEntry } from '../tauri/commands'
+  import { toast } from '../stores/toast'
   import { openFile } from '../stores/tabs'
-  import { workspace } from '../stores/workspace'
-  import { refreshSignal, collapseSignal, revealSignal } from '../stores/file-tree'
+  import { refreshWorkspace, workspace } from '../stores/workspace'
+  import { refreshSignal, collapseSignal, revealSignal, requestTreeRefresh } from '../stores/file-tree'
   import { openContextMenu } from '../context-menu/contextMenuStore'
   import { git } from '../stores/git'
   import Icon from './Icon.svelte'
@@ -74,6 +75,52 @@
   function isInside(target: string, dir: string): boolean {
     const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
     return norm(target).startsWith(norm(dir) + '/')
+  }
+
+  function dirname(path: string): string {
+    const idx = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
+    return idx <= 0 ? path : path.slice(0, idx)
+  }
+
+  function samePath(a: string, b: string): boolean {
+    const norm = (p: string) => p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
+    return norm(a) === norm(b)
+  }
+
+  function refreshParent(root: string) {
+    const parent = dirname(entry.path)
+    if (samePath(parent, root)) void refreshWorkspace()
+    else requestTreeRefresh(parent)
+  }
+
+  async function moveEntryToTrash() {
+    const root = $workspace.folderPath
+    if (!root) return
+    if (!confirm(`Move "${entry.name}" to Trash?`)) return
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    try {
+      await moveToTrash(entry.path, root)
+      refreshParent(root)
+      toast(`"${entry.name}" moved to Trash`, 'success')
+    } catch (e) {
+      alert(`Could not move to trash: ${e}`)
+    }
+  }
+
+  async function deleteEntryPermanently() {
+    const root = $workspace.folderPath
+    if (!root) return
+    if (!confirm(`Are you sure? This cannot be undone.\n\nDelete "${entry.name}" permanently?`)) {
+      return
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    try {
+      await deletePath(entry.path, root)
+      refreshParent(root)
+      toast(`"${entry.name}" deleted permanently`, 'success')
+    } catch (e) {
+      alert(`Could not delete permanently: ${e}`)
+    }
   }
 
   // Reveal: a folder that contains the target expands toward it. Children mount
@@ -154,6 +201,13 @@
   }}
   oncontextmenu={onContextMenu}
   onkeydown={(e) => {
+    if (e.key === 'Delete') {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.shiftKey) void deleteEntryPermanently()
+      else void moveEntryToTrash()
+      return
+    }
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       toggle(false)
