@@ -11,4 +11,15 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // Split katex into its own lazy chunk — only loaded when a markdown
+          // file containing math is opened. Keeps katex out of the main bundle.
+          if (id.includes('node_modules/katex')) return 'katex'
+        },
+      },
+    },
+  },
 })

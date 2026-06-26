@@ -1,52 +1,29 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte'
+  import { tick } from 'svelte'
   import { renderMarkdown } from '../preview/markdown'
 
   let { source }: { source: string } = $props()
 
   let articleEl = $state<HTMLElement | null>(null)
   let html = $state('')
-  let mermaidReady = $state(false)
-
-  // Load mermaid lazily so it doesn't bloat cold start
-  let mermaidMod: typeof import('mermaid') | null = null
-  async function getMermaid() {
-    if (!mermaidMod) {
-      mermaidMod = await import('mermaid')
-      mermaidMod.default.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' })
-      mermaidReady = true
-    }
-    return mermaidMod.default
-  }
-
-  async function renderDiagrams() {
-    if (!articleEl) return
-    const diagrams = articleEl.querySelectorAll('pre.mermaid')
-    if (!diagrams.length) return
-    // reset rendered state so mermaid re-processes them
-    diagrams.forEach((el) => {
-      el.removeAttribute('data-processed')
-    })
-    const m = await getMermaid()
-    await m.run({ nodes: Array.from(diagrams) as HTMLElement[] })
-  }
 
   $effect(() => {
-    html = renderMarkdown(source)
-    // After DOM updates, run mermaid on any diagram blocks
-    tick().then(renderDiagrams)
-  })
-
-  onMount(() => {
-    // Inject KaTeX stylesheet once
-    const id = 'katex-css'
-    if (!document.getElementById(id)) {
-      const link = document.createElement('link')
-      link.id = id
-      link.rel = 'stylesheet'
-      link.href = new URL('katex/dist/katex.min.css', import.meta.url).href
-      document.head.appendChild(link)
-    }
+    const src = source
+    void renderMarkdown(src).then((rendered) => {
+      html = rendered
+      // Inject KaTeX stylesheet lazily the first time math is rendered
+      if (rendered.includes('katex')) {
+        const id = 'katex-css'
+        if (!document.getElementById(id)) {
+          const link = document.createElement('link')
+          link.id = id
+          link.rel = 'stylesheet'
+          link.href = new URL('katex/dist/katex.min.css', import.meta.url).href
+          document.head.appendChild(link)
+        }
+      }
+      void tick()
+    })
   })
 </script>
 
@@ -134,19 +111,6 @@
     background: transparent;
     font-size: 13px;
   }
-  /* Mermaid diagrams */
-  .markdown-preview :global(pre.mermaid) {
-    background: var(--secondary);
-    border-radius: var(--radius-sm);
-    padding: 16px;
-    display: flex;
-    justify-content: center;
-    overflow: auto;
-  }
-  .markdown-preview :global(pre.mermaid svg) {
-    max-width: 100%;
-    height: auto;
-  }
   .markdown-preview :global(table) {
     width: 100%;
     border-collapse: collapse;
@@ -163,7 +127,6 @@
     max-width: 100%;
     border-radius: var(--radius-sm);
   }
-  /* KaTeX display blocks */
   .markdown-preview :global(.katex-display) {
     overflow-x: auto;
     padding: 8px 0;
