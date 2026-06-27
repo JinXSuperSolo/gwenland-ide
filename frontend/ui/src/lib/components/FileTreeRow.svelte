@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
   import { fsWatchDir, fsUnwatchDir, type FlatRow } from '../tauri/commands'
   import { toast } from '../stores/toast'
   import { openFile } from '../stores/tabs'
@@ -29,6 +30,13 @@
       watched = true
       void fsWatchDir(row.path)
     } else if (!shouldWatch && watched) {
+      watched = false
+      void fsUnwatchDir(row.path)
+    }
+  })
+
+  onDestroy(() => {
+    if (watched) {
       watched = false
       void fsUnwatchDir(row.path)
     }

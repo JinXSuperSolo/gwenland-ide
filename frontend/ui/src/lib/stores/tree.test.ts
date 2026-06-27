@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyPatches } from './tree'
+import { applyPatches, uniqueTreeRefreshPaths } from './tree'
 import type { FlatRow, TreePatch } from '../tauri/commands'
 
 /**
@@ -76,5 +76,19 @@ describe('applyPatches', () => {
     const rows = [row('a')]
     applyPatches(rows, [{ kind: 'insert', index: 1, rows: [row('b')] }])
     expect(rows.map((r) => r.name)).toEqual(['a'])
+  })
+})
+
+describe('uniqueTreeRefreshPaths', () => {
+  it('keeps first-seen refresh paths and removes normalized duplicates', () => {
+    expect(
+      uniqueTreeRefreshPaths([
+        'C:\\ws\\src\\',
+        'c:/ws/src',
+        'C:/ws/tests',
+        'C:/ws/tests/',
+        'C:/ws/README.md',
+      ]),
+    ).toEqual(['C:\\ws\\src\\', 'C:/ws/tests', 'C:/ws/README.md'])
   })
 })

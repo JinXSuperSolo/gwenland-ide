@@ -17,6 +17,7 @@ import {
   restoreRows,
   snapshotRows,
   syncDirsFromSnapshot,
+  waitForTreeIdle,
 } from './tree'
 import {
   buildOptimisticCreatePatches,
@@ -59,6 +60,7 @@ async function runOptimistic<T>(opts: {
   undo?: (value: T) => UndoEntry | null
   success?: string
 }): Promise<T | null> {
+  await waitForTreeIdle()
   const snapshot = snapshotRows()
   beginOptimisticTreeOp()
   applyOptimisticPatches(opts.patches(snapshot))

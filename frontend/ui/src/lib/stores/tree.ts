@@ -22,8 +22,23 @@ export const treeRows = writable<FlatRow[]>([])
 
 let optimisticDepth = 0
 const queuedRefreshes = new Set<string>()
+let mutationTail: Promise<void> = Promise.resolve()
+let treeGeneration = 0
 
 const norm = (p: string) => p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
+
+/** Return refresh paths in first-seen order, ignoring duplicate spellings. Pure. */
+export function uniqueTreeRefreshPaths(paths: string[]): string[] {
+  const seen = new Set<string>()
+  const unique: string[] = []
+  for (const path of paths) {
+    const key = norm(path)
+    if (seen.has(key)) continue
+    seen.add(key)
+    unique.push(path)
+  }
+  return unique
+}
 
 /** Apply an ordered patch list to `rows`, returning the new array. Pure. */
 export function applyPatches(rows: FlatRow[], patches: TreePatch[]): FlatRow[] {
@@ -48,6 +63,22 @@ export function applyPatches(rows: FlatRow[], patches: TreePatch[]): FlatRow[] {
 function commit(patches: TreePatch[]): void {
   if (patches.length === 0) return
   treeRows.update((rows) => applyPatches(rows, patches))
+}
+
+function commitIfCurrent(generation: number, patches: TreePatch[]): void {
+  if (generation !== treeGeneration) return
+  commit(patches)
+}
+
+function enqueueTreeMutation(work: () => Promise<void>): Promise<void> {
+  const run = mutationTail.then(work, work)
+  mutationTail = run.catch(() => {})
+  return run
+}
+
+/** Wait until queued tree patch work has reached the JS mirror. */
+export async function waitForTreeIdle(): Promise<void> {
+  await mutationTail
 }
 
 /** Snapshot the current flat-row mirror before an optimistic UI mutation. */
@@ -76,7 +107,7 @@ export function endOptimisticTreeOp(): void {
   if (optimisticDepth !== 0 || queuedRefreshes.size === 0) return
   const dirs = [...queuedRefreshes]
   queuedRefreshes.clear()
-  for (const dir of dirs) void refreshDir(dir)
+  void refreshDirs(dirs)
 }
 
 /**
@@ -84,35 +115,53 @@ export function endOptimisticTreeOp(): void {
  * patches against `snapshot` instead of the current optimistic mirror.
  */
 export async function syncDirsFromSnapshot(snapshot: FlatRow[], dirs: string[]): Promise<void> {
-  let next = snapshot
-  const seen = new Set<string>()
-  for (const dir of dirs) {
-    if (seen.has(dir)) continue
-    seen.add(dir)
-    next = applyPatches(next, await treeRefreshDir(dir))
-  }
-  treeRows.set(next)
+  const generation = treeGeneration
+  const uniqueDirs = uniqueTreeRefreshPaths(dirs)
+  await enqueueTreeMutation(async () => {
+    if (generation !== treeGeneration) return
+    let next = snapshot
+    for (const dir of uniqueDirs) {
+      next = applyPatches(next, await treeRefreshDir(dir))
+      if (generation !== treeGeneration) return
+    }
+    treeRows.set(next)
+  })
 }
 
 /** Open a workspace root and seed the mirror with its root rows. */
 export async function setRoot(path: string): Promise<void> {
-  const rows = await treeSetRoot(path)
-  treeRows.set(rows)
+  const generation = treeGeneration + 1
+  treeGeneration = generation
+  optimisticDepth = 0
+  queuedRefreshes.clear()
+  await enqueueTreeMutation(async () => {
+    const rows = await treeSetRoot(path)
+    if (generation === treeGeneration) treeRows.set(rows)
+  })
 }
 
 /** Clear the mirror (workspace closed). */
 export function clearTree(): void {
+  treeGeneration += 1
+  optimisticDepth = 0
+  queuedRefreshes.clear()
   treeRows.set([])
 }
 
 /** Expand the folder at `path` and splice in its children. */
 export async function expandRow(path: string): Promise<void> {
-  commit(await treeExpand(path))
+  const generation = treeGeneration
+  await enqueueTreeMutation(async () => {
+    commitIfCurrent(generation, await treeExpand(path))
+  })
 }
 
 /** Collapse the folder at `path` and remove its subtree. */
 export async function collapseRow(path: string): Promise<void> {
-  commit(await treeCollapse(path))
+  const generation = treeGeneration
+  await enqueueTreeMutation(async () => {
+    commitIfCurrent(generation, await treeCollapse(path))
+  })
 }
 
 /** Toggle a folder row's expanded state. */
@@ -124,11 +173,30 @@ export async function toggleRow(row: FlatRow): Promise<void> {
 
 /** Reconcile a directory against disk (driven by `fs:patch`). */
 export async function refreshDir(path: string): Promise<void> {
+  await refreshDirs([path])
+}
+
+/** Reconcile directories against disk in patch order, coalescing bursty events. */
+export async function refreshDirs(paths: string[]): Promise<void> {
+  const dirs = uniqueTreeRefreshPaths(paths)
+  if (dirs.length === 0) return
   if (optimisticDepth > 0) {
-    queuedRefreshes.add(path)
+    for (const dir of dirs) queuedRefreshes.add(dir)
     return
   }
-  commit(await treeRefreshDir(path))
+  const generation = treeGeneration
+  await enqueueTreeMutation(async () => {
+    if (generation !== treeGeneration) return
+    if (optimisticDepth > 0) {
+      for (const dir of dirs) queuedRefreshes.add(dir)
+      return
+    }
+    for (const dir of dirs) {
+      const patches = await treeRefreshDir(dir)
+      if (generation !== treeGeneration) return
+      commit(patches)
+    }
+  })
 }
 
 /**

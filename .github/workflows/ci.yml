@@ -32,9 +32,8 @@ jobs:
       - name: Install JS deps
         working-directory: ./frontend/ui
         run: pnpm install
-      - name: Build JS
-        working-directory: ./frontend/ui
-        run: pnpm build
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
       - name: Rustfmt
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -42,7 +41,8 @@ jobs:
       - name: Test
         run: cargo test --workspace
       - name: Build release (for size check)
-        run: cargo build --release --bin GwenLand-IDE
+        working-directory: ./frontend
+        run: cargo tauri build --no-bundle
       - name: Binary size check
         run: |
           SIZE=$(stat -c%s "target/release/GwenLand-IDE")

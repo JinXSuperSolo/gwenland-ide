@@ -1,7 +1,7 @@
 import { get } from 'svelte/store'
 import { onFsPatch, fsWatchClear, type FsPatch } from '../tauri/commands'
 import { workspace } from './workspace'
-import { refreshDir } from './tree'
+import { refreshDirs } from './tree'
 import { refreshGit } from './git'
 
 /**
@@ -32,11 +32,9 @@ function scheduleGitRefresh(): void {
 /** Reconcile each changed directory through the tree store, then refresh git. */
 function applyFsPatches(patches: FsPatch[]): void {
   if (patches.length === 0) return
-  for (const patch of patches) {
-    // `refreshDir` reconciles via tree patches; the engine special-cases the
-    // workspace root, so root and nested dirs go through the same path.
-    void refreshDir(patch.dir)
-  }
+  // `refreshDirs` reconciles via serialized tree patches; the engine
+  // special-cases the workspace root, so root and nested dirs share the path.
+  void refreshDirs(patches.map((patch) => patch.dir))
   scheduleGitRefresh()
 }
 
