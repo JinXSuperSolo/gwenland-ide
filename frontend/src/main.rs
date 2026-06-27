@@ -4162,13 +4162,12 @@ fn search_workspace(
         };
         let _ = app_handle.emit("search:done", payload);
 
-        if let Ok(mut slot) = active.lock() {
-            if slot
+        if let Ok(mut slot) = active.lock()
+            && slot
                 .as_ref()
                 .is_some_and(|current| current.id == id_for_task)
-            {
-                *slot = None;
-            }
+        {
+            *slot = None;
         }
     });
 
@@ -4181,10 +4180,10 @@ fn search_cancel(manager: State<SearchManager>, search_id: Option<String>) -> Re
         .active
         .lock()
         .map_err(|_| "search manager lock poisoned".to_string())?;
-    if let Some(current) = active.as_ref() {
-        if search_id.as_ref().is_none_or(|id| id == &current.id) {
-            current.cancel.store(true, Ordering::Relaxed);
-        }
+    if let Some(current) = active.as_ref()
+        && search_id.as_ref().is_none_or(|id| id == &current.id)
+    {
+        current.cancel.store(true, Ordering::Relaxed);
     }
     Ok(())
 }
