@@ -29,12 +29,27 @@ function scheduleGitRefresh(): void {
   }, GIT_DEBOUNCE_MS)
 }
 
-/** Reconcile each changed directory through the tree store, then refresh git. */
+/** Return only paths that can change tree structure or collapsed-folder stale state. */
+export function treeRefreshPathsFromFsPatches(patches: FsPatch[]): string[] {
+  const paths: string[] = []
+  for (const patch of patches) {
+    if (patch.added.length > 0 || patch.removed.length > 0) {
+      paths.push(patch.dir)
+    }
+    for (const dir of patch.modified_dirs ?? []) {
+      paths.push(dir)
+    }
+  }
+  return paths
+}
+
+/** Reconcile structural/stale tree changes, then refresh git. */
 function applyFsPatches(patches: FsPatch[]): void {
   if (patches.length === 0) return
-  // `refreshDirs` reconciles via serialized tree patches; the engine
-  // special-cases the workspace root, so root and nested dirs share the path.
-  void refreshDirs(patches.map((patch) => patch.dir))
+  // Content-only file saves stay out of the tree pipeline. They can still affect
+  // git badges, so the debounced git refresh below remains scheduled.
+  const treePaths = treeRefreshPathsFromFsPatches(patches)
+  if (treePaths.length > 0) void refreshDirs(treePaths)
   scheduleGitRefresh()
 }
 

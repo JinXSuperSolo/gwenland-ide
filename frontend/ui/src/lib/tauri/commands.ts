@@ -43,6 +43,7 @@ export interface FsPatch {
   added: string[]
   removed: string[]
   modified: string[]
+  modified_dirs?: string[]
 }
 
 /** Begin watching `path` for changes (registered on folder expand). */
@@ -82,6 +83,9 @@ export interface FlatRow {
   is_dir: boolean
   is_expanded: boolean
   has_children: boolean
+  is_stale?: boolean
+  is_loading?: boolean
+  error?: string | null
 }
 
 /**

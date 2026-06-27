@@ -2,7 +2,7 @@ import { get } from 'svelte/store'
 import { aiChat, type ReasoningLevel } from './ai-chat'
 import { panels } from './panels'
 import { settings, setSettings, THEME_PRESETS } from './settings'
-import { terminalSessions, createSession } from './terminal-sessions'
+import { terminalSessions } from './terminal-sessions'
 import {
   activateTab,
   editorGroupsSnapshot,
@@ -166,9 +166,6 @@ function restoreLayout(state: PersistedLayoutState | null): void {
     setSettings({ preset: state.theme })
   }
 
-  if (state.terminalOpen && get(terminalSessions).sessions.length === 0) {
-    createSession()
-  }
 }
 
 function isDevServerUrl(path: string): boolean {

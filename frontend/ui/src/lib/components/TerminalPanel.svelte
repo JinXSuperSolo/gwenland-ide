@@ -17,7 +17,6 @@
     createSession,
     activateSession,
     removeSession,
-    ensureInitialSession,
   } from '../stores/terminal-sessions'
 
   // Inline SVG icons for common shells (16×16 viewBox, currentColor strokes).
@@ -66,16 +65,12 @@
     </svg>`
   }
 
+  let shells = $state<TerminalShellInfo[]>([])
+  let selectedShellCommand = $state<string>('')
   // Build CustomDropdown items from detected shells.
   const shellItems = $derived<CustomDropdownItem[]>(
     shells.map((s) => ({ value: s.command, label: s.label, svgIcon: shellIcon(s) }))
   )
-
-  // Open with one session the first time the panel mounts. Subsequent mounts
-  // (after collapse/restore) keep whatever sessions already exist.
-  ensureInitialSession()
-  let shells = $state<TerminalShellInfo[]>([])
-  let selectedShellCommand = $state<string>('')
   const selectedShell = $derived(
     shells.find((shell) => shell.command === selectedShellCommand) ?? shells[0] ?? null,
   )

@@ -1,6 +1,8 @@
 import { writable, get } from 'svelte/store'
 import type { TerminalShellInfo } from '../tauri/commands'
 
+export type TerminalSessionStatus = 'idle' | 'starting' | 'running' | 'failed'
+
 /**
  * Multi-terminal session state (Milestone 3, Wave 4 — GWEN-248).
  *
@@ -28,6 +30,8 @@ export interface TerminalSession {
   cwd: string | null
   shellCommand: string | null
   shellLabel: string | null
+  status: TerminalSessionStatus
+  error: string | null
 }
 
 export interface TerminalSessionsState {
@@ -77,6 +81,8 @@ export function createSession(cwd: string | null = null, shell: TerminalShellInf
         cwd,
         shellCommand: shell?.command ?? null,
         shellLabel: shell?.label ?? null,
+        status: 'idle',
+        error: null,
       },
     ],
     activeKey: key,
@@ -87,12 +93,50 @@ export function createSession(cwd: string | null = null, shell: TerminalShellInf
   return key
 }
 
+/** Mark a session as starting. Returns false for active/failed sessions. */
+export function markSessionStarting(key: string): boolean {
+  const current = get(terminalSessions).sessions.find((sess) => sess.key === key)
+  if (
+    !current ||
+    current.status === 'starting' ||
+    current.status === 'running' ||
+    current.status === 'failed'
+  ) {
+    return false
+  }
+  terminalSessions.update((s) => ({
+    ...s,
+    sessions: s.sessions.map((sess) =>
+      sess.key === key ? { ...sess, status: 'starting', error: null } : sess
+    ),
+  }))
+  return true
+}
+
 /** Records the backend PTY id for a session once its instance has spawned it. */
 export function bindPtyId(key: string, ptyId: string): void {
   terminalSessions.update((s) => ({
     ...s,
     sessions: s.sessions.map((sess) =>
-      sess.key === key ? { ...sess, ptyId } : sess
+      sess.key === key ? { ...sess, ptyId, status: 'running', error: null } : sess
+    ),
+  }))
+}
+
+export function markSessionFailed(key: string, error: string): void {
+  terminalSessions.update((s) => ({
+    ...s,
+    sessions: s.sessions.map((sess) =>
+      sess.key === key ? { ...sess, ptyId: null, status: 'failed', error } : sess
+    ),
+  }))
+}
+
+export function markSessionIdle(key: string): void {
+  terminalSessions.update((s) => ({
+    ...s,
+    sessions: s.sessions.map((sess) =>
+      sess.key === key ? { ...sess, ptyId: null, status: 'idle', error: null } : sess
     ),
   }))
 }

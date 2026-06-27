@@ -11,23 +11,31 @@ import { initGit } from './lib/stores/git'
 import { initFsWatch } from './lib/stores/fs-watch'
 import { applyLowEndClass } from './lib/stores/performance'
 import { initAppFocus } from './lib/stores/app-focus'
+import { initTreeInteraction } from './lib/stores/tree-interaction'
 import App from './App.svelte'
 
 // Apply persisted theme before first paint; register the command/shortcut set
-// and the context-menu action registry (M9); start listening for LSP
-// diagnostics/status events (M6). initAppFocus() must run before initGit() so
-// the background-throttle state is live when git polling starts.
+// and the context-menu action registry (M9). Background services are deferred
+// until after first paint so bundled startup has less work on the critical path.
 initSettings()
 registerCommands()
 registerContextActions()
-initLsp()
 initAppFocus()
-initGit()
-initFsWatch()
+initTreeInteraction()
 applyLowEndClass()
 
 const app = mount(App, {
   target: document.getElementById('app')!,
+})
+
+function initBackgroundServices() {
+  initLsp()
+  initGit()
+  initFsWatch()
+}
+
+requestAnimationFrame(() => {
+  window.setTimeout(initBackgroundServices, 0)
 })
 
 export default app

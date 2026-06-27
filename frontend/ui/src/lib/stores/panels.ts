@@ -54,7 +54,7 @@ export const DEFAULT_AI_PANEL_WIDTH = 380
 
 const initial: PanelsState = {
   fileTree: { size: DEFAULT_FILE_TREE_WIDTH, collapsed: false },
-  terminal: { size: DEFAULT_TERMINAL_HEIGHT, collapsed: false },
+  terminal: { size: DEFAULT_TERMINAL_HEIGHT, collapsed: true },
   // Collapsed by default; the status-bar AI button opens it via aiChat.isOpen.
   aiPanel: { size: DEFAULT_AI_PANEL_WIDTH, collapsed: true },
 }

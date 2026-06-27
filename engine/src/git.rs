@@ -26,6 +26,19 @@ pub enum GitError {
     Io(String),
 }
 
+fn hide_child_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// A single changed file from `git status --porcelain` (GWEN-328/329).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct GitFileStatus {
@@ -57,17 +70,16 @@ pub struct GitStatus {
 /// Run `git <args>` in `root`, returning stdout on success. Maps a missing
 /// binary, a non-repo, and any other non-zero exit to a typed error.
 fn run_git(root: &Path, args: &[&str]) -> Result<String, GitError> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                GitError::GitMissing
-            } else {
-                GitError::Io(e.to_string())
-            }
-        })?;
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(root);
+    hide_child_window(&mut cmd);
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            GitError::GitMissing
+        } else {
+            GitError::Io(e.to_string())
+        }
+    })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
@@ -272,17 +284,17 @@ pub fn diff_file(root: &Path, path: &str, untracked: bool) -> Result<String, Git
         // `git diff --no-index /dev/null <path>` exits 1 when they differ (which
         // they always do here), so treat a non-empty stdout as success.
         let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
-        let output = Command::new("git")
-            .args(["diff", "--no-index", "--", null, path])
-            .current_dir(root)
-            .output()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    GitError::GitMissing
-                } else {
-                    GitError::Io(e.to_string())
-                }
-            })?;
+        let args = ["diff", "--no-index", "--", null, path];
+        let mut cmd = Command::new("git");
+        cmd.args(args).current_dir(root);
+        hide_child_window(&mut cmd);
+        let output = cmd.output().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                GitError::GitMissing
+            } else {
+                GitError::Io(e.to_string())
+            }
+        })?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
         run_git(root, &["diff", "HEAD", "--", path])

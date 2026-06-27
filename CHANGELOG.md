@@ -6,6 +6,17 @@ All notable changes to GwenLand IDE are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- Production Tauri bundles no longer freeze during normal IDE interactions; blocking filesystem, Git, tree, watcher, safety, history, and process work now runs off the UI path.
+- Windows release builds no longer flash external terminal windows during normal subprocess work.
+- Terminal PTY startup is lazy and idempotent, with controlled failed state instead of infinite retry loops.
+- File tree expansion and watcher refreshes now target only affected expanded folders instead of reloading the full workspace.
+
+### Changed
+- Release profile tightened for size with stripped symbols, no debug info, no split debug info, no incremental release artifacts, LTO, one codegen unit, `panic = "abort"`, and `opt-level = "z"`.
+- Temporary redacted process-spawn logging was removed; crash/safety redaction remains where it protects user data.
+- Windows bundling targets NSIS only.
+
 ---
 
 ## [0.1.14] — 2026-06-27 (M19 — Performance & Scalability)
