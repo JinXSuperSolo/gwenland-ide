@@ -19,6 +19,7 @@
   const items = $derived(
     [
       { view: 'explorer' as const, icon: 'page' as IconName, label: 'Explorer' },
+      { view: 'search' as const, icon: 'search' as IconName, label: 'Search' },
       ...($git.isRepo
         ? [{ view: 'git' as const, icon: 'git-branch' as IconName, label: 'Source Control' }]
         : []),

@@ -2,7 +2,8 @@ import { writable, get } from 'svelte/store'
 import type { EditorState } from '@codemirror/state'
 import { createEditorState } from '../editor/codemirror-setup'
 import { activeDoc } from '../editor/active-editor'
-import { readFile, writeFile } from '../tauri/commands'
+import { readFile, writeFile, getFileMeta } from '../tauri/commands'
+import { classifyFile, NOT_LARGE, type LargeFileClass } from '../editor/large-file'
 import { refreshGit } from './git'
 import { lspOpenPath, lspClosePath } from './lsp'
 import { openPrompt } from './prompt-dialog'
@@ -30,6 +31,10 @@ export interface EditorTab extends TabCommon {
   baseline: string
   state: EditorState
   dirty: boolean
+  /** Large File Mode (M19 Wave 3): reduced features (no syntax/LSP/minimap). */
+  large?: boolean
+  /** Very large: read-only plain text (implies `large`). */
+  veryLarge?: boolean
 }
 
 export interface PreviewTab extends TabCommon {
@@ -219,16 +224,26 @@ function tabRestoreKey(tab: Tab): string {
   return ''
 }
 
-function createEditorTab(path: string, content: string, preview = false): EditorTab {
+function createEditorTab(
+  path: string,
+  content: string,
+  preview = false,
+  cls: LargeFileClass = NOT_LARGE,
+): EditorTab {
   return {
     id: genId(),
     kind: 'editor',
     path,
     name: path ? basename(path) : 'Untitled',
     baseline: content,
-    state: createEditorState(content, undefined, undefined, path),
+    state: createEditorState(content, undefined, undefined, path, undefined, undefined, {
+      large: cls.large,
+      veryLarge: cls.veryLarge,
+    }),
     dirty: false,
     preview,
+    large: cls.large || undefined,
+    veryLarge: cls.veryLarge || undefined,
   }
 }
 
@@ -238,7 +253,10 @@ function cloneTab(tab: Tab): Tab {
     return {
       ...tab,
       id: genId(),
-      state: createEditorState(doc, undefined, undefined, tab.path),
+      state: createEditorState(doc, undefined, undefined, tab.path, undefined, undefined, {
+        large: tab.large,
+        veryLarge: tab.veryLarge,
+      }),
       dirty: doc !== tab.baseline,
       preview: false,
     }
@@ -371,6 +389,16 @@ export async function openFile(
     return { ok: true }
   }
 
+  // M19 Wave 3: classify the file before reading so the editor can drop heavy
+  // features (and go read-only for very large files). Meta failure is non-fatal
+  // — we just open in normal mode.
+  let cls: LargeFileClass = NOT_LARGE
+  try {
+    cls = classifyFile(await getFileMeta(filePath))
+  } catch {
+    cls = NOT_LARGE
+  }
+
   let content: string
   try {
     content = await readFile(filePath)
@@ -382,7 +410,7 @@ export async function openFile(
     return { ok: false, error: 'Could not open file: ' + msg }
   }
 
-  const tab = createEditorTab(filePath, content, shouldPreview)
+  const tab = createEditorTab(filePath, content, shouldPreview, cls)
   updateTabs((state) => ({
     ...state,
     activeGroupId: groupId,
@@ -407,7 +435,9 @@ export async function openFile(
       }
     }),
   }))
-  void lspOpenPath(filePath, content)
+  // Skip LSP didOpen for large files — sending a huge buffer to the server is
+  // exactly the freeze Large File Mode avoids.
+  if (!cls.large) void lspOpenPath(filePath, content)
   return { ok: true }
 }
 
@@ -766,7 +796,8 @@ export function splitEditorGroup(orientation: EditorGroupOrientation = 'horizont
     activeGroupId: newGroup.id,
     groups,
   }))
-  if (clone && isEditorTab(clone) && clone.path) void lspOpenPath(clone.path, clone.state.doc.toString())
+  if (clone && isEditorTab(clone) && clone.path && !clone.large)
+    void lspOpenPath(clone.path, clone.state.doc.toString())
   return newGroup.id
 }
 

@@ -5,7 +5,7 @@ import { expandPanel } from './panels'
  * Which view the left sidebar shows (Wave 2 — GWEN-328 adds Source Control next
  * to the existing Explorer). The file-tree panel slot renders one of these.
  */
-export type SidebarView = 'explorer' | 'git'
+export type SidebarView = 'explorer' | 'search' | 'git'
 
 export const sidebarView = writable<SidebarView>('explorer')
 

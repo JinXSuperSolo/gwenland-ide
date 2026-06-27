@@ -34,13 +34,14 @@ jobs:
           # glibc, not musl: the WebKit/GTK stack Tauri links has no musl build.
           targets: x86_64-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
-      - name: Build JS
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Install JS deps
         working-directory: ./frontend/ui
-        run: |
-          pnpm install
-          pnpm build
+        run: pnpm install
       - name: Build
-        run: cargo build --release --target x86_64-unknown-linux-gnu --bin GwenLand-IDE
+        working-directory: ./frontend
+        run: cargo tauri build --no-bundle --target x86_64-unknown-linux-gnu
       - name: Upload to GH Releases
         uses: softprops/action-gh-release@v2
         with:

@@ -11,13 +11,8 @@
 import { registry } from '../context-menu/actionRegistry'
 import type { ContextAction, ContextMenuContext } from '../context-menu/contextTypes'
 import {
-  createFile,
-  createDir,
-  renamePath,
-  deletePath,
   duplicatePath,
   revealInExplorer,
-  moveToTrash,
   markProtectedPath,
   readFile,
 } from '../tauri/commands'
@@ -31,6 +26,15 @@ import { openLocalHistory } from '../stores/local-history'
 import { explainFile, refactorFile } from '../stores/ai-actions'
 import { openSimpleDiff } from '../stores/simple-diff'
 import { toast } from '../stores/toast'
+import { openPrompt } from '../stores/prompt-dialog'
+import {
+  optimisticCreateDir,
+  optimisticCreateFile,
+  optimisticDeletePath,
+  optimisticMovePath,
+  optimisticPermanentDeletePath,
+  optimisticRenamePath,
+} from '../stores/file-ops'
 
 // --- Path helpers (OS-separator aware: engine paths use the native separator) ---
 
@@ -84,16 +88,11 @@ async function moveContextPathToTrash(ctx: ContextMenuContext): Promise<void> {
   if (!ctx.path || !ctx.workspaceRoot) return
   if (!confirm(`Move "${basename(ctx.path)}" to Trash?`)) return
   const name = basename(ctx.path)
-  const dir = dirname(ctx.path)
   // Yield to the render thread before the blocking operation begins, keeping
   // the UI responsive. A toast shows on completion so the user knows it's done.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
-  try {
-    await moveToTrash(ctx.path, ctx.workspaceRoot)
-    refreshDir(dir, ctx.workspaceRoot)
+  if (await optimisticDeletePath(ctx.path, ctx.workspaceRoot)) {
     toast(`"${name}" moved to Trash`, 'success')
-  } catch (e) {
-    alert(`Could not move to trash: ${e}`)
   }
 }
 
@@ -103,16 +102,19 @@ async function deleteContextPathPermanently(ctx: ContextMenuContext): Promise<vo
     return
   }
   const name = basename(ctx.path)
-  const dir = dirname(ctx.path)
   // Yield to the render thread before the blocking operation begins.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
-  try {
-    await deletePath(ctx.path, ctx.workspaceRoot)
-    refreshDir(dir, ctx.workspaceRoot)
+  if (await optimisticPermanentDeletePath(ctx.path, ctx.workspaceRoot)) {
     toast(`"${name}" deleted permanently`, 'success')
-  } catch (e) {
-    alert(`Could not delete permanently: ${e}`)
   }
+}
+
+function resolveMoveTarget(input: string, workspaceRoot: string): string {
+  const trimmed = input.trim()
+  if (/^[a-zA-Z]:[\\/]/.test(trimmed) || trimmed.startsWith('/') || trimmed.startsWith('\\')) {
+    return trimmed
+  }
+  return join(workspaceRoot, trimmed)
 }
 
 const fileTreeActions: ContextAction[] = [
@@ -131,12 +133,8 @@ const fileTreeActions: ContextAction[] = [
       const name = await openTreeInput({ kind: 'file', targetDir: dir, icon: 'page' })
       if (!name) return
       const target = join(dir, name)
-      try {
-        await createFile(target, ctx.workspaceRoot)
-        refreshDir(dir, ctx.workspaceRoot)
+      if (await optimisticCreateFile(target, ctx.workspaceRoot)) {
         await openFile(target)
-      } catch (e) {
-        alert(`Could not create file: ${e}`)
       }
     },
   },
@@ -153,12 +151,7 @@ const fileTreeActions: ContextAction[] = [
       if (!dir || !ctx.workspaceRoot) return
       const name = await openTreeInput({ kind: 'folder', targetDir: dir, icon: 'folder' })
       if (!name) return
-      try {
-        await createDir(join(dir, name), ctx.workspaceRoot)
-        refreshDir(dir, ctx.workspaceRoot)
-      } catch (e) {
-        alert(`Could not create folder: ${e}`)
-      }
+      await optimisticCreateDir(join(dir, name), ctx.workspaceRoot)
     },
   },
 
@@ -183,14 +176,29 @@ const fileTreeActions: ContextAction[] = [
         icon: ctx.isDirectory ? 'folder' : 'page',
       })
       if (!name || name === current) return
-      try {
-        // NOTE: an already-open tab keeps its old path until reopened; updating
-        // live tabs on rename is out of M9 scope.
-        await renamePath(ctx.path, join(dir, name), ctx.workspaceRoot)
-        refreshDir(dir, ctx.workspaceRoot)
-      } catch (e) {
-        alert(`Could not rename: ${e}`)
-      }
+      // NOTE: an already-open tab keeps its old path until reopened; updating
+      // live tabs on rename is out of M9 scope.
+      await optimisticRenamePath(ctx.path, join(dir, name), ctx.workspaceRoot)
+    },
+  },
+  {
+    id: 'file.move',
+    label: 'Move...',
+    icon: 'folder',
+    group: 'edit',
+    order: 35,
+    when: (ctx) => ctx.scope === 'file_tree',
+    enabled: inWorkspace,
+    run: async (ctx) => {
+      if (!ctx.path || !ctx.workspaceRoot) return
+      const target = await openPrompt({
+        title: 'Move',
+        label: 'New path relative to workspace',
+        initialValue: relativeTo(ctx.workspaceRoot, ctx.path),
+        confirmLabel: 'Move',
+      })
+      if (!target) return
+      await optimisticMovePath(ctx.path, resolveMoveTarget(target, ctx.workspaceRoot), ctx.workspaceRoot)
     },
   },
   {

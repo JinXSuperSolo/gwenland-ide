@@ -14,9 +14,11 @@
     fitTerminal,
     type TerminalBundle,
   } from '../terminal/xterm-setup'
+  import { TerminalScheduler } from '../terminal/terminal-scheduler'
   import { bindPtyId, setDetectedPort, terminalSessions } from '../stores/terminal-sessions'
   import { workspace } from '../stores/workspace'
   import { editorPreferences } from '../stores/editor-preferences'
+  import { perfSettings } from '../stores/performance'
   import { subscribeFocus, isAppActive } from '../stores/app-focus'
   import { registerTerminalHandle, unregisterTerminalHandle } from '../terminal/terminal-registry'
   import { openContextMenu } from '../context-menu/contextMenuStore'
@@ -27,8 +29,15 @@
   // instances stay mounted so scrollback + running processes are preserved.
   let { key, visible }: { key: string; visible: boolean } = $props()
 
+  // M19 Wave 5: terminal minimap is the user's preference AND-ed with Low-End
+  // Mode (which forces it off).
+  const terminalMinimapEnabled = $derived(
+    $editorPreferences.terminalMinimap && $perfSettings.showMinimap,
+  )
+
   let host: HTMLDivElement
   let bundle: TerminalBundle | null = null
+  let scheduler: TerminalScheduler | null = null
   let sessionId: string | null = null
   let unlisten: UnlistenFn | null = null
   let unsubscribeFocus: (() => void) | null = null
@@ -44,16 +53,11 @@
   const decoder = new TextDecoder()
   let portBuffer = ''
 
-  // Background throttle: while the window is inactive we keep receiving PTY
-  // output (the process never pauses) but defer WRITING it to XTerm, so the
-  // canvas doesn't repaint in the background. Buffered chunks are flushed in one
-  // write on focus. Cap the buffer so a runaway background process can't grow it
-  // without bound — XTerm's own scrollback would drop the excess anyway.
-  let pendingChunks: Uint8Array[] = []
-  let pendingBytes = 0
-  const MAX_PENDING_BYTES = 1 << 20 // 1 MB
-
-  /** Write a chunk now, or buffer it while inactive. */
+  // M19 Wave 4: PTY output is fed to a frame-limiting scheduler (ring buffer +
+  // rAF) so a flood (e.g. `cargo build`) coalesces into one repaint per frame
+  // instead of one per chunk. The scheduler is also the pause point: it stops
+  // writing while the window is backgrounded OR this tab is hidden, buffering a
+  // bounded tail that's flushed in one write on resume.
   function renderOutput(bytes: Uint8Array) {
     const text = decoder.decode(bytes, { stream: true })
     recordTerminalActivity(bytes, text)
@@ -62,17 +66,15 @@
       const preview = detectPreviewTarget(portBuffer)
       if (preview) setDetectedPort(key, preview.port, preview.url)
     }
+    scheduler?.write(bytes)
+  }
 
-    if (isAppActive()) {
-      bundle?.term.write(bytes)
-      return
-    }
-    pendingChunks.push(bytes)
-    pendingBytes += bytes.length
-    // Keep only the most recent ~1 MB so the flush stays bounded.
-    while (pendingBytes > MAX_PENDING_BYTES && pendingChunks.length > 1) {
-      pendingBytes -= pendingChunks.shift()!.length
-    }
+  /** Pause when hidden or backgrounded; resume (and flush) only when both the
+   *  window is active AND this tab is visible. */
+  function syncSchedulerState() {
+    if (!scheduler) return
+    if (visible && isAppActive()) scheduler.resume()
+    else scheduler.pause()
   }
 
   function recordTerminalActivity(bytes: Uint8Array, text: string) {
@@ -94,7 +96,7 @@
   }
 
   function drawTerminalMinimap() {
-    if (!bundle || !minimapCanvas || !$editorPreferences.terminalMinimap) return
+    if (!bundle || !minimapCanvas || !terminalMinimapEnabled) return
     const rect = minimapCanvas.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return
     const dpr = window.devicePixelRatio || 1
@@ -154,14 +156,6 @@
     minimapCanvas?.releasePointerCapture(e.pointerId)
   }
 
-  /** Flush buffered output to XTerm in one repaint (called on focus). */
-  function flushPending() {
-    if (!bundle || pendingChunks.length === 0) return
-    for (const chunk of pendingChunks) bundle.term.write(chunk)
-    pendingChunks = []
-    pendingBytes = 0
-  }
-
   function refit() {
     if (!bundle || !sessionId) return
     const dims = fitTerminal(bundle)
@@ -171,7 +165,11 @@
 
   // Becoming visible after being hidden: an element with display:none can't be
   // measured, so xterm couldn't fit while hidden. Re-fit + refocus on show.
+  // Also resume/pause the output scheduler off the visibility change.
   $effect(() => {
+    // Reference `visible` so this effect re-runs on tab show/hide.
+    void visible
+    syncSchedulerState()
     if (visible && bundle && sessionId) {
       // Defer to let the DOM apply the visibility change before measuring.
       requestAnimationFrame(() => {
@@ -182,7 +180,7 @@
   })
 
   $effect(() => {
-    void $editorPreferences.terminalMinimap
+    void terminalMinimapEnabled
     scheduleTerminalMinimapDraw()
   })
 
@@ -243,6 +241,9 @@
 
   onMount(() => {
     bundle = createTerminal(host)
+    scheduler = new TerminalScheduler(bundle.term)
+    // Seed the scheduler's pause state from current visibility/focus.
+    syncSchedulerState()
     registerHandle()
     const { rows, cols } = bundle.term
 
@@ -277,13 +278,12 @@
     resizeObserver = new ResizeObserver(() => refit())
     resizeObserver.observe(host)
 
-    // On focus, flush whatever streamed in while we were in the background and
-    // re-fit (size may have changed). The PTY never stopped, so this catches up.
+    // On focus change, resume/pause the scheduler (resume flushes whatever
+    // streamed in while backgrounded) and re-fit on focus (size may have
+    // changed). The PTY never stopped, so resume catches up in one repaint.
     unsubscribeFocus = subscribeFocus((active) => {
-      if (active && bundle) {
-        flushPending()
-        if (visible) refit()
-      }
+      syncSchedulerState()
+      if (active && bundle && visible) refit()
     })
 
     return () => {
@@ -297,8 +297,8 @@
     resizeObserver = null
     unsubscribeFocus?.()
     unsubscribeFocus = null
-    pendingChunks = []
-    pendingBytes = 0
+    scheduler?.dispose()
+    scheduler = null
     if (unlisten) {
       unlisten()
       unlisten = null
@@ -316,12 +316,12 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="term-instance"
-  class:with-minimap={$editorPreferences.terminalMinimap}
+  class:with-minimap={terminalMinimapEnabled}
   class:hidden={!visible}
   bind:this={host}
   oncontextmenu={onTermContextMenu}
 >
-  {#if $editorPreferences.terminalMinimap}
+  {#if terminalMinimapEnabled}
     <canvas
       bind:this={minimapCanvas}
       class="terminal-minimap"

@@ -15,6 +15,7 @@
   import { editorGoToDefinitionAt, setActiveEditor } from '../editor/active-editor'
   import { lsp, lspChangePath, languageForPath, normPath } from '../stores/lsp'
   import { editorPreferences } from '../stores/editor-preferences'
+  import { perfSettings } from '../stores/performance'
   import { openContextMenuSmart } from '../context-menu/globalContextMenu'
   import { diffReview, acceptHunk, rejectHunk, sameFilePath } from '../stores/diff-review'
   import { applyReviewOverlay, clearReviewOverlay } from '../editor/diff-overlay'
@@ -37,6 +38,21 @@
   let mountedId: string | null = null
   // The mounted tab's file path (for routing LSP changes/diagnostics).
   let mountedPath = $state<string | null>(null)
+  // Large File Mode (M19 Wave 3): suppresses minimap, sticky scroll, and LSP
+  // diagnostics for the mounted tab.
+  let mountedLarge = $state(false)
+
+  // M19 Wave 5: effective feature flags — the user's editor preference AND-ed
+  // with Low-End Mode (which forces these off). Large files also suppress them.
+  const minimapEnabled = $derived(
+    $editorPreferences.editorMinimap && $perfSettings.showMinimap && !mountedLarge,
+  )
+  const markdownEnabled = $derived(
+    $editorPreferences.markdownPreview &&
+      !mountedLarge &&
+      !!mountedPath &&
+      /\.md(?:own)?$/i.test(mountedPath),
+  )
   // Debounce handle for didChange notifications (Requirement 9.8).
   let changeTimer: ReturnType<typeof setTimeout> | null = null
   let stickyScope = $state('')
@@ -77,9 +93,10 @@
     if (view && mountedPath) void lspChangePath(mountedPath, view.state.doc.toString())
   }
 
-  /** Push the current store diagnostics for the mounted path into the view. */
+  /** Push the current store diagnostics for the mounted path into the view.
+   *  Large files have no LSP session, so this is a no-op for them. */
   function applyDiagnosticsToView() {
-    if (!view || mountedPath === null) return
+    if (!view || mountedPath === null || mountedLarge) return
     applyDiagnostics(view, get(lsp).diagnostics[normPath(mountedPath)] ?? [])
   }
 
@@ -97,7 +114,7 @@
   }
 
   function updateStickyScope() {
-    if (!view) {
+    if (!view || mountedLarge || !$perfSettings.stickyScroll) {
       stickyScope = ''
       return
     }
@@ -143,7 +160,7 @@
   }
 
   function drawEditorMinimap() {
-    if (!view || !minimapCanvas || !$editorPreferences.editorMinimap) return
+    if (!view || !minimapCanvas || !minimapEnabled) return
     const rect = minimapCanvas.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return
     const dpr = window.devicePixelRatio || 1
@@ -286,6 +303,7 @@
     if (!tab || !isEditorTab(tab) || !host) {
       mountedId = null
       mountedPath = null
+      mountedLarge = false
       setActiveEditor(null)
       clearCursor()
       return
@@ -294,13 +312,15 @@
     // recompute dirty against this tab's baseline. Seed from the tab's stored
     // doc so cursor/scroll/undo are preserved across switches.
     const doc = tab.state.doc.toString()
+    const isLarge = tab.large === true
     markdownPreviewText = doc
     const onDocChange = () => {
       if (view) recomputeDirty(id, view.state.doc.toString())
       updateStickyScope()
       scheduleMinimapDraw()
       if (/\.md(?:own)?$/i.test(tab.path)) scheduleMarkdownPreview()
-      scheduleLspChange()
+      // Large files don't talk to the LSP (didOpen was skipped), so no didChange.
+      if (!isLarge) scheduleLspChange()
     }
     // Mirror this tab's cursor into the status bar on every selection change.
     const onSelectionChange = () => {
@@ -316,8 +336,10 @@
       tab.path,
       openLinkedPath,
       goToDefinition,
+      { large: tab.large, veryLarge: tab.veryLarge },
     )
     view = mountEditorView(state, host)
+    mountedLarge = isLarge
     attachStickyScroll()
     mountedId = id
     mountedPath = tab.path
@@ -382,7 +404,7 @@
   })
 
   $effect(() => {
-    void $editorPreferences.editorMinimap
+    void minimapEnabled
     scheduleMinimapDraw()
   })
 
@@ -420,8 +442,8 @@
      repaint loop) while the window is unfocused/hidden. No behavior change. -->
 <div
   class="editor-frame"
-  class:has-minimap={$editorPreferences.editorMinimap}
-  class:markdown-split={$editorPreferences.markdownPreview && !!mountedPath && /\.md(?:own)?$/i.test(mountedPath)}
+  class:has-minimap={minimapEnabled}
+  class:markdown-split={markdownEnabled}
 >
   {#if stickyScope}
     <div class="sticky-scope" title={stickyScope}>{stickyScope}</div>
@@ -434,7 +456,7 @@
     onfocusin={activateThisEditor}
     oncontextmenu={onEditorContextMenu}
   ></div>
-  {#if $editorPreferences.editorMinimap}
+  {#if minimapEnabled}
     <canvas
       bind:this={minimapCanvas}
       class="editor-minimap"
@@ -445,7 +467,7 @@
       onpointercancel={stopMinimapDrag}
     ></canvas>
   {/if}
-  {#if $editorPreferences.markdownPreview && mountedPath && /\.md(?:own)?$/i.test(mountedPath)}
+  {#if markdownEnabled}
     <MarkdownPreview source={markdownPreviewText} />
   {/if}
 </div>

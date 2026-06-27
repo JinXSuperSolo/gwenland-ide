@@ -2,12 +2,17 @@
 
 A lean, local-first code editor built on Tauri 2 + Svelte, with an integrated AI coding assistant that runs entirely on your machine. No mandatory sign-in, no telemetry, no cloud sync.
 
+**Version 0.1.14** · Windows / macOS / Linux · ships as a **~4.8 MB** native binary.
+
+Built to stay fast on modest hardware (the reference target is an 11th-gen i3 with 8 GB RAM and no GPU): the Rust engine owns all heavy state and streams the UI compact diffs/patches — it never ships a whole file tree or a flood of events to the WebView.
+
 ## Features
 
 ### Core Editor
 - File tree with inline rename / new-file / new-folder input (no modal dialogs)
 - CodeMirror-based editor with tab management and unsaved-changes protection
 - Command palette (Ctrl+Shift+P) with full keyboard navigation
+- Workspace text search (Ctrl+Shift+F) — pure-Rust streamed results, cancellable, grouped by file
 - Full menu bar (File, Edit, Selection, View, Go, Run, Terminal, Help)
 - Open Recent with workspace-switch safety guard
 - Per-workspace settings stored in `.gwenland/settings.json`
@@ -15,7 +20,8 @@ A lean, local-first code editor built on Tauri 2 + Svelte, with an integrated AI
 ### Integrated Terminal
 - Real interactive shell via ConPTY (Windows) / openpty (Unix)
 - Multiple tabbed sessions with independent scrollback
-- 10 000-line ring-buffer scrollback cap
+- Engine-side ring-buffer scrollback + 50 000-line client cap
+- Frame-limited output (rAF batching) so heavy builds never drop editor frames; pauses when the panel is hidden
 - Reactive error detection per output chunk
 - Dev-server ready detection — auto-surfaces Vite / Next / CRA URLs
 
@@ -65,6 +71,14 @@ A lean, local-first code editor built on Tauri 2 + Svelte, with an integrated AI
 - Local crash reports — bounded, secrets-redacted, manual opt-in export only
 - All features work fully offline — zero cloud dependencies in the core IDE
 
+### Performance & Scalability (M19)
+- **Virtualized file tree** — Rust owns the tree as a flat row model and streams `Insert`/`Remove`/`Update` patches; the UI renders only the visible window, so 10k-file workspaces scroll smoothly
+- **Batched file watcher** — a from-scratch polling watcher coalesces bursts (e.g. `npm install`) into one patch per directory instead of one event per file, with no extra crate
+- **Large File Mode** — files over 500 KB / 10k lines drop syntax, LSP, and minimap; files over 5 MB open read-only as plain text
+- **Low-End Mode** — one toggle disables git badges, indent guides, minimaps, sticky scroll, animations, and file icons for older hardware
+- **Status-bar activity badges** — Git scan / Indexing / Large File / Low-End / Searching / AI Running, with click-to-cancel where applicable
+- **Optimistic file operations** — create / rename / delete / move update the tree instantly and roll back on failure, with Ctrl+Z undo
+
 ## Architecture
 
 ```
@@ -75,6 +89,9 @@ GwenLand IDE
 │       ├── safety/  Action / decision / protected-paths / guards
 │       ├── audit.rs, recovery.rs, permissions.rs, logs.rs
 │       ├── terminal.rs, ring_buffer.rs, error_detect.rs
+│       ├── fs.rs, fs_watch.rs   File ops + polling watcher (M19)
+│       ├── tree.rs              Flat-row tree model + patches (M19)
+│       ├── search.rs            Streamed workspace text search (M19)
 │       ├── devserver_detect.rs
 │       ├── workspace.rs
 │       └── git.rs, lsp/, ...
@@ -148,10 +165,23 @@ pnpm test     # vitest
 
 | Suite | Count |
 |---|---|
-| `cargo test -p gwenland-engine` | 441 tests |
-| `pnpm test` (vitest) | 72 tests |
+| `cargo test -p gwenland-engine` | 487 tests |
+| `pnpm test` (vitest) | 114 tests |
 
 All gates are green on the current branch.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the per-release summary, and [`changelog/`](changelog/) for detailed dated session notes.
+
+## Engineering Constraints
+
+These rules hold across the whole codebase and are enforced in review:
+
+- **Zero-dependency growth** — no new Rust crates or npm packages are added; new capabilities (file watcher, tree diffing, workspace search, diagram/markdown rendering) are implemented from scratch on `std` and existing deps.
+- **Binary budget** — the release executable stays small (currently ~4.8 MB; budget ≤ 7 MB including the LSP server).
+- **Rust owns state, the UI renders diffs** — the WebView never receives a full tree or an unbounded event stream, only bounded patches.
+- **The engine crate has no Tauri dependency** — all logic is unit-testable headlessly.
 
 ## License
 

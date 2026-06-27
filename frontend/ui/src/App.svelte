@@ -3,6 +3,7 @@
   import { panels } from './lib/stores/panels'
   import FileTree from './lib/components/FileTree.svelte'
   import GitPanel from './lib/components/GitPanel.svelte'
+  import SearchPanel from './lib/components/SearchPanel.svelte'
   import ActivityBar from './lib/components/ActivityBar.svelte'
   import Workspace from './lib/components/Workspace.svelte'
   import TerminalPanel from './lib/components/TerminalPanel.svelte'
@@ -147,6 +148,8 @@
         <div class="panel-slot" style:width={`${$panels.fileTree.size}px`}>
           {#if $sidebarView === 'git'}
             <GitPanel />
+          {:else if $sidebarView === 'search'}
+            <SearchPanel />
           {:else}
             <FileTree />
           {/if}

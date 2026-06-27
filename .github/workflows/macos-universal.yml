@@ -29,15 +29,17 @@ jobs:
         with:
           targets: x86_64-apple-darwin, aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-      - name: Build JS
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Install JS deps
         working-directory: ./frontend/ui
-        run: |
-          pnpm install
-          pnpm build
+        run: pnpm install
       - name: Build x86_64
-        run: cargo build --release --target x86_64-apple-darwin --bin GwenLand-IDE
+        working-directory: ./frontend
+        run: cargo tauri build --no-bundle --target x86_64-apple-darwin
       - name: Build arm64
-        run: cargo build --release --target aarch64-apple-darwin --bin GwenLand-IDE
+        working-directory: ./frontend
+        run: cargo tauri build --no-bundle --target aarch64-apple-darwin
       - name: Create Universal Binary
         run: |
           mkdir -p target/universal/release

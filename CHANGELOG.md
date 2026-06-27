@@ -8,6 +8,40 @@ All notable changes to GwenLand IDE are documented here.
 
 ---
 
+## [0.1.14] — 2026-06-27 (M19 — Performance & Scalability)
+
+Eight waves of performance work under a hard **zero new Rust crates / zero new npm packages** rule — everything from scratch. Theme: Rust owns state, Svelte renders diffs (the UI never receives a whole tree or an event flood, only coalesced patches). Targets the i3 / 8 GB machine: smooth with a 10k-file workspace, a `cargo build` flooding the terminal, and a 5 MB file in the editor.
+
+### Added
+- **Batched file watcher (GWEN-376)** — new polling watcher (`engine/src/fs_watch.rs`, no `notify` crate) that snapshots only expanded directories and diffs them. A burst (e.g. `npm install` writing thousands of files) coalesces into **one** `fs:patch` per directory per cycle, never one event per file. `.git` internals filtered out; git decorations debounced 500 ms.
+- **Virtualized file tree (GWEN-374 / GWEN-375)** — Rust-owned flat-row model (`engine/src/tree.rs`): the tree is one ordered `Vec<FlatRow>` and every mutation returns `TreePatch` deltas (Insert/Remove/Update). The UI splices patches into a mirror array and renders it with a scratch virtual scroller (only the visible window + 20-row overscan are in the DOM). Folders list children lazily on expand.
+- **Large File Mode (GWEN-377)** — new `file_meta()` engine command classifies files on open: **large** (> 500 KB or > 10k lines) drops syntax/LSP/autocomplete/lint/minimap/sticky-scroll and skips LSP `didOpen`; **very large** (> 5 MB) also opens read-only plain text. `⚡ Large File` status-bar badge.
+- **Low-End Mode (GWEN-379)** — Settings → Performance toggle that disables git badges, indent guides, smooth scroll, minimaps, sticky scroll, animations, and file icons via a single `perfSettings` derived store + a `low-end` body class. Persists across restart; `⚡ Low-End` status-bar badge.
+- **Status-bar performance badges (GWEN-381)** — data-driven badge row: Git scanning, Indexing, Large File, Low-End, Searching, and AI Running. Spinning badges fade out on resolve; cancellable ones (search, AI) cancel on click.
+- **Optimistic file operations (GWEN-380)** — create/rename/delete/move update the tree immediately and roll back with a toast on failure; watcher refreshes are deferred during the op and reconciled against the snapshot. Ctrl+Z file-op undo on the tree.
+- **Workspace search (GWEN-382)** — new pure-`std` engine module (`engine/src/search.rs`): recursive walk, streamed line matches via callback, `AtomicBool` cancellation, `search_policy` exclusions. UI panel (Ctrl+Shift+F) debounced 300 ms, cancels the previous search per keystroke, groups results by file, jumps to line on click.
+
+### Changed
+- **Terminal output is frame-limited (GWEN-378)** — a per-session ring buffer + `requestAnimationFrame` scheduler (`terminal/terminal-scheduler.ts`) coalesces all chunks arriving within a frame into one `term.write` (~60 fps), so a `cargo build` flood no longer drops editor frames. Output pauses (bounded ~1 MB buffer) while the tab is hidden or the window is backgrounded, flushing in one repaint on resume.
+- **Terminal scrollback cap** raised to 50,000 lines (client-side), with the engine ring buffer still capping server-side retention separately.
+- **Git store exposes `refreshing`** so the status bar can show a live git-scanning badge.
+
+### Removed
+- **Recursive `TreeNode.svelte`** — replaced by the flat-row model + `FileTreeRow.svelte`.
+
+### Performance
+- 10k-file workspaces scroll smoothly (constant DOM size via virtualization).
+- Large files open without freezing the editor; the LSP is never handed a multi-MB buffer.
+- Heavy terminal output costs at most one repaint per frame instead of one per chunk.
+
+### Infrastructure
+- Version bumped `0.1.12` → `0.1.14` across `frontend/tauri.conf.json`, `frontend/Cargo.toml`, `frontend/ui/package.json`.
+- **Zero** new Rust crates, **zero** new npm packages.
+- `cargo test -p gwenland-engine --lib`: **487 passed**. `pnpm test`: **114 passed** (15 suites). `svelte-check`: 0 errors.
+- Release exe **4.77 MB** (budget ≤ 7 MB).
+
+---
+
 ## [0.1.12] — 2026-06-26
 
 ### Added

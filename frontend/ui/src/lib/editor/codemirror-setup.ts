@@ -4,6 +4,7 @@
 // same custom VS Code-style search panel, no language grammars (@codemirror/lang-*).
 
 import { EditorState, Facet, RangeSetBuilder, StateEffect, StateField } from '@codemirror/state'
+import type { Extension } from '@codemirror/state'
 import {
   Decoration,
   type DecorationSet,
@@ -387,6 +388,18 @@ async function lspCompletionSource(
  * - `path` (optional) is the document's absolute path, enabling LSP
  *   diagnostics/autocomplete routing for that file.
  */
+/**
+ * Per-document mode flags (M19 Wave 3 — Large File Mode). When `large`, the
+ * heavy extensions (syntax highlight, LSP autocomplete, lint gutter, inline
+ * diagnostics, bracket matching, selection-match highlight) are dropped so a
+ * huge file doesn't freeze the editor. When `veryLarge`, the document is also
+ * read-only.
+ */
+export interface EditorMode {
+  large?: boolean
+  veryLarge?: boolean
+}
+
 export function createEditorState(
   doc?: string,
   onDocChange?: () => void,
@@ -394,12 +407,14 @@ export function createEditorState(
   path?: string,
   onOpenPath?: (path: string) => void,
   onGoToDefinition?: (line: number, character: number) => void,
+  mode: EditorMode = {},
 ): EditorState {
-  const extensions = [
+  const large = mode.large ?? false
+  const veryLarge = mode.veryLarge ?? false
+
+  // Shared base: present in every mode (incl. large). Cheap, structural-only.
+  const base: Extension[] = [
     lspPath.of(path ?? ''),
-    getLanguageExtension(path ?? ''),
-    autocompletion({ override: [lspCompletionSource] }),
-    closeBrackets(),
     lineNumbers(),
     highlightActiveLineGutter(),
     highlightActiveLine(),
@@ -408,20 +423,8 @@ export function createEditorState(
     rectangularSelection(),
     crosshairCursor(),
     history(),
-    indentOnInput(),
-    bracketMatching(),
-    highlightSelectionMatches(),
-    // M6: gutter markers for LSP diagnostics. The inline squiggle extension is
-    // enabled on demand by `setDiagnostics` (see applyDiagnostics).
-    lintGutter(),
-    inlineDiagnosticsField,
-    // M8: diff-review overlay (idle until a review session sets decorations).
-    // A separate field from lint, so it never clears LSP diagnostics.
-    reviewExtension,
     search({ top: true, createPanel: createSearchPanel }),
     indentUnit.of('    '), // 4-space indent
-    // completionKeymap first so Enter/Tab accept an open completion, falling
-    // through to indent/default behavior when the popup is closed.
     keymap.of([
       ...completionKeymap,
       ...closeBracketsKeymap,
@@ -445,7 +448,31 @@ export function createEditorState(
       },
     }),
   ]
-  return EditorState.create({ doc: doc ?? '', extensions })
+
+  // Expensive features — skipped entirely in large-file mode.
+  const rich: Extension[] = large
+    ? []
+    : [
+        getLanguageExtension(path ?? ''),
+        autocompletion({ override: [lspCompletionSource] }),
+        closeBrackets(),
+        indentOnInput(),
+        bracketMatching(),
+        highlightSelectionMatches(),
+        // M6: gutter markers for LSP diagnostics; inline squiggles enabled on
+        // demand by setDiagnostics (see applyDiagnostics).
+        lintGutter(),
+        inlineDiagnosticsField,
+        // M8: diff-review overlay (idle until a review session sets decorations).
+        reviewExtension,
+      ]
+
+  // Very large files are read-only plain text.
+  const readOnly: Extension[] = veryLarge
+    ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+    : []
+
+  return EditorState.create({ doc: doc ?? '', extensions: [...base, ...rich, ...readOnly] })
 }
 
 /** Mount a fresh EditorView for `state` inside `parent`, replacing prior content. */
