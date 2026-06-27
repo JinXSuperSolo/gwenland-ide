@@ -3,7 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gwenland_engine::agentic::{
@@ -78,6 +78,30 @@ impl TerminalManager {
     fn alloc_id(&self) -> String {
         format!("term-{}", self.next_id.fetch_add(1, Ordering::Relaxed))
     }
+}
+
+#[derive(Clone)]
+struct ActiveSearch {
+    id: String,
+    cancel: Arc<AtomicBool>,
+}
+
+#[derive(Default, Clone)]
+struct SearchManager {
+    active: Arc<Mutex<Option<ActiveSearch>>>,
+}
+
+#[derive(Clone, Serialize)]
+struct SearchResultEvent {
+    search_id: String,
+    result: gwenland_engine::search::SearchResult,
+}
+
+#[derive(Clone, Serialize)]
+struct SearchDoneEvent {
+    search_id: String,
+    summary: Option<gwenland_engine::search::SearchSummary>,
+    error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +393,14 @@ fn list_directory(path: String) -> Result<Vec<gwenland_engine::fs::DirEntry>, St
 #[tauri::command]
 fn read_file(path: String) -> Result<String, String> {
     gwenland_engine::fs::read_file(std::path::Path::new(&path)).map_err(|e| e.to_string())
+}
+
+/// Return a file's size + line count (M19 Wave 3). The UI uses this to pick
+/// Large File Mode before building the editor. Line counting is skipped for very
+/// large files (reported as `u64::MAX`).
+#[tauri::command]
+fn get_file_meta(path: String) -> Result<gwenland_engine::fs::FileMeta, String> {
+    gwenland_engine::fs::file_meta(std::path::Path::new(&path)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3138,7 +3170,10 @@ async fn run_terminal_tool(
             for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
                 let _ = app_out.emit(
                     "agent://cmd_output",
-                    AgentCmdOutputEvent { session_id: sid_out.clone(), line: line.clone() },
+                    AgentCmdOutputEvent {
+                        session_id: sid_out.clone(),
+                        line: line.clone(),
+                    },
                 );
                 if let Ok(mut v) = stdout_capture.lock() {
                     v.push(line);
@@ -3151,7 +3186,10 @@ async fn run_terminal_tool(
             for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
                 let _ = app_err.emit(
                     "agent://cmd_output",
-                    AgentCmdOutputEvent { session_id: sid_err.clone(), line: line.clone() },
+                    AgentCmdOutputEvent {
+                        session_id: sid_err.clone(),
+                        line: line.clone(),
+                    },
                 );
                 if let Ok(mut v) = stderr_capture.lock() {
                     v.push(line);
@@ -3167,10 +3205,7 @@ async fn run_terminal_tool(
         .await
         .ok()
         .and_then(|r| r.ok());
-    let code = exit_status
-        .as_ref()
-        .and_then(|s| s.code())
-        .unwrap_or(-1);
+    let code = exit_status.as_ref().and_then(|s| s.code()).unwrap_or(-1);
     let success = exit_status.map(|s| s.success()).unwrap_or(false);
 
     // Deregister PID.
@@ -3210,10 +3245,7 @@ async fn run_terminal_tool(
 /// `session_id` (best-effort; tolerates an already-exited child). Uses only
 /// OS shell tools — no new Rust crates required.
 #[tauri::command]
-fn agent_kill_terminal(
-    manager: State<'_, AgentManager>,
-    session_id: String,
-) -> Result<(), String> {
+fn agent_kill_terminal(manager: State<'_, AgentManager>, session_id: String) -> Result<(), String> {
     let pid = manager
         .cmd_pids
         .lock()
@@ -3482,7 +3514,8 @@ async fn agent_tool_step(
             // (Full Control / high-confidence Accept-for-Me), running them inline.
             if !requires_user_approval(gate_side, gate_risk, confidence, session.tier) {
                 let result = if matches!(call.tool, ToolKind::RunTerminalCmd) {
-                    run_terminal_tool(&app, manager.cmd_pids.clone(), &session_id, &root, &call).await
+                    run_terminal_tool(&app, manager.cmd_pids.clone(), &session_id, &root, &call)
+                        .await
                 } else {
                     apply_mutation_tool(&root, &call)
                 };
@@ -4060,14 +4093,100 @@ fn history_clear(workspace_root: String, file_path: String) -> Result<(), String
 }
 
 #[tauri::command]
-fn move_to_trash(path: String, workspace_root: String) -> Result<(), String> {
+fn move_to_trash(
+    path: String,
+    workspace_root: String,
+) -> Result<gwenland_engine::recovery::TrashRecord, String> {
     gwenland_engine::recovery::move_to_trash(
         std::path::Path::new(&path),
         std::path::Path::new(&workspace_root),
         "user",
     )
-    .map(|_| ())
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_workspace(
+    app: AppHandle,
+    manager: State<SearchManager>,
+    root: String,
+    query: String,
+    search_id: String,
+) -> Result<String, String> {
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    {
+        let mut active = manager
+            .active
+            .lock()
+            .map_err(|_| "search manager lock poisoned".to_string())?;
+        if let Some(previous) = active.as_ref() {
+            previous.cancel.store(true, Ordering::Relaxed);
+        }
+        *active = Some(ActiveSearch {
+            id: search_id.clone(),
+            cancel: cancel.clone(),
+        });
+    }
+
+    let active = manager.active.clone();
+    let app_handle = app.clone();
+    let id_for_task = search_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = gwenland_engine::search::search_workspace(
+            std::path::Path::new(&root),
+            &query,
+            cancel.clone(),
+            |result| {
+                let _ = app_handle.emit(
+                    "search:result",
+                    SearchResultEvent {
+                        search_id: id_for_task.clone(),
+                        result,
+                    },
+                );
+            },
+        );
+
+        let payload = match result {
+            Ok(summary) => SearchDoneEvent {
+                search_id: id_for_task.clone(),
+                summary: Some(summary),
+                error: None,
+            },
+            Err(e) => SearchDoneEvent {
+                search_id: id_for_task.clone(),
+                summary: None,
+                error: Some(e.to_string()),
+            },
+        };
+        let _ = app_handle.emit("search:done", payload);
+
+        if let Ok(mut slot) = active.lock() {
+            if slot
+                .as_ref()
+                .is_some_and(|current| current.id == id_for_task)
+            {
+                *slot = None;
+            }
+        }
+    });
+
+    Ok(search_id)
+}
+
+#[tauri::command]
+fn search_cancel(manager: State<SearchManager>, search_id: Option<String>) -> Result<(), String> {
+    let active = manager
+        .active
+        .lock()
+        .map_err(|_| "search manager lock poisoned".to_string())?;
+    if let Some(current) = active.as_ref() {
+        if search_id.as_ref().is_none_or(|id| id == &current.id) {
+            current.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -4223,12 +4342,124 @@ fn permissions_record_approval(
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Batched file watcher (M19 Wave 1, GWEN-376)
+//
+// The engine's `FsWatcher` is a tauri-free polling watcher: it diffs registered
+// directories on an interval and hands coalesced `Vec<FsPatch>` to a callback.
+// This is the Tauri side — the callback emits one `fs:patch` event per cycle, so
+// a burst (e.g. `npm install`) becomes a handful of batched events, never one
+// event per file. The frontend registers each expanded folder via `fs_watch_dir`
+// and drops it on collapse via `fs_unwatch_dir`.
+// ---------------------------------------------------------------------------
+
+/// Managed state holding the single live watcher. Built in `setup()` because the
+/// emit callback needs the `AppHandle` (same pattern as `LspManager`).
+struct FsWatcherState {
+    watcher: gwenland_engine::fs_watch::FsWatcher,
+}
+
+/// Start watching a directory for changes. Re-registering an already-watched dir
+/// is a cheap idempotent re-seed. Paths inside `.git` are silently refused by the
+/// engine.
+#[tauri::command]
+fn fs_watch_dir(state: State<'_, FsWatcherState>, path: String) {
+    state.watcher.watch(&path);
+}
+
+/// Stop watching a directory (e.g. the user collapsed the folder). Idempotent.
+#[tauri::command]
+fn fs_unwatch_dir(state: State<'_, FsWatcherState>, path: String) {
+    state.watcher.unwatch(&path);
+}
+
+/// Stop watching every directory (e.g. workspace closed/switched).
+#[tauri::command]
+fn fs_watch_clear(state: State<'_, FsWatcherState>) {
+    state.watcher.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Rust-owned flat file tree (M19 Wave 2, GWEN-374 + GWEN-375)
+//
+// The engine's `WorkspaceTree` owns the tree shape as an ordered flat row array
+// and returns `TreePatch` deltas on every mutation. This is the Tauri side: a
+// single mutex-guarded tree in managed state plus the commands that drive it.
+// `tree_set_root` returns the initial rows; expand/collapse/refresh return
+// patches the frontend splices into its virtual-scroll mirror. The frontend
+// calls `tree_refresh_dir` from its `fs:patch` handler (Wave 1) so disk changes
+// reconcile through the same patch path.
+// ---------------------------------------------------------------------------
+
+/// Managed state holding the one window's tree. A `Mutex` is plenty: tree
+/// mutations are user-paced (expand/collapse) or coarse (poll-driven refresh).
+#[derive(Default)]
+struct WorkspaceTreeState {
+    tree: Mutex<gwenland_engine::tree::WorkspaceTree>,
+}
+
+/// Open a workspace root and return its immediate child rows (the initial,
+/// non-diff render). Replaces any prior tree.
+#[tauri::command]
+fn tree_set_root(
+    state: State<'_, WorkspaceTreeState>,
+    path: String,
+) -> Result<Vec<gwenland_engine::tree::FlatRow>, String> {
+    let mut tree = state
+        .tree
+        .lock()
+        .map_err(|_| "tree state lock poisoned".to_string())?;
+    Ok(tree.set_root(&path))
+}
+
+/// Expand a folder; returns the patches that splice its children in.
+#[tauri::command]
+fn tree_expand(
+    state: State<'_, WorkspaceTreeState>,
+    path: String,
+) -> Result<Vec<gwenland_engine::tree::TreePatch>, String> {
+    let mut tree = state
+        .tree
+        .lock()
+        .map_err(|_| "tree state lock poisoned".to_string())?;
+    Ok(tree.expand(&path))
+}
+
+/// Collapse a folder; returns the patches that remove its subtree.
+#[tauri::command]
+fn tree_collapse(
+    state: State<'_, WorkspaceTreeState>,
+    path: String,
+) -> Result<Vec<gwenland_engine::tree::TreePatch>, String> {
+    let mut tree = state
+        .tree
+        .lock()
+        .map_err(|_| "tree state lock poisoned".to_string())?;
+    Ok(tree.collapse(&path))
+}
+
+/// Reconcile a single directory against disk (driven by `fs:patch`). Returns the
+/// minimal add/remove patches; empty when nothing changed or the dir is not a
+/// visible/expanded part of the tree.
+#[tauri::command]
+fn tree_refresh_dir(
+    state: State<'_, WorkspaceTreeState>,
+    path: String,
+) -> Result<Vec<gwenland_engine::tree::TreePatch>, String> {
+    let mut tree = state
+        .tree
+        .lock()
+        .map_err(|_| "tree state lock poisoned".to_string())?;
+    Ok(tree.refresh_dir(&path))
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(TerminalManager::default())
         .manage(AiManager::default())
         .manage(AgentManager::default())
+        .manage(WorkspaceTreeState::default())
         // The LspManager needs the AppHandle to emit lsp:// events, so it is
         // built in setup() (not on the builder). Its two callbacks are the only
         // bridge between the tauri-free engine and the event bus.
@@ -4244,6 +4475,17 @@ fn main() {
                 }),
             );
             app.manage(manager);
+
+            // M19 Wave 1: start the polling file watcher. Each coalesced cycle
+            // becomes one `fs:patch` event carrying `Vec<FsPatch>`.
+            let watch_handle = app.handle().clone();
+            let watcher = gwenland_engine::fs_watch::FsWatcher::start(
+                move |patches: Vec<gwenland_engine::fs_watch::FsPatch>| {
+                    let _ = watch_handle.emit("fs:patch", patches);
+                },
+            );
+            app.manage(FsWatcherState { watcher });
+            app.manage(SearchManager::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -4255,8 +4497,16 @@ fn main() {
             open_folder_dialog,
             list_directory,
             read_file,
+            get_file_meta,
             write_file,
             path_exists,
+            fs_watch_dir,
+            fs_unwatch_dir,
+            fs_watch_clear,
+            tree_set_root,
+            tree_expand,
+            tree_collapse,
+            tree_refresh_dir,
             create_file,
             create_dir,
             rename_path,
@@ -4265,6 +4515,8 @@ fn main() {
             reveal_in_explorer,
             move_path_to_os_trash,
             move_to_trash,
+            search_workspace,
+            search_cancel,
             mark_protected_path,
             terminal_create,
             terminal_detect_shells,

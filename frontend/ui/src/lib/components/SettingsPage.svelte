@@ -7,10 +7,12 @@
     ACCENT_POOL,
     FONT_OPTIONS,
   } from '../stores/settings'
+  import { editorPreferences, setLowEndMode } from '../stores/editor-preferences'
   import Icon from './Icon.svelte'
   import AiSettingsSection from './AiSettingsSection.svelte'
   import LspSettingsSection from './LspSettingsSection.svelte'
   import CustomDropdown from './CustomDropdown.svelte'
+  import Checkbox from './Checkbox.svelte'
 
   const presetEntries = Object.entries(THEME_PRESETS)
   const fontNames = Object.keys(FONT_OPTIONS)
@@ -28,6 +30,7 @@
     { id: 'font', title: 'Editor — Font', keywords: 'editor font monospace family typeface code' },
     { id: 'ai', title: 'AI', keywords: 'ai provider model api key anthropic openai assistant training' },
     { id: 'lsp', title: 'Language Servers', keywords: 'lsp language server rust typescript python diagnostics completion' },
+    { id: 'performance', title: 'Performance', keywords: 'performance low-end mode lag slow hardware minimap animations git badges icons indent guides smooth scroll' },
   ] as const
 
   function matches(id: string): boolean {
@@ -169,6 +172,31 @@
         </section>
       {/if}
 
+      {#if matches('performance')}
+        <section class="settings-section">
+          <div class="settings-section-title">Performance</div>
+          <div class="settings-row">
+            <Checkbox
+              checked={$editorPreferences.lowEndMode}
+              onCheck={(v) => setLowEndMode(v)}
+              title="Low-End Mode"
+            >
+              Low-End Mode
+            </Checkbox>
+            <div class="settings-hint">
+              Disable expensive visual features for smoother performance on older hardware.
+              {#if $editorPreferences.lowEndMode}
+                <br />
+                <small
+                  >Disables: git badges, indent guides, smooth scroll, minimap, sticky scroll,
+                  animations, file icons.</small
+                >
+              {/if}
+            </div>
+          </div>
+        </section>
+      {/if}
+
       {#if !anyMatch}
         <div class="settings-empty">No settings match “{query}”.</div>
       {/if}
@@ -305,6 +333,14 @@
   .settings-label {
     font-size: 13px;
     color: var(--foreground);
+  }
+  .settings-hint {
+    font-size: 12px;
+    color: var(--muted-foreground);
+    line-height: 1.5;
+  }
+  .settings-hint small {
+    opacity: 0.8;
   }
   .settings-presets {
     display: flex;

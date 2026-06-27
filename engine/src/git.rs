@@ -168,7 +168,10 @@ fn parse_porcelain(out: &str) -> Vec<GitFileStatus> {
 /// Returns `(0, 0)` gracefully when the branch has no upstream or git fails.
 pub fn ahead_behind(root: &Path) -> (usize, usize) {
     // `rev-list --count HEAD...@{u}` outputs "ahead\tbehind" with --left-right.
-    let out = match run_git(root, &["rev-list", "--count", "--left-right", "HEAD...@{u}"]) {
+    let out = match run_git(
+        root,
+        &["rev-list", "--count", "--left-right", "HEAD...@{u}"],
+    ) {
         Ok(s) => s,
         Err(_) => return (0, 0),
     };

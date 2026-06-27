@@ -33,6 +33,87 @@ export function listDirectory(path: string): Promise<DirEntry[]> {
   return invoke<DirEntry[]>('list_directory', { path })
 }
 
+/**
+ * One coalesced batch of changes for a single directory (M19 Wave 1).
+ * Mirrors `gwenland_engine::fs_watch::FsPatch`. All paths are absolute; `dir`
+ * is the affected parent directory.
+ */
+export interface FsPatch {
+  dir: string
+  added: string[]
+  removed: string[]
+  modified: string[]
+}
+
+/** Begin watching `path` for changes (registered on folder expand). */
+export function fsWatchDir(path: string): Promise<void> {
+  return invoke<void>('fs_watch_dir', { path })
+}
+
+/** Stop watching `path` (called on folder collapse). */
+export function fsUnwatchDir(path: string): Promise<void> {
+  return invoke<void>('fs_unwatch_dir', { path })
+}
+
+/** Stop watching every directory (workspace closed/switched). */
+export function fsWatchClear(): Promise<void> {
+  return invoke<void>('fs_watch_clear')
+}
+
+/**
+ * Subscribe to coalesced file-system patches. The watcher emits one `fs:patch`
+ * event per poll cycle carrying every changed directory's batch — never one
+ * event per file. Returns the Tauri unlisten handle.
+ */
+export function onFsPatch(handler: (patches: FsPatch[]) => void): Promise<UnlistenFn> {
+  return listen<FsPatch[]>('fs:patch', (e) => handler(e.payload))
+}
+
+/**
+ * One row in the Rust-owned flat tree (M19 Wave 2).
+ * Mirrors `gwenland_engine::tree::FlatRow`. Git status and icons are NOT here —
+ * they're derived JS-side (git store + filename), so the row is structural only.
+ */
+export interface FlatRow {
+  id: string
+  name: string
+  path: string
+  depth: number
+  is_dir: boolean
+  is_expanded: boolean
+  has_children: boolean
+}
+
+/**
+ * A delta to splice into the flat-row mirror. Mirrors
+ * `gwenland_engine::tree::TreePatch` (serde tag = "kind", snake_case). Patches in
+ * one array apply in order.
+ */
+export type TreePatch =
+  | { kind: 'insert'; index: number; rows: FlatRow[] }
+  | { kind: 'remove'; index: number; count: number }
+  | { kind: 'update'; index: number; row: FlatRow }
+
+/** Open a workspace root; returns its immediate child rows (initial render). */
+export function treeSetRoot(path: string): Promise<FlatRow[]> {
+  return invoke<FlatRow[]>('tree_set_root', { path })
+}
+
+/** Expand a folder; returns the patches that insert its children. */
+export function treeExpand(path: string): Promise<TreePatch[]> {
+  return invoke<TreePatch[]>('tree_expand', { path })
+}
+
+/** Collapse a folder; returns the patches that remove its subtree. */
+export function treeCollapse(path: string): Promise<TreePatch[]> {
+  return invoke<TreePatch[]>('tree_collapse', { path })
+}
+
+/** Reconcile a directory against disk; returns minimal add/remove patches. */
+export function treeRefreshDir(path: string): Promise<TreePatch[]> {
+  return invoke<TreePatch[]>('tree_refresh_dir', { path })
+}
+
 /** Records a folder in the recent-projects list. */
 export function addRecentProject(path: string): Promise<void> {
   return invoke<void>('add_recent_project', { path })
@@ -56,6 +137,21 @@ export function getRecentProjects(): Promise<RecentProject[]> {
  */
 export function readFile(path: string): Promise<string> {
   return invoke<string>('read_file', { path })
+}
+
+/**
+ * A file's size + line count (M19 Wave 3). Mirrors `gwenland_engine::fs::FileMeta`.
+ * `line_count` is `Number.MAX_SAFE_INTEGER`-ish (Rust `u64::MAX`) when counting
+ * was skipped for a very large file.
+ */
+export interface FileMeta {
+  size: number
+  line_count: number
+}
+
+/** Return a file's size + line count, used to pick Large File Mode on open. */
+export function getFileMeta(path: string): Promise<FileMeta> {
+  return invoke<FileMeta>('get_file_meta', { path })
 }
 
 /** Writes `content` to `path` atomically (tmp-write + rename, engine-side). */
@@ -116,9 +212,50 @@ export function moveToTrash(path: string, workspaceRoot: string): Promise<void> 
   return invoke<void>('move_path_to_os_trash', { path, workspaceRoot })
 }
 
+export interface TrashRecord {
+  id: string
+  timestamp: string
+  original_path: string
+  trash_path: string
+  actor: string
+}
+
 /** Move a path to the workspace-local `.gwenland/trash/` recovery area. */
-export function moveToWorkspaceTrash(path: string, workspaceRoot: string): Promise<void> {
-  return invoke<void>('move_to_trash', { path, workspaceRoot })
+export function moveToWorkspaceTrash(path: string, workspaceRoot: string): Promise<TrashRecord> {
+  return invoke<TrashRecord>('move_to_trash', { path, workspaceRoot })
+}
+
+export interface WorkspaceSearchResult {
+  path: string
+  relative_path: string
+  line_number: number
+  line: string
+}
+
+export interface WorkspaceSearchSummary {
+  result_count: number
+  scanned_files: number
+  cancelled: boolean
+  truncated: boolean
+}
+
+export interface WorkspaceSearchResultEvent {
+  search_id: string
+  result: WorkspaceSearchResult
+}
+
+export interface WorkspaceSearchDoneEvent {
+  search_id: string
+  summary: WorkspaceSearchSummary | null
+  error: string | null
+}
+
+export function searchWorkspace(root: string, query: string, searchId: string): Promise<string> {
+  return invoke<string>('search_workspace', { root, query, searchId })
+}
+
+export function searchCancel(searchId?: string | null): Promise<void> {
+  return invoke<void>('search_cancel', { searchId: searchId ?? null })
 }
 
 /** Add a workspace-relative path to `.gwenland/safety/protected-paths.json`. */
@@ -888,6 +1025,8 @@ export function lspDefinition(
 
 export const LSP_DIAGNOSTICS_EVENT = 'lsp://diagnostics'
 export const LSP_STATUS_EVENT = 'lsp://status'
+export const WORKSPACE_SEARCH_RESULT_EVENT = 'search:result'
+export const WORKSPACE_SEARCH_DONE_EVENT = 'search:done'
 
 /** `lsp://diagnostics` payload (mirrors `DiagnosticsUpdate`). */
 export interface LspDiagnosticsEvent {
@@ -923,6 +1062,18 @@ export async function onLspStatus(
   handler: (event: LspStatusEvent) => void
 ): Promise<UnlistenFn> {
   return listen<LspStatusEvent>(LSP_STATUS_EVENT, (event) => handler(event.payload))
+}
+
+export async function onWorkspaceSearchResult(
+  handler: (event: WorkspaceSearchResultEvent) => void
+): Promise<UnlistenFn> {
+  return listen<WorkspaceSearchResultEvent>(WORKSPACE_SEARCH_RESULT_EVENT, (event) => handler(event.payload))
+}
+
+export async function onWorkspaceSearchDone(
+  handler: (event: WorkspaceSearchDoneEvent) => void
+): Promise<UnlistenFn> {
+  return listen<WorkspaceSearchDoneEvent>(WORKSPACE_SEARCH_DONE_EVENT, (event) => handler(event.payload))
 }
 
 // ===========================================================================

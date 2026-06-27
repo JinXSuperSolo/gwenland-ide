@@ -8,7 +8,6 @@ import {
   editorCut,
   editorDeleteLine,
   editorFind,
-  editorFindWorkspace,
   editorFormatDocument,
   editorGoToDefinition,
   editorGoToLine,
@@ -47,6 +46,7 @@ import {
 } from '../stores/tabs'
 import { terminalSessions, createSession, removeSession } from '../stores/terminal-sessions'
 import { openFolder, workspace } from '../stores/workspace'
+import { openWorkspaceSearch } from '../stores/workspace-search'
 import { openPalette, openSettings } from '../stores/ui'
 import { toggleEditorMinimap, toggleTerminalMinimap } from '../stores/editor-preferences'
 import {
@@ -410,7 +410,7 @@ const COMMANDS: Command[] = [
     title: 'Find in Workspace',
     category: 'Search',
     defaultKeybinding: 'Ctrl+Shift+F',
-    handler: editorFindWorkspace,
+    handler: openWorkspaceSearch,
   },
   {
     id: 'editor.toggleComment',

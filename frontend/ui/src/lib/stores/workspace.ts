@@ -1,21 +1,15 @@
 import { writable, get } from 'svelte/store'
-import {
-  openFolderDialog,
-  listDirectory,
-  addRecentProject,
-  type DirEntry,
-} from '../tauri/commands'
+import { openFolderDialog, addRecentProject, fsWatchDir } from '../tauri/commands'
+import { setRoot, clearTree, refreshDir } from './tree'
 
 /**
- * The currently-open project folder and its root-level entries. Nested folder
- * children are fetched lazily on expand by FileTree itself (via listDirectory),
- * so they don't live here — this store only tracks the open root.
+ * The currently-open project folder. The tree's row data lives in the Rust-owned
+ * flat-tree store (`./tree`, M19 Wave 2); this store only tracks which folder is
+ * open plus load/error state.
  */
 export interface WorkspaceState {
   /** Absolute path of the open folder, or null if none is open. */
   folderPath: string | null
-  /** Immediate children of `folderPath` (backend-sorted: dirs then files). */
-  rootEntries: DirEntry[]
   loading: boolean
   /** Last error message (e.g. failed list), or null. Dialog-cancel is ignored. */
   error: string | null
@@ -23,7 +17,6 @@ export interface WorkspaceState {
 
 const initial: WorkspaceState = {
   folderPath: null,
-  rootEntries: [],
   loading: false,
   error: null,
 }
@@ -34,9 +27,8 @@ export const workspace = writable<WorkspaceState>(initial)
 const DIALOG_CANCELLED = 'folder selection was cancelled'
 
 /**
- * Prompts for a folder via the native dialog, then loads its root entries into
- * the store. A cancelled dialog is a no-op (not an error). Any other failure is
- * surfaced in `error`.
+ * Prompts for a folder via the native dialog, then opens it. A cancelled dialog
+ * is a no-op (not an error). Any other failure is surfaced in `error`.
  */
 export async function openFolder(): Promise<void> {
   let path: string
@@ -53,15 +45,15 @@ export async function openFolder(): Promise<void> {
 }
 
 /**
- * Re-list the open folder's root entries (used by Refresh Explorer and after a
- * root-level file mutation). No-op when no folder is open.
+ * Re-read the open folder's root rows (Refresh Explorer, and after a root-level
+ * file mutation). Reconciles via tree patches. No-op when no folder is open.
  */
 export async function refreshWorkspace(): Promise<void> {
   const path = get(workspace).folderPath
   if (!path) return
   try {
-    const rootEntries = await listDirectory(path)
-    workspace.update((s) => ({ ...s, rootEntries, error: null }))
+    await refreshDir(path)
+    workspace.update((s) => ({ ...s, error: null }))
   } catch (e) {
     workspace.update((s) => ({ ...s, error: String(e) }))
   }
@@ -71,14 +63,19 @@ export async function refreshWorkspace(): Promise<void> {
 export async function openFolderPath(path: string): Promise<void> {
   workspace.update((s) => ({ ...s, folderPath: path, loading: true, error: null }))
   try {
-    const rootEntries = await listDirectory(path)
-    workspace.update((s) => ({ ...s, rootEntries, loading: false }))
+    // Seed the Rust-owned tree with the root rows (the initial render).
+    await setRoot(path)
+    workspace.update((s) => ({ ...s, loading: false }))
+    // M19 Wave 1: watch the workspace root so root-level changes refresh the
+    // tree. Nested folders register themselves on expand (FileTreeRow).
+    void fsWatchDir(path)
     // Best-effort: don't fail the open if recording recents errors.
     addRecentProject(path).catch(() => {})
     // GWEN-325: any terminal already open should follow the new workspace root.
     // Dynamic import keeps the workspace store free of a Tauri/terminal cycle.
     void import('../terminal/terminal-sync').then((m) => m.autoCdSessions(path))
   } catch (e) {
+    clearTree()
     workspace.update((s) => ({ ...s, loading: false, error: String(e) }))
   }
 }

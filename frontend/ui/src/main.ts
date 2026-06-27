@@ -8,6 +8,8 @@ import { registerCommands } from './lib/commands/registry'
 import { registerContextActions } from './lib/context-menu/registerActions'
 import { initLsp } from './lib/stores/lsp'
 import { initGit } from './lib/stores/git'
+import { initFsWatch } from './lib/stores/fs-watch'
+import { applyLowEndClass } from './lib/stores/performance'
 import { initAppFocus } from './lib/stores/app-focus'
 import App from './App.svelte'
 
@@ -21,6 +23,8 @@ registerContextActions()
 initLsp()
 initAppFocus()
 initGit()
+initFsWatch()
+applyLowEndClass()
 
 const app = mount(App, {
   target: document.getElementById('app')!,

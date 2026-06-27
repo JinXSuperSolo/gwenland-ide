@@ -3,14 +3,53 @@
   import { collapsePanel } from '../stores/panels'
   import { workspace, openFolder, openFolderPath } from '../stores/workspace'
   import { newUntitledFile } from '../stores/tabs'
-  import { getRecentProjects, type RecentProject, createFile, createDir } from '../tauri/commands'
+  import { getRecentProjects, type RecentProject } from '../tauri/commands'
   import { openContextMenu } from '../context-menu/contextMenuStore'
-  import { requestTreeRefresh, requestTreeCollapse } from '../stores/file-tree'
+  import { requestTreeCollapse } from '../stores/file-tree'
   import { refreshWorkspace } from '../stores/workspace'
   import { treeInput, cancelTreeInput, confirmTreeInput } from '../stores/tree-input'
   import { openFile } from '../stores/tabs'
-  import TreeNode from './TreeNode.svelte'
+  import { treeRows } from '../stores/tree'
+  import { optimisticCreateDir, optimisticCreateFile, undoLastFileOp } from '../stores/file-ops'
+  import FileTreeRow from './FileTreeRow.svelte'
   import Icon from './Icon.svelte'
+
+  // --- Virtual scroll (M19 Wave 2, scratch) --------------------------------
+  // Only visible rows + overscan are rendered, so a 10k-file workspace stays
+  // smooth. The spacer reserves full scroll height; rows are absolutely shifted
+  // by `offsetY` so the scrollbar reflects the whole list.
+  const ROW_HEIGHT = 24 // px — matches .node-row height in FileTreeRow
+  const OVERSCAN = 20 // rows rendered above/below the viewport
+
+  let viewport = $state<HTMLDivElement | null>(null)
+  let scrollTop = $state(0)
+  let viewportHeight = $state(0)
+
+  const totalHeight = $derived($treeRows.length * ROW_HEIGHT)
+  const visibleStart = $derived(Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN))
+  const visibleEnd = $derived(
+    Math.min(
+      $treeRows.length,
+      visibleStart + Math.ceil(viewportHeight / ROW_HEIGHT) + OVERSCAN * 2,
+    ),
+  )
+  const visibleRows = $derived($treeRows.slice(visibleStart, visibleEnd))
+  const offsetY = $derived(visibleStart * ROW_HEIGHT)
+
+  function onTreeScroll(e: Event) {
+    scrollTop = (e.currentTarget as HTMLDivElement).scrollTop
+  }
+
+  // Track the viewport height so the visible window resizes with the panel.
+  $effect(() => {
+    if (!viewport) return
+    const ro = new ResizeObserver((entries) => {
+      viewportHeight = entries[0].contentRect.height
+    })
+    ro.observe(viewport)
+    viewportHeight = viewport.clientHeight
+    return () => ro.disconnect()
+  })
 
   // Display just the folder's basename in the header when one is open.
   const folderName = $derived.by(() => {
@@ -40,15 +79,6 @@
     const s = sep(parent)
     return parent.endsWith(s) ? parent + name : parent + s + name
   }
-  function samePath(a: string, b: string): boolean {
-    const norm = (p: string) => p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase()
-    return norm(a) === norm(b)
-  }
-  function refreshDir(dir: string): void {
-    const root = $workspace.folderPath
-    if (root && samePath(dir, root)) void refreshWorkspace()
-    else requestTreeRefresh(dir)
-  }
 
   // Right-click on the Explorer's blank area opens the workspace context menu.
   function onEmptyContextMenu(e: MouseEvent) {
@@ -63,13 +93,8 @@
     import('../stores/tree-input').then(({ openTreeInput }) => {
       void openTreeInput({ kind: 'file', targetDir: root, icon: 'page' }).then(async (name) => {
         if (!name) return
-        try {
-          await createFile(join(root, name), root)
-          refreshDir(root)
-          await openFile(join(root, name))
-        } catch (e) {
-          alert(`Could not create file: ${e}`)
-        }
+        const target = join(root, name)
+        if (await optimisticCreateFile(target, root)) await openFile(target)
       })
     })
   }
@@ -80,12 +105,7 @@
     import('../stores/tree-input').then(({ openTreeInput }) => {
       void openTreeInput({ kind: 'folder', targetDir: root, icon: 'folder' }).then(async (name) => {
         if (!name) return
-        try {
-          await createDir(join(root, name), root)
-          refreshDir(root)
-        } catch (e) {
-          alert(`Could not create folder: ${e}`)
-        }
+        await optimisticCreateDir(join(root, name), root)
       })
     })
   }
@@ -137,6 +157,14 @@
   function onInputBlur() {
     // Blur without Enter = cancel (same as VS Code).
     cancelTreeInput()
+  }
+
+  function onTreeKeydown(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+      e.preventDefault()
+      e.stopPropagation()
+      void undoLastFileOp()
+    }
   }
 </script>
 
@@ -235,10 +263,21 @@
           />
         </div>
       {/if}
-      <div role="tree" class="tree">
-        {#each $workspace.rootEntries as entry (entry.path)}
-          <TreeNode {entry} depth={0} />
-        {/each}
+      <div
+        class="tree-viewport"
+        bind:this={viewport}
+        onscroll={onTreeScroll}
+        onkeydown={onTreeKeydown}
+        role="tree"
+        tabindex="-1"
+      >
+        <div class="tree-spacer" style={`height: ${totalHeight}px`}>
+          <div class="tree-rows" style={`transform: translateY(${offsetY}px)`}>
+            {#each visibleRows as row (row.id)}
+              <FileTreeRow {row} />
+            {/each}
+          </div>
+        </div>
       </div>
     {/if}
   </div>
@@ -297,12 +336,38 @@
   }
   .panel-body {
     flex: 1;
-    overflow: auto;
+    min-height: 0;
+    overflow: hidden;
     padding: 4px 0;
-  }
-  .tree {
     display: flex;
     flex-direction: column;
+  }
+  /* Empty state / placeholders need their own scroll since panel-body no longer
+     scrolls (the tree viewport owns scrolling when a folder is open). */
+  .panel-body > .empty,
+  .panel-body > .placeholder {
+    overflow: auto;
+  }
+  /* Virtual-scroll viewport (M19 Wave 2). */
+  .tree-viewport {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    position: relative;
+  }
+  .tree-spacer {
+    position: relative;
+    width: 100%;
+  }
+  .tree-rows {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    flex-direction: column;
+    will-change: transform;
   }
 
   /* Inline input row — mimics a tree node row. */

@@ -1,43 +1,33 @@
-import { writable } from 'svelte/store'
+import { refreshDir, collapseRow, revealPath } from './tree'
+import { get } from 'svelte/store'
+import { workspace } from './workspace'
 
 /**
- * Lightweight signal bus for the file tree (Milestone 9). The tree's expand
- * state is decentralized (each `TreeNode` owns whether it's expanded and its
- * loaded children), so context-menu actions can't mutate it directly. Instead
- * they emit a path-targeted signal here; the matching node reacts.
+ * File-tree signal bus (M9) — now a thin bridge to the Rust-owned flat tree
+ * store (M19 Wave 2). The exported functions keep their original signatures so
+ * existing callers (context-menu file actions, editor breadcrumbs) need no
+ * change; each just forwards to the new patch-based tree store.
  *
- *   - `refreshSignal`  → the node for `path` re-fetches its children (used after
- *      create/delete/rename/duplicate so the tree reflects disk).
- *   - `collapseSignal` → the node for `path` collapses (Collapse Folder action).
+ *   - `requestTreeRefresh(path)`  → reconcile that directory against disk.
+ *   - `requestTreeCollapse(path)` → collapse that folder.
+ *   - `requestTreeReveal(path)`   → expand ancestors so the file becomes visible.
  *
- * Root-level changes are refreshed via `refreshWorkspace` in the workspace store
- * (the root entries don't live in a `TreeNode`).
+ * Root-level changes are handled by the same `refreshDir` (the engine special-
+ * cases the workspace root), so there's no separate root path anymore.
  */
-export interface TreeSignal {
-  path: string
-  /** Monotonic id so two consecutive signals for the same path both fire. */
-  nonce: number
-}
 
-export const refreshSignal = writable<TreeSignal | null>(null)
-export const collapseSignal = writable<TreeSignal | null>(null)
-/** A reveal targets a *file* path; ancestor folder nodes expand toward it. */
-export const revealSignal = writable<TreeSignal | null>(null)
-
-let nonce = 0
-
-/** Ask the node rendering `path` to re-read its children. */
+/** Ask the tree to re-read a directory's children (after create/delete/rename). */
 export function requestTreeRefresh(path: string): void {
-  refreshSignal.set({ path, nonce: ++nonce })
+  void refreshDir(path)
 }
 
-/** Ask the node rendering `path` to collapse. */
+/** Collapse the folder at `path` (Collapse Folder action). */
 export function requestTreeCollapse(path: string): void {
-  collapseSignal.set({ path, nonce: ++nonce })
+  void collapseRow(path)
 }
 
-/** Ask the folders containing `path` to expand so the file becomes visible
- *  ("Reveal in File Tree"). Nodes mounted by the cascade re-check the signal. */
+/** Expand the folders containing `path` so the file becomes visible. */
 export function requestTreeReveal(path: string): void {
-  revealSignal.set({ path, nonce: ++nonce })
+  const root = get(workspace).folderPath
+  if (root) void revealPath(root, path)
 }

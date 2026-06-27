@@ -71,3 +71,18 @@
     transition: none;
   }
 }
+
+/* ── M19 Wave 5: Low-End Mode ─────────────────────────────────────────────
+   Globally strip animations + transitions (and the cursor-blink repaint loop)
+   so older hardware isn't repainting decorative motion. Component-scoped
+   features (git badges, minimap, indent guides, file icons) are gated via the
+   perfSettings store / scoped rules below. */
+body.low-end * {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+body.low-end .cm-cursorLayer {
+  animation: none !important;
+}

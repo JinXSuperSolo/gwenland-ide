@@ -26,16 +26,26 @@ export interface GitState {
   ahead: number
   /** Commits behind upstream (0 when no upstream or not a repo). */
   behind: number
+  /** True while a git status scan is in flight. */
+  refreshing: boolean
 }
 
-const initial: GitState = { isRepo: false, branch: '', dirtyCount: 0, files: [], ahead: 0, behind: 0 }
+const initial: GitState = {
+  isRepo: false,
+  branch: '',
+  dirtyCount: 0,
+  files: [],
+  ahead: 0,
+  behind: 0,
+  refreshing: false,
+}
 
 export const git = writable<GitState>(initial)
 
 /**
  * Precomputed set of repo-relative directory prefixes that contain at least
  * one dirty file. E.g. if `src/foo/bar.ts` is modified, this set contains
- * `"src/"` and `"src/foo/"`. TreeNode folder nodes subscribe here instead of
+ * `"src/"` and `"src/foo/"`. FileTreeRow folder rows subscribe here instead of
  * calling state.files.some() on every render — O(1) lookup vs O(n) scan.
  */
 export const gitDirtyPrefixes = writable<Set<string>>(new Set())
@@ -61,6 +71,10 @@ let lastRoot: string | null = null
 
 let refreshing = false
 
+function setRefreshing(next: boolean): void {
+  git.update((state) => (state.refreshing === next ? state : { ...state, refreshing: next }))
+}
+
 /** Re-read git status for the open workspace. No-op when already in-flight or no folder open. */
 export async function refreshGit(): Promise<void> {
   if (refreshing) return
@@ -70,10 +84,11 @@ export async function refreshGit(): Promise<void> {
     return
   }
   refreshing = true
+  setRefreshing(true)
   try {
     const isRepo = await gitIsRepo(root)
     if (!isRepo) {
-      git.set({ ...initial, isRepo: false })
+      git.set({ ...initial, isRepo: false, refreshing: true })
       gitDirtyPrefixes.set(new Set())
       return
     }
@@ -85,13 +100,15 @@ export async function refreshGit(): Promise<void> {
       files: status.files,
       ahead: status.ahead,
       behind: status.behind,
+      refreshing: true,
     })
     recomputeDirtyPrefixes(status.files)
   } catch {
-    git.set(initial)
+    git.set({ ...initial, refreshing: true })
     gitDirtyPrefixes.set(new Set())
   } finally {
     refreshing = false
+    setRefreshing(false)
   }
 }
 

@@ -62,9 +62,10 @@ export function createTerminal(host: HTMLElement): TerminalBundle {
     fontSize: 13,
     lineHeight: 1.2,
     cursorBlink: true,
-    // Generous client-side scrollback for usability; the Rust ring buffer
-    // (Wave 5) caps server-side retention separately.
-    scrollback: 5000,
+    // Client-side scrollback cap (M19 Wave 4): XTerm drops lines beyond this,
+    // bounding memory under heavy output. The engine ring buffer caps
+    // server-side retention separately (M3 Wave 5).
+    scrollback: 50000,
     // Lets the host element drive size; fit() computes cols/rows from pixels.
     allowProposedApi: true,
   })

@@ -79,6 +79,72 @@ pub fn read_file(path: &Path) -> Result<String, FsError> {
     String::from_utf8(bytes).map_err(|_| FsError::BinaryFile)
 }
 
+/// Size + line-count metadata for a file (M19 Wave 3 — Large File Mode). The UI
+/// uses this to decide whether to open a file in a reduced-feature "large file"
+/// mode before paying the cost of building a fully-featured editor.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct FileMeta {
+    /// File size in bytes.
+    pub size: u64,
+    /// Number of newline-delimited lines, or `u64::MAX` when counting was
+    /// skipped because the file is too big to scan cheaply (see `file_meta`).
+    pub line_count: u64,
+}
+
+/// Threshold above which we don't bother counting lines: scanning a multi-MB
+/// file just to learn it's huge is wasted work — size alone already classifies
+/// it as large. The sentinel `u64::MAX` line count tells the UI "skipped".
+const LINE_COUNT_SKIP_BYTES: u64 = 10_000_000;
+
+/// Return `path`'s size and (when cheap) line count. For files at or above
+/// `LINE_COUNT_SKIP_BYTES` the count is skipped and reported as `u64::MAX`.
+/// Counting reads the file in bytes (no UTF-8 validation) so it works on any
+/// file, including ones too large or non-text to open in the editor.
+pub fn file_meta(path: &Path) -> Result<FileMeta, FsError> {
+    let meta = std::fs::metadata(path)?;
+    let size = meta.len();
+    let line_count = if size < LINE_COUNT_SKIP_BYTES {
+        count_lines(path)?
+    } else {
+        u64::MAX
+    };
+    Ok(FileMeta { size, line_count })
+}
+
+/// Count newline-delimited lines in `path` via a buffered byte scan. A trailing
+/// line without a final `\n` still counts. An empty file is 0 lines.
+fn count_lines(path: &Path) -> Result<u64, FsError> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut buf = [0u8; 64 * 1024];
+    let mut newlines: u64 = 0;
+    let mut total: u64 = 0;
+    let mut last_byte = 0u8;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        for &b in &buf[..n] {
+            if b == b'\n' {
+                newlines += 1;
+            }
+        }
+        last_byte = buf[n - 1];
+    }
+    if total == 0 {
+        return Ok(0);
+    }
+    // A final line lacking a trailing newline still counts as a line.
+    Ok(if last_byte == b'\n' {
+        newlines
+    } else {
+        newlines + 1
+    })
+}
+
 /// Writes `content` to `path` atomically: write to `<path>.tmp`, then rename
 /// over `path`. A crash mid-write leaves the original intact and no partial
 /// file at `path`; on success no `.tmp` artefact remains (Property 3).
@@ -358,6 +424,47 @@ mod tests {
             fs::write(&file_path, &content).unwrap();
             prop_assert!(matches!(list_directory(&file_path), Err(FsError::NotADirectory(_))));
         }
+    }
+
+    // M19 Wave 3 — file_meta / count_lines.
+    #[test]
+    fn file_meta_counts_lines_and_size() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("three.txt");
+        fs::write(&f, b"a\nb\nc\n").unwrap();
+        let meta = file_meta(&f).unwrap();
+        assert_eq!(meta.size, 6);
+        assert_eq!(meta.line_count, 3);
+    }
+
+    #[test]
+    fn file_meta_counts_final_line_without_newline() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("noeol.txt");
+        fs::write(&f, b"one\ntwo").unwrap();
+        let meta = file_meta(&f).unwrap();
+        assert_eq!(meta.line_count, 2);
+    }
+
+    #[test]
+    fn file_meta_empty_file_is_zero_lines() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("empty.txt");
+        fs::write(&f, b"").unwrap();
+        let meta = file_meta(&f).unwrap();
+        assert_eq!(meta.size, 0);
+        assert_eq!(meta.line_count, 0);
+    }
+
+    #[test]
+    fn file_meta_counts_binary_lines_too() {
+        // count_lines is a byte scan, so a non-UTF-8 file still yields a count.
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("bin.dat");
+        fs::write(&f, [0xff, b'\n', 0xfe, b'\n', 0x00]).unwrap();
+        let meta = file_meta(&f).unwrap();
+        assert_eq!(meta.size, 5);
+        assert_eq!(meta.line_count, 3); // two \n + trailing partial line
     }
 
     #[test]

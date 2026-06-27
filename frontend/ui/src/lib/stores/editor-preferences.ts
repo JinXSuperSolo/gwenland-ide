@@ -5,6 +5,9 @@ export interface EditorPreferences {
   editorMinimap: boolean
   terminalMinimap: boolean
   markdownPreview: boolean
+  /** M19 Wave 5 — Low-End Mode: disables expensive visual features for smoother
+   *  performance on older hardware. See stores/performance.ts for the effects. */
+  lowEndMode: boolean
 }
 
 const STORAGE_KEY = 'gwen.editor.preferences.v1'
@@ -13,6 +16,7 @@ const DEFAULTS: EditorPreferences = {
   editorMinimap: false,
   terminalMinimap: false,
   markdownPreview: false,
+  lowEndMode: false,
 }
 
 function load(): EditorPreferences {
@@ -36,6 +40,8 @@ function load(): EditorPreferences {
         typeof saved.markdownPreview === 'boolean'
           ? saved.markdownPreview
           : DEFAULTS.markdownPreview,
+      lowEndMode:
+        typeof saved.lowEndMode === 'boolean' ? saved.lowEndMode : DEFAULTS.lowEndMode,
     }
   } catch {
     return { ...DEFAULTS }
@@ -81,4 +87,15 @@ export function toggleMarkdownPreview(): void {
     ...value,
     markdownPreview: !value.markdownPreview,
   }))
+}
+
+export function toggleLowEndMode(): void {
+  editorPreferences.update((value) => ({
+    ...value,
+    lowEndMode: !value.lowEndMode,
+  }))
+}
+
+export function setLowEndMode(on: boolean): void {
+  editorPreferences.update((value) => ({ ...value, lowEndMode: on }))
 }
