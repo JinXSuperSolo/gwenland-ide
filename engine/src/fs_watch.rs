@@ -22,7 +22,7 @@
 
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -42,11 +42,15 @@ pub struct FsPatch {
     pub added: Vec<String>,
     pub removed: Vec<String>,
     pub modified: Vec<String>,
+    pub modified_dirs: Vec<String>,
 }
 
 impl FsPatch {
     fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && self.modified.is_empty()
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.modified.is_empty()
+            && self.modified_dirs.is_empty()
     }
 }
 
@@ -65,17 +69,34 @@ struct EntryStat {
 /// Snapshot of one directory's immediate children, keyed by absolute path.
 type DirSnapshot = HashMap<String, EntryStat>;
 
-/// Returns `true` if `name` is a directory we must never watch or report on.
-/// `.git` churns constantly (index, refs, logs) and would flood the UI.
-fn is_ignored_dir_name(name: &str) -> bool {
-    name == ".git"
+/// Default generated/dependency paths that must never be watched or reported.
+/// TODO(M21): allow a project-level override under `.gwenland/settings.json`.
+const DEFAULT_EXCLUDES: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    "out",
+    "coverage",
+    ".cache",
+    "__pycache__",
+    ".DS_Store",
+];
+
+fn is_excluded_name(name: &str) -> bool {
+    DEFAULT_EXCLUDES.iter().any(|excluded| name == *excluded)
 }
 
-/// Returns `true` if `path` lives inside any `.git` directory. Used to drop
-/// patches for git-internal files even if a parent dir was registered.
-fn is_inside_git(path: &Path) -> bool {
-    path.components()
-        .any(|c| c.as_os_str().to_str().map(|s| s == ".git").unwrap_or(false))
+/// Returns `true` if `path` lives inside a default excluded component. Used both
+/// to refuse watch registration and to drop entries from parent snapshots.
+fn should_exclude(path: &Path) -> bool {
+    path.components().any(|component| match component {
+        Component::Normal(name) => name.to_str().map(is_excluded_name).unwrap_or(false),
+        _ => false,
+    })
 }
 
 fn entry_stat(meta: &std::fs::Metadata) -> EntryStat {
@@ -99,14 +120,10 @@ fn snapshot_dir(dir: &Path) -> Option<DirSnapshot> {
     let read = std::fs::read_dir(dir).ok()?;
     let mut snap = DirSnapshot::new();
     for entry in read.flatten() {
-        let name = match entry.file_name().into_string() {
-            Ok(n) => n,
-            Err(_) => continue, // non-UTF-8 name: ignore, matches list_directory
-        };
-        if is_ignored_dir_name(&name) {
+        let Ok(meta) = entry.metadata() else { continue };
+        if should_exclude(&entry.path()) {
             continue;
         }
-        let Ok(meta) = entry.metadata() else { continue };
         let Some(path) = entry.path().to_str().map(str::to_owned) else {
             continue;
         };
@@ -121,10 +138,12 @@ fn diff_snapshots(dir: &str, old: &DirSnapshot, new: &DirSnapshot) -> FsPatch {
     let mut added = Vec::new();
     let mut removed = Vec::new();
     let mut modified = Vec::new();
+    let mut modified_dirs = Vec::new();
 
     for (path, stat) in new {
         match old.get(path) {
             None => added.push(path.clone()),
+            Some(prev) if prev != stat && stat.is_dir => modified_dirs.push(path.clone()),
             Some(prev) if prev != stat => modified.push(path.clone()),
             Some(_) => {}
         }
@@ -138,11 +157,13 @@ fn diff_snapshots(dir: &str, old: &DirSnapshot, new: &DirSnapshot) -> FsPatch {
     added.sort();
     removed.sort();
     modified.sort();
+    modified_dirs.sort();
     FsPatch {
         dir: dir.to_string(),
         added,
         removed,
         modified,
+        modified_dirs,
     }
 }
 
@@ -213,7 +234,7 @@ impl FsWatcher {
     /// its snapshot (cheap, idempotent). `.git` and paths inside it are refused.
     pub fn watch(&self, dir: &str) {
         let path = PathBuf::from(dir);
-        if is_inside_git(&path) {
+        if should_exclude(&path) {
             return;
         }
         let seed = snapshot_dir(&path).unwrap_or_default();
@@ -401,6 +422,35 @@ mod tests {
         assert!(patches.is_empty());
     }
 
+    // 1.6b — dependency/generated dirs are never reported from a watched parent.
+    #[test]
+    fn default_excluded_dirs_are_ignored() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        let state = snap_state(&root);
+
+        fs::create_dir(dir.path().join("node_modules")).unwrap();
+        fs::write(dir.path().join("node_modules").join("pkg.js"), b"x").unwrap();
+        fs::create_dir(dir.path().join("target")).unwrap();
+        fs::write(dir.path().join("target").join("debug.log"), b"x").unwrap();
+
+        let patches = poll_once(&state);
+        assert!(patches.is_empty());
+    }
+
+    // 1.6c — excluded files such as .DS_Store are also dropped.
+    #[test]
+    fn default_excluded_files_are_ignored() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        let state = snap_state(&root);
+
+        fs::write(dir.path().join(".DS_Store"), b"x").unwrap();
+        let patches = poll_once(&state);
+
+        assert!(patches.is_empty());
+    }
+
     // 1.7 — registering a dir does NOT report its existing contents as added.
     #[test]
     fn registration_does_not_flood_existing_contents() {
@@ -477,6 +527,36 @@ mod tests {
         assert_eq!(patch.added, vec!["new".to_string()]);
         assert_eq!(patch.removed, vec!["del".to_string()]);
         assert_eq!(patch.modified, vec!["edit".to_string()]);
+        assert!(patch.modified_dirs.is_empty());
+    }
+
+    // 1.8b — a changed directory fingerprint is separated so the UI can mark
+    // collapsed folders stale without reconciling content-only file saves.
+    #[test]
+    fn diff_directory_modification_separate_from_file_modification() {
+        let mut old = DirSnapshot::new();
+        old.insert(
+            "dir".into(),
+            EntryStat {
+                is_dir: true,
+                len: 0,
+                mtime_nanos: 1,
+            },
+        );
+
+        let mut new = DirSnapshot::new();
+        new.insert(
+            "dir".into(),
+            EntryStat {
+                is_dir: true,
+                len: 0,
+                mtime_nanos: 2,
+            },
+        );
+
+        let patch = diff_snapshots("root", &old, &new);
+        assert!(patch.modified.is_empty());
+        assert_eq!(patch.modified_dirs, vec!["dir".to_string()]);
     }
 
     // 1.9 — two separate watched dirs each get their own patch.
@@ -540,6 +620,15 @@ mod tests {
     fn watch_refuses_git_paths() {
         let watcher = FsWatcher::start_with_interval(Duration::from_secs(3600), |_| {});
         watcher.watch("/some/repo/.git/refs");
+        assert_eq!(watcher.watched_count(), 0);
+    }
+
+    // 1.12b — watcher refuses generated/dependency folders too.
+    #[test]
+    fn watch_refuses_default_excluded_paths() {
+        let watcher = FsWatcher::start_with_interval(Duration::from_secs(3600), |_| {});
+        watcher.watch("/some/repo/node_modules/react");
+        watcher.watch("/some/repo/target/debug");
         assert_eq!(watcher.watched_count(), 0);
     }
 

@@ -5,6 +5,7 @@
   import { openFile } from '../stores/tabs'
   import { workspace } from '../stores/workspace'
   import { toggleRow } from '../stores/tree'
+  import { focusRow, selectRow, treeInteraction } from '../stores/tree-interaction'
   import { optimisticDeletePath, optimisticPermanentDeletePath } from '../stores/file-ops'
   import { openContextMenu } from '../context-menu/contextMenuStore'
   import { git, gitDirtyPrefixes } from '../stores/git'
@@ -19,6 +20,21 @@
    * children are separate rows in the parent array.
    */
   let { row }: { row: FlatRow } = $props()
+  let rowEl = $state<HTMLDivElement | null>(null)
+
+  $effect(() => {
+    if (!rowEl) return
+    const el = rowEl
+    return treeInteraction.subscribe((state) => {
+      const selected = state.selectedId === row.id
+      const focused = state.focusedId === row.id
+      const active = state.activeEditorPath === row.path
+      el.classList.toggle('selected', selected)
+      el.classList.toggle('focused', focused)
+      el.dataset.active = active ? 'true' : 'false'
+      el.setAttribute('aria-selected', selected ? 'true' : 'false')
+    })
+  })
 
   // M19 Wave 1/2: a folder is watched for FS changes only while expanded. The
   // tree store owns expand/collapse; we mirror the watch registration off the
@@ -43,6 +59,8 @@
   })
 
   async function activate() {
+    selectRow(row.id)
+    focusRow(row.id)
     if (row.is_dir) {
       await toggleRow(row)
       return
@@ -121,15 +139,20 @@
 </script>
 
 <div
+  bind:this={rowEl}
   class="node-row"
   class:is-dir={row.is_dir}
+  class:stale={row.is_stale}
   class:no-guides={!$perfSettings.showIndentGuides}
   style={`padding-left: ${indent}px; --tree-depth: ${row.depth};`}
+  data-active="false"
+  title={row.error ?? row.path}
   role="treeitem"
   aria-selected={false}
   aria-expanded={row.is_dir ? row.is_expanded : undefined}
   tabindex="0"
   onclick={() => void activate()}
+  onfocus={() => focusRow(row.id)}
   ondblclick={(e) => { e.preventDefault(); e.stopPropagation() }}
   oncontextmenu={onContextMenu}
   onkeydown={(e) => {
@@ -147,8 +170,20 @@
   }}
 >
   {#if row.is_dir}
-    <span class="chevron" class:open={row.is_expanded} class:hidden={!row.has_children}>
-      <Icon name="nav-arrow-right" size={14} />
+    <span
+      class="chevron"
+      class:open={row.is_expanded}
+      class:hidden={!row.has_children && !row.is_loading && !row.error}
+      class:loading={row.is_loading}
+      class:error={!!row.error}
+    >
+      {#if row.is_loading}
+        <Icon name="refresh" size={12} />
+      {:else if row.error}
+        <Icon name="warning-circle" size={13} />
+      {:else}
+        <Icon name="nav-arrow-right" size={14} />
+      {/if}
     </span>
     {#if $perfSettings.showFileIcons}<FileIcon dir open={row.is_expanded} size={16} />{/if}
   {:else}
@@ -158,6 +193,8 @@
   <span class={`node-name ${gitClass}`}>{row.name}</span>
   {#if gitBadge}
     <span class={`git-badge ${gitClass}`}>{gitBadge}</span>
+  {:else if row.is_stale}
+    <span class="stale-dot" aria-hidden="true"></span>
   {/if}
 </div>
 
@@ -197,6 +234,21 @@
   .node-row:hover {
     background-color: var(--sidebar-accent);
   }
+  .node-row.selected {
+    background-color: color-mix(in srgb, var(--primary) 18%, transparent);
+    color: var(--foreground);
+  }
+  .node-row.stale .node-name {
+    color: color-mix(in srgb, var(--sidebar-foreground) 72%, var(--muted-foreground));
+  }
+  :global(.node-row[data-active='true'] .node-name) {
+    color: var(--primary);
+    font-weight: 600;
+  }
+  .node-row.focused {
+    outline: 1px solid rgba(var(--ring-rgb), 0.58);
+    outline-offset: -1px;
+  }
   .node-row:focus-visible {
     outline: 1px solid rgba(var(--ring-rgb), 0.6);
     outline-offset: -1px;
@@ -213,6 +265,13 @@
   }
   .chevron.open {
     transform: rotate(90deg);
+  }
+  .chevron.loading {
+    color: var(--primary);
+    animation: tree-row-spin 0.9s linear infinite;
+  }
+  .chevron.error {
+    color: var(--destructive);
   }
   .chevron.spacer,
   .chevron.hidden {
@@ -259,5 +318,20 @@
   .git-badge.git-deleted {
     color: #e06c75;
     background: color-mix(in srgb, #e06c75 14%, transparent);
+  }
+  .stale-dot {
+    flex-shrink: 0;
+    margin-left: auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--muted-foreground);
+    opacity: 0.58;
+  }
+
+  @keyframes tree-row-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 </style>

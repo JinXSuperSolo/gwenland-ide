@@ -20,6 +20,19 @@ use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+fn hide_child_window(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// Maximum file size we will snapshot (10 MiB). Larger files get a safe error.
 pub const MAX_SNAPSHOT_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -297,21 +310,16 @@ pub fn create_git_patch_backup(
     actor: &str,
     description: &str,
 ) -> Result<Option<BackupRecord>, RecoveryError> {
-    #[cfg(windows)]
-    let output = std::process::Command::new("git")
-        .args(["diff", "HEAD"])
-        .current_dir(workspace_root)
+    let args = ["diff", "HEAD"];
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args).current_dir(workspace_root);
+    hide_child_window(&mut cmd);
+    let output = cmd
         .output()
         .map_err(|e| RecoveryError::Git(e.to_string()))?;
-    #[cfg(not(windows))]
-    let output = std::process::Command::new("git")
-        .args(["diff", "HEAD"])
-        .current_dir(workspace_root)
-        .output()
-        .map_err(|e| RecoveryError::Git(e.to_string()))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(RecoveryError::Git(stderr.trim().to_string()));
     }
 

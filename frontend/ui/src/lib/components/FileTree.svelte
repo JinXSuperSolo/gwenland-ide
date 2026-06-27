@@ -19,7 +19,7 @@
   // smooth. The spacer reserves full scroll height; rows are absolutely shifted
   // by `offsetY` so the scrollbar reflects the whole list.
   const ROW_HEIGHT = 24 // px — matches .node-row height in FileTreeRow
-  const OVERSCAN = 20 // rows rendered above/below the viewport
+  const OVERSCAN = 4 // rows rendered above/below the viewport
 
   let viewport = $state<HTMLDivElement | null>(null)
   let scrollTop = $state(0)

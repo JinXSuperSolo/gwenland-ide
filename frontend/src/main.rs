@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -70,7 +71,7 @@ struct TerminalShellInfo {
 /// different threads. Registered as Tauri managed state.
 #[derive(Default)]
 struct TerminalManager {
-    sessions: Mutex<HashMap<String, PtySession>>,
+    sessions: Arc<Mutex<HashMap<String, PtySession>>>,
     next_id: AtomicU64,
 }
 
@@ -168,11 +169,34 @@ fn emit_ai_error(app: &AppHandle, stream_id: &str, error: AiError) {
     );
 }
 
+async fn run_blocking<T, F>(caller: &'static str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|e| format!("{caller} blocking task failed: {e}"))?
+}
+
+fn hide_child_window(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// Creates a PTY session running the platform default shell and starts
 /// streaming its output to the frontend as `terminal://output` events. Returns
 /// the new session id.
 #[tauri::command]
-fn terminal_create(
+async fn terminal_create(
     app: AppHandle,
     manager: State<'_, TerminalManager>,
     rows: u16,
@@ -181,183 +205,220 @@ fn terminal_create(
     shell: Option<String>,
 ) -> Result<String, String> {
     let id = manager.alloc_id();
-    let output_id = id.clone();
-    let output_app = app.clone();
-    let error_id = id.clone();
-    let error_app = app.clone();
-    let devserver_id = id.clone();
-    // Open the shell in the project folder when one is provided; the engine
-    // ignores a non-existent path and falls back to the default directory.
-    let cwd_path = cwd.as_deref().map(std::path::Path::new);
-    let session = PtySession::spawn_shell_with_callback(
-        rows,
-        cols,
-        cwd_path,
-        shell.as_deref(),
-        Box::new(move |chunk: &[u8]| {
-            // Emit failures (e.g. window gone) are not fatal to the PTY; ignore.
-            let _ = output_app.emit(
-                "terminal://output",
-                TerminalOutput {
-                    id: output_id.clone(),
-                    data: chunk.to_vec(),
+    let sessions = manager.sessions.clone();
+    run_blocking("terminal_create", move || {
+        let output_id = id.clone();
+        let output_app = app.clone();
+        let error_id = id.clone();
+        let error_app = app.clone();
+        let devserver_id = id.clone();
+        let devserver_app = app.clone();
+        // Open the shell in the project folder when one is provided; the engine
+        // ignores a non-existent path and falls back to the default directory.
+        let cwd_path = cwd.as_deref().map(PathBuf::from);
+        let cwd_ref = cwd_path.as_deref();
+        let session_result = PtySession::spawn_shell_with_callback(
+            rows,
+            cols,
+            cwd_ref,
+            shell.as_deref(),
+            Box::new(move |chunk: &[u8]| {
+                // Emit failures (e.g. window gone) are not fatal to the PTY; ignore.
+                let _ = output_app.emit(
+                    "terminal://output",
+                    TerminalOutput {
+                        id: output_id.clone(),
+                        data: chunk.to_vec(),
+                    },
+                );
+            }),
+            // Wave 6: forward each detected error as a `terminal://error` event.
+            Some(Box::new(
+                move |sig: &gwenland_engine::error_detect::ErrorSignal| {
+                    let _ = error_app.emit(
+                        "terminal://error",
+                        TerminalErrorEvent {
+                            id: error_id.clone(),
+                            label: sig.label.clone(),
+                            line: sig.line.clone(),
+                        },
+                    );
                 },
-            );
-        }),
-        // Wave 6: forward each detected error as a `terminal://error` event.
-        Some(Box::new(
-            move |sig: &gwenland_engine::error_detect::ErrorSignal| {
-                let _ = error_app.emit(
-                    "terminal://error",
-                    TerminalErrorEvent {
-                        id: error_id.clone(),
-                        label: sig.label.clone(),
-                        line: sig.line.clone(),
-                    },
-                );
-            },
-        )),
-        // M5: forward the detected dev-server URL as a `terminal://devserver-ready`
-        // event (fires at most once per session) so the UI can auto-open a preview.
-        Some(Box::new(
-            move |sig: &gwenland_engine::devserver_detect::DevServerSignal| {
-                let _ = app.emit(
-                    "terminal://devserver-ready",
-                    TerminalDevServerEvent {
-                        id: devserver_id.clone(),
-                        url: sig.url.clone(),
-                        port: sig.port,
-                    },
-                );
-            },
-        )),
-    )
-    .map_err(|e| e.to_string())?;
+            )),
+            // M5: forward the detected dev-server URL as a `terminal://devserver-ready`
+            // event (fires at most once per session) so the UI can auto-open a preview.
+            Some(Box::new(
+                move |sig: &gwenland_engine::devserver_detect::DevServerSignal| {
+                    let _ = devserver_app.emit(
+                        "terminal://devserver-ready",
+                        TerminalDevServerEvent {
+                            id: devserver_id.clone(),
+                            url: sig.url.clone(),
+                            port: sig.port,
+                        },
+                    );
+                },
+            )),
+        );
 
-    manager
-        .sessions
-        .lock()
-        .map_err(|_| "terminal manager lock poisoned".to_string())?
-        .insert(id.clone(), session);
-    Ok(id)
+        match session_result {
+            Ok(session) => {
+                sessions
+                    .lock()
+                    .map_err(|_| "terminal manager lock poisoned".to_string())?
+                    .insert(id.clone(), session);
+                Ok(id)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-fn terminal_detect_shells() -> Result<Vec<TerminalShellInfo>, String> {
-    let candidates: &[(&str, &str, &str)] = if cfg!(windows) {
-        &[
-            ("powershell", "PowerShell", "powershell.exe"),
-            ("pwsh", "PowerShell 7", "pwsh.exe"),
-            ("cmd", "Command Prompt", "cmd.exe"),
-            ("wsl", "WSL", "wsl.exe"),
-            ("bun", "Bun", "bun.exe"),
-            ("node", "Node", "node.exe"),
-            ("python", "Python", "python.exe"),
-        ]
-    } else {
-        &[
-            ("bash", "Bash", "bash"),
-            ("zsh", "Zsh", "zsh"),
-            ("fish", "Fish", "fish"),
-            ("sh", "Sh", "sh"),
-            ("bun", "Bun", "bun"),
-            ("node", "Node", "node"),
-            ("python", "Python", "python3"),
-        ]
-    };
+async fn terminal_detect_shells() -> Result<Vec<TerminalShellInfo>, String> {
+    run_blocking("terminal_detect_shells", move || {
+        let candidates: &[(&str, &str, &str)] = if cfg!(windows) {
+            &[
+                ("powershell", "PowerShell", "powershell.exe"),
+                ("pwsh", "PowerShell 7", "pwsh.exe"),
+                ("cmd", "Command Prompt", "cmd.exe"),
+                ("wsl", "WSL", "wsl.exe"),
+                ("bun", "Bun", "bun.exe"),
+                ("node", "Node", "node.exe"),
+                ("python", "Python", "python.exe"),
+            ]
+        } else {
+            &[
+                ("bash", "Bash", "bash"),
+                ("zsh", "Zsh", "zsh"),
+                ("fish", "Fish", "fish"),
+                ("sh", "Sh", "sh"),
+                ("bun", "Bun", "bun"),
+                ("node", "Node", "node"),
+                ("python", "Python", "python3"),
+            ]
+        };
 
-    let mut shells = Vec::new();
-    let mut seen = std::collections::HashSet::<String>::new();
-    for (id, label, command) in candidates {
-        if let Some(path) = gwenland_engine::lsp::resolve_command(command) {
-            let key = path.to_string_lossy().to_lowercase();
-            if seen.insert(key) {
-                shells.push(TerminalShellInfo {
-                    id: (*id).to_string(),
-                    label: (*label).to_string(),
-                    command: path.to_string_lossy().into_owned(),
-                });
+        let mut shells = Vec::new();
+        let mut seen = std::collections::HashSet::<String>::new();
+        for (id, label, command) in candidates {
+            if let Some(path) = gwenland_engine::lsp::resolve_command(command) {
+                let key = path.to_string_lossy().to_lowercase();
+                if seen.insert(key) {
+                    shells.push(TerminalShellInfo {
+                        id: (*id).to_string(),
+                        label: (*label).to_string(),
+                        command: path.to_string_lossy().into_owned(),
+                    });
+                }
             }
         }
-    }
-    Ok(shells)
+        Ok(shells)
+    })
+    .await
 }
 
 /// Sends raw input bytes (keystrokes / pasted text) to a session's PTY.
 #[tauri::command]
-fn terminal_write(
+async fn terminal_write(
     manager: State<'_, TerminalManager>,
     id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    let mut sessions = manager
-        .sessions
-        .lock()
-        .map_err(|_| "terminal manager lock poisoned".to_string())?;
-    let session = sessions
-        .get_mut(&id)
-        .ok_or_else(|| format!("no terminal session {id}"))?;
-    session.write_input(&data).map_err(|e| e.to_string())
+    let sessions = manager.sessions.clone();
+    run_blocking("terminal_write", move || {
+        let mut sessions = sessions
+            .lock()
+            .map_err(|_| "terminal manager lock poisoned".to_string())?;
+        let session = sessions
+            .get_mut(&id)
+            .ok_or_else(|| format!("no terminal session {id}"))?;
+        session.write_input(&data).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Resizes a session's PTY (cols/rows) as the panel is resized.
 #[tauri::command]
-fn terminal_resize(
+async fn terminal_resize(
     manager: State<'_, TerminalManager>,
     id: String,
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let sessions = manager
-        .sessions
-        .lock()
-        .map_err(|_| "terminal manager lock poisoned".to_string())?;
-    let session = sessions
-        .get(&id)
-        .ok_or_else(|| format!("no terminal session {id}"))?;
-    session.resize(rows, cols).map_err(|e| e.to_string())
+    let sessions = manager.sessions.clone();
+    run_blocking("terminal_resize", move || {
+        let sessions = sessions
+            .lock()
+            .map_err(|_| "terminal manager lock poisoned".to_string())?;
+        let session = sessions
+            .get(&id)
+            .ok_or_else(|| format!("no terminal session {id}"))?;
+        session.resize(rows, cols).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Kills a session and removes it from the manager. Dropping the removed
 /// `PtySession` runs its kill+reap teardown. Killing an unknown id is a no-op.
 #[tauri::command]
-fn terminal_kill(manager: State<'_, TerminalManager>, id: String) -> Result<(), String> {
-    let mut sessions = manager
-        .sessions
-        .lock()
-        .map_err(|_| "terminal manager lock poisoned".to_string())?;
-    if let Some(mut session) = sessions.remove(&id) {
-        session.kill().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+async fn terminal_kill(manager: State<'_, TerminalManager>, id: String) -> Result<(), String> {
+    let sessions = manager.sessions.clone();
+    run_blocking("terminal_kill", move || {
+        let mut sessions = sessions
+            .lock()
+            .map_err(|_| "terminal manager lock poisoned".to_string())?;
+        if let Some(mut session) = sessions.remove(&id) {
+            session.kill().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-fn get_app_data_path() -> Result<String, String> {
-    gwenland_engine::app_data::get_app_data_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .map_err(|e| e.to_string())
+async fn get_app_data_path() -> Result<String, String> {
+    run_blocking("get_app_data_path", move || {
+        gwenland_engine::app_data::get_app_data_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn load_settings() -> Result<gwenland_engine::settings::Settings, String> {
-    gwenland_engine::settings::load_settings().map_err(|e| e.to_string())
+async fn load_settings() -> Result<gwenland_engine::settings::Settings, String> {
+    run_blocking("load_settings", move || {
+        gwenland_engine::settings::load_settings().map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn save_settings(settings: gwenland_engine::settings::Settings) -> Result<(), String> {
-    gwenland_engine::settings::save_settings(&settings).map_err(|e| e.to_string())
+async fn save_settings(settings: gwenland_engine::settings::Settings) -> Result<(), String> {
+    run_blocking("save_settings", move || {
+        gwenland_engine::settings::save_settings(&settings).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn get_recent_projects() -> Result<Vec<gwenland_engine::recent_projects::RecentProject>, String> {
-    gwenland_engine::recent_projects::get_recent_projects().map_err(|e| e.to_string())
+async fn get_recent_projects()
+-> Result<Vec<gwenland_engine::recent_projects::RecentProject>, String> {
+    run_blocking("get_recent_projects", move || {
+        gwenland_engine::recent_projects::get_recent_projects().map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn add_recent_project(path: String) -> Result<(), String> {
-    gwenland_engine::recent_projects::add_recent_project(std::path::Path::new(&path))
-        .map_err(|e| e.to_string())
+async fn add_recent_project(path: String) -> Result<(), String> {
+    run_blocking("add_recent_project", move || {
+        gwenland_engine::recent_projects::add_recent_project(Path::new(&path))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // Folder-dialog plumbing lives here in the frontend (not engine) so the engine
@@ -386,32 +447,45 @@ async fn open_folder_dialog(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn list_directory(path: String) -> Result<Vec<gwenland_engine::fs::DirEntry>, String> {
-    gwenland_engine::fs::list_directory(std::path::Path::new(&path)).map_err(|e| e.to_string())
+async fn list_directory(path: String) -> Result<Vec<gwenland_engine::fs::DirEntry>, String> {
+    run_blocking("list_directory", move || {
+        gwenland_engine::fs::list_directory(Path::new(&path)).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn read_file(path: String) -> Result<String, String> {
-    gwenland_engine::fs::read_file(std::path::Path::new(&path)).map_err(|e| e.to_string())
+async fn read_file(path: String) -> Result<String, String> {
+    run_blocking("read_file", move || {
+        gwenland_engine::fs::read_file(Path::new(&path)).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Return a file's size + line count (M19 Wave 3). The UI uses this to pick
 /// Large File Mode before building the editor. Line counting is skipped for very
 /// large files (reported as `u64::MAX`).
 #[tauri::command]
-fn get_file_meta(path: String) -> Result<gwenland_engine::fs::FileMeta, String> {
-    gwenland_engine::fs::file_meta(std::path::Path::new(&path)).map_err(|e| e.to_string())
+async fn get_file_meta(path: String) -> Result<gwenland_engine::fs::FileMeta, String> {
+    run_blocking("get_file_meta", move || {
+        gwenland_engine::fs::file_meta(Path::new(&path)).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn write_file(path: String, content: String) -> Result<(), String> {
-    gwenland_engine::fs::write_file(std::path::Path::new(&path), &content)
-        .map_err(|e| e.to_string())
+async fn write_file(path: String, content: String) -> Result<(), String> {
+    run_blocking("write_file", move || {
+        gwenland_engine::fs::write_file(Path::new(&path), &content).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn path_exists(path: String) -> bool {
-    std::path::Path::new(&path).exists()
+async fn path_exists(path: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || Path::new(&path).exists())
+        .await
+        .unwrap_or(false)
 }
 
 // --- Workspace-scoped file operations (Milestone 9 — Context Menu System) ----
@@ -421,84 +495,96 @@ fn path_exists(path: String) -> bool {
 
 /// Create an empty file (New File). Rejected outside the workspace.
 #[tauri::command]
-fn create_file(path: String, workspace_root: String) -> Result<(), String> {
-    gwenland_engine::fs::create_file(
-        std::path::Path::new(&path),
-        std::path::Path::new(&workspace_root),
-    )
-    .map_err(|e| e.to_string())
+async fn create_file(path: String, workspace_root: String) -> Result<(), String> {
+    run_blocking("create_file", move || {
+        gwenland_engine::fs::create_file(Path::new(&path), Path::new(&workspace_root))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Create a directory (New Folder). Rejected outside the workspace.
 #[tauri::command]
-fn create_dir(path: String, workspace_root: String) -> Result<(), String> {
-    gwenland_engine::fs::create_dir(
-        std::path::Path::new(&path),
-        std::path::Path::new(&workspace_root),
-    )
-    .map_err(|e| e.to_string())
+async fn create_dir(path: String, workspace_root: String) -> Result<(), String> {
+    run_blocking("create_dir", move || {
+        gwenland_engine::fs::create_dir(Path::new(&path), Path::new(&workspace_root))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Rename/move a path. Both source and destination must be inside the workspace.
 #[tauri::command]
-fn rename_path(old: String, new: String, workspace_root: String) -> Result<(), String> {
-    gwenland_engine::fs::rename_path(
-        std::path::Path::new(&old),
-        std::path::Path::new(&new),
-        std::path::Path::new(&workspace_root),
-    )
-    .map_err(|e| e.to_string())
+async fn rename_path(old: String, new: String, workspace_root: String) -> Result<(), String> {
+    run_blocking("rename_path", move || {
+        gwenland_engine::fs::rename_path(
+            Path::new(&old),
+            Path::new(&new),
+            Path::new(&workspace_root),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Delete a file or directory (recursive). Rejected outside the workspace.
 #[tauri::command]
-fn delete_path(path: String, workspace_root: String) -> Result<(), String> {
-    gwenland_engine::fs::delete_path(
-        std::path::Path::new(&path),
-        std::path::Path::new(&workspace_root),
-    )
-    .map_err(|e| e.to_string())
+async fn delete_path(path: String, workspace_root: String) -> Result<(), String> {
+    run_blocking("delete_path", move || {
+        gwenland_engine::fs::delete_path(Path::new(&path), Path::new(&workspace_root))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Duplicate a file/directory next to itself; returns the new path. Rejected
 /// outside the workspace.
 #[tauri::command]
-fn duplicate_path(path: String, workspace_root: String) -> Result<String, String> {
-    gwenland_engine::fs::duplicate_path(
-        std::path::Path::new(&path),
-        std::path::Path::new(&workspace_root),
-    )
-    .map_err(|e| e.to_string())
+async fn duplicate_path(path: String, workspace_root: String) -> Result<String, String> {
+    run_blocking("duplicate_path", move || {
+        gwenland_engine::fs::duplicate_path(Path::new(&path), Path::new(&workspace_root))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Reveal a path in the OS file manager (Explorer/Finder/xdg). Read-only, but
 /// still workspace-checked so the action respects project boundaries. Platform
 /// launchers return success codes inconsistently, so a non-zero exit is ignored.
 #[tauri::command]
-fn reveal_in_explorer(path: String, workspace_root: String) -> Result<(), String> {
-    let target = std::path::Path::new(&path);
-    gwenland_engine::fs::check_within_workspace(target, std::path::Path::new(&workspace_root))
-        .map_err(|e| e.to_string())?;
+async fn reveal_in_explorer(path: String, workspace_root: String) -> Result<(), String> {
+    run_blocking("reveal_in_explorer", move || {
+        let target = std::path::Path::new(&path);
+        gwenland_engine::fs::check_within_workspace(target, std::path::Path::new(&workspace_root))
+            .map_err(|e| e.to_string())?;
 
-    #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("explorer")
-        .arg(format!("/select,{path}"))
-        .spawn();
+        #[cfg(target_os = "windows")]
+        let result = {
+            let mut cmd = std::process::Command::new("explorer");
+            cmd.arg(format!("/select,{path}"));
+            hide_child_window(&mut cmd);
+            cmd.spawn()
+        };
 
-    #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open")
-        .arg("-R")
-        .arg(&path)
-        .spawn();
+        #[cfg(target_os = "macos")]
+        let result = {
+            let mut cmd = std::process::Command::new("open");
+            cmd.arg("-R").arg(&path);
+            cmd.spawn()
+        };
 
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let result = {
-        // No portable "select file" on Linux; open the containing directory.
-        let dir = target.parent().unwrap_or(target);
-        std::process::Command::new("xdg-open").arg(dir).spawn()
-    };
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let result = {
+            // No portable "select file" on Linux; open the containing directory.
+            let dir = target.parent().unwrap_or(target);
+            let mut cmd = std::process::Command::new("xdg-open");
+            cmd.arg(dir);
+            cmd.spawn()
+        };
 
-    result.map(|_| ()).map_err(|e| e.to_string())
+        result.map(|_| ()).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 fn command_status(
@@ -526,12 +612,19 @@ if (Test-Path -LiteralPath $p -PathType Container) {
   [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)
 }
 "#;
-    command_status(
-        "PowerShell recycle-bin move",
-        std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script, path])
-            .status(),
-    )
+    command_status("PowerShell recycle-bin move", {
+        let args = vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            script.to_string(),
+            path.to_string(),
+        ];
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(&args);
+        hide_child_window(&mut cmd);
+        cmd.status()
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -539,20 +632,19 @@ fn move_target_to_os_trash(target: &std::path::Path) -> Result<(), String> {
     let path = target
         .to_str()
         .ok_or_else(|| "path is not valid UTF-8".to_string())?;
-    command_status(
-        "Finder trash move",
-        std::process::Command::new("osascript")
-            .args([
-                "-e",
-                "on run argv",
-                "-e",
-                "tell application \"Finder\" to delete POSIX file (item 1 of argv)",
-                "-e",
-                "end run",
-                path,
-            ])
-            .status(),
-    )
+    let args = vec![
+        "-e".to_string(),
+        "on run argv".to_string(),
+        "-e".to_string(),
+        "tell application \"Finder\" to delete POSIX file (item 1 of argv)".to_string(),
+        "-e".to_string(),
+        "end run".to_string(),
+        path.to_string(),
+    ];
+    let mut cmd = std::process::Command::new("osascript");
+    cmd.args(&args);
+    let result = cmd.status();
+    command_status("Finder trash move", result)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -573,7 +665,8 @@ fn move_target_to_os_trash(target: &std::path::Path) -> Result<(), String> {
         if name.starts_with("kioclient") {
             cmd.arg("trash:/");
         }
-        match command_status(name, cmd.status()) {
+        let result = cmd.status();
+        match command_status(name, result) {
             Ok(()) => return Ok(()),
             Err(err) => errors.push(err),
         }
@@ -587,14 +680,17 @@ fn move_target_to_os_trash(target: &std::path::Path) -> Result<(), String> {
 /// Move a path to the OS-native trash/recycle bin. This is for manual user
 /// file-tree deletion; agent deletes still use `.gwenland/trash/` recovery.
 #[tauri::command]
-fn move_path_to_os_trash(path: String, workspace_root: String) -> Result<(), String> {
-    let target = std::path::Path::new(&path);
-    gwenland_engine::fs::check_within_workspace(target, std::path::Path::new(&workspace_root))
-        .map_err(|e| e.to_string())?;
-    if !target.exists() {
-        return Err(format!("path not found: {path}"));
-    }
-    move_target_to_os_trash(target)
+async fn move_path_to_os_trash(path: String, workspace_root: String) -> Result<(), String> {
+    run_blocking("move_path_to_os_trash", move || {
+        let target = Path::new(&path);
+        gwenland_engine::fs::check_within_workspace(target, Path::new(&workspace_root))
+            .map_err(|e| e.to_string())?;
+        if !target.exists() {
+            return Err(format!("path not found: {path}"));
+        }
+        move_target_to_os_trash(target)
+    })
+    .await
 }
 
 // --- AI key commands (Milestone 4, Wave 1) ---------------------------------
@@ -603,20 +699,29 @@ fn move_path_to_os_trash(path: String, workspace_root: String) -> Result<(), Str
 
 /// Store (or replace) an API key for `provider` in the OS keychain.
 #[tauri::command]
-fn ai_set_key(provider: String, api_key: String) -> Result<(), String> {
-    gwenland_engine::ai::keychain::set_api_key(&provider, &api_key).map_err(|e| e.to_string())
+async fn ai_set_key(provider: String, api_key: String) -> Result<(), String> {
+    run_blocking("ai_set_key", move || {
+        gwenland_engine::ai::keychain::set_api_key(&provider, &api_key).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Delete a provider's stored key. Idempotent (deleting an absent key is Ok).
 #[tauri::command]
-fn ai_delete_key(provider: String) -> Result<(), String> {
-    gwenland_engine::ai::keychain::delete_api_key(&provider).map_err(|e| e.to_string())
+async fn ai_delete_key(provider: String) -> Result<(), String> {
+    run_blocking("ai_delete_key", move || {
+        gwenland_engine::ai::keychain::delete_api_key(&provider).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Report only whether a key is stored for `provider` — never the value.
 #[tauri::command]
-fn ai_check_key(provider: String) -> Result<bool, String> {
-    gwenland_engine::ai::keychain::has_api_key(&provider).map_err(|e| e.to_string())
+async fn ai_check_key(provider: String) -> Result<bool, String> {
+    run_blocking("ai_check_key", move || {
+        gwenland_engine::ai::keychain::has_api_key(&provider).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// List models for `provider`. Resolves the provider via the engine registry
@@ -626,7 +731,10 @@ fn ai_check_key(provider: String) -> Result<bool, String> {
 async fn ai_list_models(
     provider: String,
 ) -> Result<Option<Vec<gwenland_engine::ai::ModelInfo>>, String> {
-    let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
+    let settings = run_blocking("ai_list_models.load_settings", move || {
+        gwenland_engine::settings::load_settings().map_err(|e| e.to_string())
+    })
+    .await?;
     let adapter = gwenland_engine::ai::registry::resolve_provider(&provider, &settings.ai)
         .map_err(|e| e.to_string())?;
     adapter.list_models().await.map_err(|e| e.to_string())
@@ -637,68 +745,96 @@ async fn ai_list_models(
 // the boundary.
 
 #[tauri::command]
-fn conversation_new(
+async fn conversation_new(
     project_root: String,
     title: String,
     provider: String,
     model: String,
 ) -> Result<gwenland_engine::ai::conversation::ConversationMeta, String> {
-    gwenland_engine::ai::conversation::new_conversation(
-        std::path::Path::new(&project_root),
-        &title,
-        &provider,
-        &model,
-    )
-    .map_err(|e| e.to_string())
+    run_blocking("conversation_new", move || {
+        gwenland_engine::ai::conversation::new_conversation(
+            Path::new(&project_root),
+            &title,
+            &provider,
+            &model,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn conversation_list() -> Result<Vec<gwenland_engine::ai::conversation::ConversationMeta>, String> {
-    gwenland_engine::ai::conversation::list_conversations().map_err(|e| e.to_string())
+async fn conversation_list()
+-> Result<Vec<gwenland_engine::ai::conversation::ConversationMeta>, String> {
+    run_blocking("conversation_list", move || {
+        gwenland_engine::ai::conversation::list_conversations().map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Parse assistant text into structured diff files (Milestone 8, Wave 5). Pure
 /// wrapper over the engine parser; prose/fences are ignored, malformed hunks
 /// surface as a stringified error the UI shows as a non-destructive notice.
 #[tauri::command]
-fn parse_diff(text: String) -> Result<Vec<gwenland_engine::ai::DiffFile>, String> {
-    gwenland_engine::ai::parse_unified_diff(&text).map_err(|e| e.to_string())
+async fn parse_diff(text: String) -> Result<Vec<gwenland_engine::ai::DiffFile>, String> {
+    run_blocking("parse_diff", move || {
+        gwenland_engine::ai::parse_unified_diff(&text).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn conversation_load(
+async fn conversation_load(
     conversation_id: String,
 ) -> Result<Vec<gwenland_engine::ai::conversation::ConversationTurn>, String> {
-    gwenland_engine::ai::conversation::load_turns(&conversation_id).map_err(|e| e.to_string())
+    run_blocking("conversation_load", move || {
+        gwenland_engine::ai::conversation::load_turns(&conversation_id).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Truncate a conversation to its first `keep_count` turns (GWEN-326 message
 /// edit/rollback). Returns the surviving turns so the UI can re-sync.
 #[tauri::command]
-fn conversation_truncate(
+async fn conversation_truncate(
     conversation_id: String,
     keep_count: usize,
 ) -> Result<Vec<gwenland_engine::ai::conversation::ConversationTurn>, String> {
-    gwenland_engine::ai::conversation::truncate_turns(&conversation_id, keep_count)
-        .map_err(|e| e.to_string())
+    run_blocking("conversation_truncate", move || {
+        gwenland_engine::ai::conversation::truncate_turns(&conversation_id, keep_count)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn conversation_rename(conversation_id: String, title: String) -> Result<(), String> {
-    gwenland_engine::ai::conversation::rename_conversation(&conversation_id, &title)
-        .map_err(|e| e.to_string())
+async fn conversation_rename(conversation_id: String, title: String) -> Result<(), String> {
+    run_blocking("conversation_rename", move || {
+        gwenland_engine::ai::conversation::rename_conversation(&conversation_id, &title)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn conversation_delete(conversation_id: String) -> Result<(), String> {
-    gwenland_engine::ai::conversation::delete_conversation(&conversation_id)
-        .map_err(|e| e.to_string())
+async fn conversation_delete(conversation_id: String) -> Result<(), String> {
+    run_blocking("conversation_delete", move || {
+        gwenland_engine::ai::conversation::delete_conversation(&conversation_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn conversation_set_training_opt_in(conversation_id: String, opt_in: bool) -> Result<(), String> {
-    gwenland_engine::ai::conversation::set_training_opt_in(&conversation_id, opt_in)
-        .map_err(|e| e.to_string())
+async fn conversation_set_training_opt_in(
+    conversation_id: String,
+    opt_in: bool,
+) -> Result<(), String> {
+    run_blocking("conversation_set_training_opt_in", move || {
+        gwenland_engine::ai::conversation::set_training_opt_in(&conversation_id, opt_in)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // --- AI streaming (Milestone 4, Waves 3-4) ---------------------------------
@@ -1862,18 +1998,22 @@ fn run_validation_command_blocking(
     cwd: &std::path::Path,
 ) -> Result<(i32, String), String> {
     #[cfg(target_os = "windows")]
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", command])
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let output = {
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.arg("-NoProfile")
+            .arg("-Command")
+            .arg(command)
+            .current_dir(cwd);
+        hide_child_window(&mut cmd);
+        cmd.output().map_err(|e| e.to_string())?
+    };
 
     #[cfg(not(target_os = "windows"))]
-    let output = std::process::Command::new("sh")
-        .args(["-c", command])
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let output = {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(command).current_dir(cwd);
+        cmd.output().map_err(|e| e.to_string())?
+    };
 
     let mut combined = output.stdout;
     if !output.stderr.is_empty() {
@@ -2885,17 +3025,22 @@ fn is_browsable_url(url: &str) -> bool {
 fn open_url(url: &str) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        std::process::Command::new("cmd")
-            .args(["/c", "start", "", url])
-            .spawn()?;
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/c").arg("start").arg("").arg(url);
+        hide_child_window(&mut cmd);
+        cmd.spawn()?;
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open").arg(url).spawn()?;
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(url);
+        cmd.spawn()?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        std::process::Command::new("xdg-open").arg(url).spawn()?;
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(url);
+        cmd.spawn()?;
     }
     Ok(())
 }
@@ -2903,27 +3048,31 @@ fn open_url(url: &str) -> std::io::Result<()> {
 /// Standalone "open in browser" command (also used by the agent's open_browser
 /// tool). Only http/https is allowed.
 #[tauri::command]
-fn open_browser(url: String) -> Result<(), String> {
-    if !is_browsable_url(&url) {
-        return Err("only http/https URLs can be opened".to_string());
-    }
-    open_url(&url).map_err(|e| e.to_string())
+async fn open_browser(url: String) -> Result<(), String> {
+    run_blocking("open_browser", move || {
+        if !is_browsable_url(&url) {
+            return Err("only http/https URLs can be opened".to_string());
+        }
+        open_url(&url).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Run a shell command in `root`, capturing exit code + combined output.
 fn run_shell(root: &std::path::Path, command: &str) -> std::io::Result<(i32, String)> {
     #[cfg(windows)]
-    let output = std::process::Command::new("cmd")
-        .arg("/c")
-        .arg(command)
-        .current_dir(root)
-        .output()?;
+    let output = {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/c").arg(command).current_dir(root);
+        hide_child_window(&mut cmd);
+        cmd.output()?
+    };
     #[cfg(not(windows))]
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(root)
-        .output()?;
+    let output = {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(command).current_dir(root);
+        cmd.output()?
+    };
     let code = output.status.code().unwrap_or(-1);
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3123,19 +3272,26 @@ async fn run_terminal_tool(
 
     // Spawn the child with piped stdout+stderr so we can stream line-by-line.
     #[cfg(windows)]
-    let child_result = std::process::Command::new("cmd")
-        .args(["/c", command])
-        .current_dir(root)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
+    let child_result = {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/c")
+            .arg(command)
+            .current_dir(root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        hide_child_window(&mut cmd);
+        cmd.spawn()
+    };
     #[cfg(not(windows))]
-    let child_result = std::process::Command::new("sh")
-        .args(["-c", command])
-        .current_dir(root)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
+    let child_result = {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(command)
+            .current_dir(root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        cmd.spawn()
+    };
 
     let mut child = match child_result {
         Ok(c) => c,
@@ -3245,32 +3401,46 @@ async fn run_terminal_tool(
 /// `session_id` (best-effort; tolerates an already-exited child). Uses only
 /// OS shell tools — no new Rust crates required.
 #[tauri::command]
-fn agent_kill_terminal(manager: State<'_, AgentManager>, session_id: String) -> Result<(), String> {
-    let pid = manager
-        .cmd_pids
-        .lock()
-        .map_err(|_| "agent manager lock poisoned".to_string())?
-        .get(&session_id)
-        .copied();
-    if let Some(pid) = pid {
-        #[cfg(windows)]
-        {
-            // Force-terminate the process tree so sub-shells (npm, npx) also die.
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid.to_string()])
-                .output();
+async fn agent_kill_terminal(
+    manager: State<'_, AgentManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let cmd_pids = manager.cmd_pids.clone();
+    run_blocking("agent_kill_terminal", move || {
+        let pid = cmd_pids
+            .lock()
+            .map_err(|_| "agent manager lock poisoned".to_string())?
+            .get(&session_id)
+            .copied();
+        if let Some(pid) = pid {
+            #[cfg(windows)]
+            {
+                // Force-terminate the process tree so sub-shells (npm, npx) also die.
+                let args = vec![
+                    "/F".to_string(),
+                    "/T".to_string(),
+                    "/PID".to_string(),
+                    pid.to_string(),
+                ];
+                let mut cmd = std::process::Command::new("taskkill");
+                cmd.args(&args);
+                hide_child_window(&mut cmd);
+                let _ = cmd.output();
+            }
+            #[cfg(not(windows))]
+            {
+                // SIGTERM the process group. `kill` is available on every Unix target
+                // in the Rust standard library via std::process — we call it through
+                // the shell so we don't need libc.
+                let args = vec!["-TERM".to_string(), pid.to_string()];
+                let mut cmd = std::process::Command::new("kill");
+                cmd.args(&args);
+                let _ = cmd.output();
+            }
         }
-        #[cfg(not(windows))]
-        {
-            // SIGTERM the process group. `kill` is available on every Unix target
-            // in the Rust standard library via std::process — we call it through
-            // the shell so we don't need libc.
-            let _ = std::process::Command::new("kill")
-                .args(["-TERM", &pid.to_string()])
-                .output();
-        }
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 /// Stream one provider turn for the tool loop: emit each token as `agent://chunk`
@@ -3684,53 +3854,69 @@ async fn agent_tool_resolve(
 
 /// Report the current LSP status for `path` (no server is spawned for this).
 #[tauri::command]
-fn lsp_status(manager: State<'_, LspManager>, path: String) -> Result<LspStatus, String> {
-    let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
-    Ok(manager.status_for_path(std::path::Path::new(&path), &settings.lsp))
+async fn lsp_status(
+    manager: State<'_, Arc<LspManager>>,
+    path: String,
+) -> Result<LspStatus, String> {
+    let manager = Arc::clone(manager.inner());
+    run_blocking("lsp_status", move || {
+        let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
+        Ok(manager.status_for_path(Path::new(&path), &settings.lsp))
+    })
+    .await
 }
 
 /// Open an eligible document: ensure the server and send `didOpen` with the full
 /// text. `workspace_root` (the open project folder) refines root detection.
 /// Returns the resulting status (Connected / MissingServer / Disabled / …).
 #[tauri::command]
-fn lsp_open_document(
-    manager: State<'_, LspManager>,
+async fn lsp_open_document(
+    manager: State<'_, Arc<LspManager>>,
     path: String,
     text: String,
     version: i32,
     workspace_root: Option<String>,
 ) -> Result<LspStatus, String> {
-    let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
-    let ws = workspace_root.as_deref().map(std::path::Path::new);
-    Ok(manager.open_document(
-        std::path::Path::new(&path),
-        &text,
-        version,
-        ws,
-        &settings.lsp,
-    ))
+    let manager = Arc::clone(manager.inner());
+    run_blocking("lsp_open_document", move || {
+        let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
+        let ws = workspace_root.as_deref().map(Path::new);
+        Ok(manager.open_document(Path::new(&path), &text, version, ws, &settings.lsp))
+    })
+    .await
 }
 
 /// Push a full-text change to the document's server. No-op (Ok) when the
 /// document is not LSP-backed; typing must never fail.
 #[tauri::command]
-fn lsp_change_document(
-    manager: State<'_, LspManager>,
+async fn lsp_change_document(
+    manager: State<'_, Arc<LspManager>>,
     path: String,
     text: String,
     version: i32,
 ) -> Result<(), String> {
-    manager
-        .change_document(std::path::Path::new(&path), &text, version)
-        .map_err(|e| e.to_string())
+    let manager = Arc::clone(manager.inner());
+    run_blocking("lsp_change_document", move || {
+        manager
+            .change_document(Path::new(&path), &text, version)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Close an LSP-backed document (sends `didClose`, clears its diagnostics).
 #[tauri::command]
-fn lsp_close_document(manager: State<'_, LspManager>, path: String) -> Result<(), String> {
-    manager
-        .close_document(std::path::Path::new(&path))
-        .map_err(|e| e.to_string())
+async fn lsp_close_document(
+    manager: State<'_, Arc<LspManager>>,
+    path: String,
+) -> Result<(), String> {
+    let manager = Arc::clone(manager.inner());
+    run_blocking("lsp_close_document", move || {
+        manager
+            .close_document(Path::new(&path))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Request completions at a position. Fail-soft: returns an empty list (never an
@@ -3739,38 +3925,53 @@ fn lsp_close_document(manager: State<'_, LspManager>, path: String) -> Result<()
 /// completeness; the UI flushes a `didChange` before requesting so the server
 /// already has the current text.
 #[tauri::command]
-fn lsp_completion(
-    manager: State<'_, LspManager>,
+async fn lsp_completion(
+    manager: State<'_, Arc<LspManager>>,
     path: String,
     line: u32,
     character: u32,
     version: i32,
 ) -> Result<Vec<gwenland_engine::lsp::LspCompletionOption>, String> {
     let _ = version;
-    Ok(manager.completion(std::path::Path::new(&path), line, character))
+    let manager = Arc::clone(manager.inner());
+    run_blocking("lsp_completion", move || {
+        Ok(manager.completion(Path::new(&path), line, character))
+    })
+    .await
 }
 
 /// Request the first definition location at a position. Fail-soft: returns
 /// `None` for missing servers, unsupported languages, or timeouts.
 #[tauri::command]
-fn lsp_definition(
-    manager: State<'_, LspManager>,
+async fn lsp_definition(
+    manager: State<'_, Arc<LspManager>>,
     path: String,
     line: u32,
     character: u32,
     version: i32,
 ) -> Result<Option<gwenland_engine::lsp::LspDefinitionLocation>, String> {
     let _ = version;
-    Ok(manager.definition(std::path::Path::new(&path), line, character))
+    let manager = Arc::clone(manager.inner());
+    run_blocking("lsp_definition", move || {
+        Ok(manager.definition(Path::new(&path), line, character))
+    })
+    .await
 }
 
 /// Manually restart the server bucket for `language` (`"rust"`, `"typescript"`,
 /// or `"python"`). Tears down the old client(s); the UI re-opens documents to
 /// reconnect. Returns the fresh status.
 #[tauri::command]
-fn lsp_restart(manager: State<'_, LspManager>, language: String) -> Result<LspStatus, String> {
-    let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
-    Ok(manager.restart(&language, &settings.lsp))
+async fn lsp_restart(
+    manager: State<'_, Arc<LspManager>>,
+    language: String,
+) -> Result<LspStatus, String> {
+    let manager = Arc::clone(manager.inner());
+    run_blocking("lsp_restart", move || {
+        let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
+        Ok(manager.restart(&language, &settings.lsp))
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -3899,84 +4100,121 @@ mod agent_tests {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-fn git_is_repo(root: String) -> bool {
-    gwenland_engine::git::is_git_repo(std::path::Path::new(&root))
+async fn git_is_repo(root: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        gwenland_engine::git::is_git_repo(Path::new(&root))
+    })
+    .await
+    .unwrap_or(false)
 }
 
 #[tauri::command]
-fn git_status(root: String) -> Result<gwenland_engine::git::GitStatus, String> {
-    gwenland_engine::git::status(std::path::Path::new(&root)).map_err(|e| e.to_string())
+async fn git_status(root: String) -> Result<gwenland_engine::git::GitStatus, String> {
+    run_blocking("git_status", move || {
+        gwenland_engine::git::status(Path::new(&root)).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_stage(root: String, path: String, all: bool) -> Result<(), String> {
-    let r = std::path::Path::new(&root);
-    if all {
-        gwenland_engine::git::stage_all(r)
-    } else {
-        gwenland_engine::git::stage(r, &path)
-    }
-    .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn git_unstage(root: String, path: String, all: bool) -> Result<(), String> {
-    let r = std::path::Path::new(&root);
-    if all {
-        gwenland_engine::git::unstage_all(r)
-    } else {
-        gwenland_engine::git::unstage(r, &path)
-    }
-    .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn git_discard(root: String, path: String, untracked: bool) -> Result<(), String> {
-    gwenland_engine::git::discard(std::path::Path::new(&root), &path, untracked)
+async fn git_stage(root: String, path: String, all: bool) -> Result<(), String> {
+    run_blocking("git_stage", move || {
+        let r = Path::new(&root);
+        if all {
+            gwenland_engine::git::stage_all(r)
+        } else {
+            gwenland_engine::git::stage(r, &path)
+        }
         .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_commit(root: String, message: String) -> Result<(), String> {
-    gwenland_engine::git::commit(std::path::Path::new(&root), &message).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn git_push(root: String) -> Result<String, String> {
-    gwenland_engine::git::push(std::path::Path::new(&root)).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn git_pull(root: String) -> Result<String, String> {
-    gwenland_engine::git::pull(std::path::Path::new(&root)).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn git_diff_file(root: String, path: String, untracked: bool) -> Result<String, String> {
-    gwenland_engine::git::diff_file(std::path::Path::new(&root), &path, untracked)
+async fn git_unstage(root: String, path: String, all: bool) -> Result<(), String> {
+    run_blocking("git_unstage", move || {
+        let r = Path::new(&root);
+        if all {
+            gwenland_engine::git::unstage_all(r)
+        } else {
+            gwenland_engine::git::unstage(r, &path)
+        }
         .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_list_branches(root: String) -> Result<Vec<String>, String> {
-    gwenland_engine::git::list_branches(std::path::Path::new(&root)).map_err(|e| e.to_string())
+async fn git_discard(root: String, path: String, untracked: bool) -> Result<(), String> {
+    run_blocking("git_discard", move || {
+        gwenland_engine::git::discard(Path::new(&root), &path, untracked).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_checkout(root: String, branch: String) -> Result<(), String> {
-    gwenland_engine::git::checkout(std::path::Path::new(&root), &branch).map_err(|e| e.to_string())
+async fn git_commit(root: String, message: String) -> Result<(), String> {
+    run_blocking("git_commit", move || {
+        gwenland_engine::git::commit(Path::new(&root), &message).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_create_branch(root: String, name: String) -> Result<String, String> {
-    gwenland_engine::git::create_branch(std::path::Path::new(&root), &name)
-        .map_err(|e| e.to_string())
+async fn git_push(root: String) -> Result<String, String> {
+    run_blocking("git_push", move || {
+        gwenland_engine::git::push(Path::new(&root)).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_delete_branch(root: String, branch: String) -> Result<(), String> {
-    gwenland_engine::git::delete_branch(std::path::Path::new(&root), &branch)
-        .map_err(|e| e.to_string())
+async fn git_pull(root: String) -> Result<String, String> {
+    run_blocking("git_pull", move || {
+        gwenland_engine::git::pull(Path::new(&root)).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn git_diff_file(root: String, path: String, untracked: bool) -> Result<String, String> {
+    run_blocking("git_diff_file", move || {
+        gwenland_engine::git::diff_file(Path::new(&root), &path, untracked)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn git_list_branches(root: String) -> Result<Vec<String>, String> {
+    run_blocking("git_list_branches", move || {
+        gwenland_engine::git::list_branches(Path::new(&root)).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn git_checkout(root: String, branch: String) -> Result<(), String> {
+    run_blocking("git_checkout", move || {
+        gwenland_engine::git::checkout(Path::new(&root), &branch).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn git_create_branch(root: String, name: String) -> Result<String, String> {
+    run_blocking("git_create_branch", move || {
+        gwenland_engine::git::create_branch(Path::new(&root), &name).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn git_delete_branch(root: String, branch: String) -> Result<(), String> {
+    run_blocking("git_delete_branch", move || {
+        gwenland_engine::git::delete_branch(Path::new(&root), &branch).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -3991,118 +4229,147 @@ fn git_delete_branch(root: String, branch: String) -> Result<(), String> {
 /// Returns the default struct (all None fields) when the file is absent or
 /// malformed — never errors on missing config.
 #[tauri::command]
-fn workspace_load_settings(
+async fn workspace_load_settings(
     workspace_root: String,
 ) -> Result<gwenland_engine::workspace::WorkspaceSettings, String> {
-    Ok(gwenland_engine::workspace::load_workspace_settings(
-        std::path::Path::new(&workspace_root),
-    ))
+    run_blocking("workspace_load_settings", move || {
+        Ok(gwenland_engine::workspace::load_workspace_settings(
+            Path::new(&workspace_root),
+        ))
+    })
+    .await
 }
 
 /// Save the per-workspace settings overlay to `.gwenland/settings.json`.
 /// Creates the `.gwenland/` directory if needed; write is atomic.
 #[tauri::command]
-fn workspace_save_settings(
+async fn workspace_save_settings(
     workspace_root: String,
     settings: gwenland_engine::workspace::WorkspaceSettings,
 ) -> Result<(), String> {
-    gwenland_engine::workspace::save_workspace_settings(
-        std::path::Path::new(&workspace_root),
-        &settings,
-    )
-    .map_err(|e| e.to_string())
+    run_blocking("workspace_save_settings", move || {
+        gwenland_engine::workspace::save_workspace_settings(Path::new(&workspace_root), &settings)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Load UI-owned workspace restore state from `.gwenland/workspace.json`.
 /// Missing, empty, or malformed files return `None`.
 #[tauri::command]
-fn load_workspace_state(workspace_root: String) -> Option<serde_json::Value> {
-    gwenland_engine::workspace::load_workspace_state(std::path::Path::new(&workspace_root))
+async fn load_workspace_state(workspace_root: String) -> Option<serde_json::Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gwenland_engine::workspace::load_workspace_state(Path::new(&workspace_root))
+    })
+    .await
+    .unwrap_or(None)
 }
 
 /// Save UI-owned workspace restore state to `.gwenland/workspace.json`.
 #[tauri::command]
-fn save_workspace_state(workspace_root: String, state: serde_json::Value) -> Result<(), String> {
-    gwenland_engine::workspace::save_workspace_state(std::path::Path::new(&workspace_root), &state)
-        .map_err(|e| e.to_string())
+async fn save_workspace_state(
+    workspace_root: String,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    run_blocking("save_workspace_state", move || {
+        gwenland_engine::workspace::save_workspace_state(Path::new(&workspace_root), &state)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Load UI-owned layout restore state from `.gwenland/layout.json`.
 /// Missing, empty, or malformed files return `None`.
 #[tauri::command]
-fn load_layout_state(workspace_root: String) -> Option<serde_json::Value> {
-    gwenland_engine::workspace::load_layout_state(std::path::Path::new(&workspace_root))
+async fn load_layout_state(workspace_root: String) -> Option<serde_json::Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        gwenland_engine::workspace::load_layout_state(Path::new(&workspace_root))
+    })
+    .await
+    .unwrap_or(None)
 }
 
 /// Save UI-owned layout restore state to `.gwenland/layout.json`.
 #[tauri::command]
-fn save_layout_state(workspace_root: String, state: serde_json::Value) -> Result<(), String> {
-    gwenland_engine::workspace::save_layout_state(std::path::Path::new(&workspace_root), &state)
-        .map_err(|e| e.to_string())
+async fn save_layout_state(workspace_root: String, state: serde_json::Value) -> Result<(), String> {
+    run_blocking("save_layout_state", move || {
+        gwenland_engine::workspace::save_layout_state(Path::new(&workspace_root), &state)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn history_save_entry(
+async fn history_save_entry(
     workspace_root: String,
     file_path: String,
     content: String,
     source: String,
 ) -> Result<Option<gwenland_engine::history::HistoryEntry>, String> {
-    gwenland_engine::history::save_history_entry(
-        std::path::Path::new(&workspace_root),
-        std::path::Path::new(&file_path),
-        &content,
-        &source,
-    )
-    .map_err(|e| e.to_string())
+    run_blocking("history_save_entry", move || {
+        gwenland_engine::history::save_history_entry(
+            Path::new(&workspace_root),
+            Path::new(&file_path),
+            &content,
+            &source,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn history_list(
+async fn history_list(
     workspace_root: String,
     file_path: String,
 ) -> Result<Vec<gwenland_engine::history::HistoryEntry>, String> {
-    gwenland_engine::history::list_history(
-        std::path::Path::new(&workspace_root),
-        std::path::Path::new(&file_path),
-    )
-    .map_err(|e| e.to_string())
+    run_blocking("history_list", move || {
+        gwenland_engine::history::list_history(Path::new(&workspace_root), Path::new(&file_path))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn history_read_entry(
+async fn history_read_entry(
     workspace_root: String,
     file_path: String,
     timestamp: String,
 ) -> Result<String, String> {
-    gwenland_engine::history::read_history_entry(
-        std::path::Path::new(&workspace_root),
-        std::path::Path::new(&file_path),
-        &timestamp,
-    )
-    .map_err(|e| e.to_string())
+    run_blocking("history_read_entry", move || {
+        gwenland_engine::history::read_history_entry(
+            Path::new(&workspace_root),
+            Path::new(&file_path),
+            &timestamp,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn history_clear(workspace_root: String, file_path: String) -> Result<(), String> {
-    gwenland_engine::history::clear_history(
-        std::path::Path::new(&workspace_root),
-        std::path::Path::new(&file_path),
-    )
-    .map_err(|e| e.to_string())
+async fn history_clear(workspace_root: String, file_path: String) -> Result<(), String> {
+    run_blocking("history_clear", move || {
+        gwenland_engine::history::clear_history(Path::new(&workspace_root), Path::new(&file_path))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn move_to_trash(
+async fn move_to_trash(
     path: String,
     workspace_root: String,
 ) -> Result<gwenland_engine::recovery::TrashRecord, String> {
-    gwenland_engine::recovery::move_to_trash(
-        std::path::Path::new(&path),
-        std::path::Path::new(&workspace_root),
-        "user",
-    )
-    .map_err(|e| e.to_string())
+    run_blocking("move_to_trash", move || {
+        gwenland_engine::recovery::move_to_trash(
+            Path::new(&path),
+            Path::new(&workspace_root),
+            "user",
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4189,40 +4456,44 @@ fn search_cancel(manager: State<SearchManager>, search_id: Option<String>) -> Re
 }
 
 #[tauri::command]
-fn mark_protected_path(path: String, workspace_root: String) -> Result<(), String> {
-    use gwenland_engine::safety::decision::RiskLevel;
-    use gwenland_engine::safety::{ProtectedPathEntry, ProtectedPathRegistry, ProtectionLevel};
+async fn mark_protected_path(path: String, workspace_root: String) -> Result<(), String> {
+    run_blocking("mark_protected_path", move || {
+        use gwenland_engine::safety::decision::RiskLevel;
+        use gwenland_engine::safety::{ProtectedPathEntry, ProtectedPathRegistry, ProtectionLevel};
 
-    let root = std::path::Path::new(&workspace_root);
-    let target = std::path::Path::new(&path);
-    if !gwenland_engine::agentic::policy::is_within_workspace(target, root) {
-        return Err("path would escape workspace root".to_string());
-    }
-    let rel = target
-        .strip_prefix(root)
-        .map_err(|_| "path would escape workspace root".to_string())?
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/");
-    let registry_path = gwenland_engine::workspace::safety_dir(root).join("protected-paths.json");
-    let mut registry = std::fs::read_to_string(&registry_path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<ProtectedPathRegistry>(&raw).ok())
-        .unwrap_or_default();
-    if !registry.entries.iter().any(|entry| entry.pattern == rel) {
-        registry.entries.push(ProtectedPathEntry {
-            pattern: rel,
-            protection: ProtectionLevel::Ask,
-            risk: RiskLevel::High,
-            reason: "marked protected by user".to_string(),
-        });
-    }
-    if let Some(parent) = registry_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let raw = serde_json::to_string_pretty(&registry).map_err(|e| e.to_string())?;
-    std::fs::write(registry_path, raw).map_err(|e| e.to_string())
+        let root = Path::new(&workspace_root);
+        let target = Path::new(&path);
+        if !gwenland_engine::agentic::policy::is_within_workspace(target, root) {
+            return Err("path would escape workspace root".to_string());
+        }
+        let rel = target
+            .strip_prefix(root)
+            .map_err(|_| "path would escape workspace root".to_string())?
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let registry_path =
+            gwenland_engine::workspace::safety_dir(root).join("protected-paths.json");
+        let mut registry = std::fs::read_to_string(&registry_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<ProtectedPathRegistry>(&raw).ok())
+            .unwrap_or_default();
+        if !registry.entries.iter().any(|entry| entry.pattern == rel) {
+            registry.entries.push(ProtectedPathEntry {
+                pattern: rel,
+                protection: ProtectionLevel::Ask,
+                risk: RiskLevel::High,
+                reason: "marked protected by user".to_string(),
+            });
+        }
+        if let Some(parent) = registry_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let raw = serde_json::to_string_pretty(&registry).map_err(|e| e.to_string())?;
+        std::fs::write(registry_path, raw).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -4239,52 +4510,59 @@ fn mark_protected_path(path: String, workspace_root: String) -> Result<(), Strin
 /// `action_kind_json` is the JSON-serialized `SafetyActionKind` value.
 /// `strictness` is one of "standard" | "strict" | "paranoid".
 #[tauri::command]
-fn safety_evaluate(
+async fn safety_evaluate(
     action_kind_json: String,
     workspace_root: String,
     actor: String,
     strictness: String,
 ) -> Result<gwenland_engine::safety::SafetyDecision, String> {
-    use gwenland_engine::safety::protected_paths::ProtectedPathRegistry;
-    use gwenland_engine::safety::{Actor, SafetyAction, SafetyActionKind};
-    use gwenland_engine::workspace::SafetyStrictness;
+    run_blocking("safety_evaluate", move || {
+        use gwenland_engine::safety::protected_paths::ProtectedPathRegistry;
+        use gwenland_engine::safety::{Actor, SafetyAction, SafetyActionKind};
+        use gwenland_engine::workspace::SafetyStrictness;
 
-    let kind: SafetyActionKind = serde_json::from_str(&action_kind_json)
-        .map_err(|e| format!("invalid action_kind_json: {e}"))?;
+        let kind: SafetyActionKind = serde_json::from_str(&action_kind_json)
+            .map_err(|e| format!("invalid action_kind_json: {e}"))?;
 
-    let actor_val = match actor.as_str() {
-        "user" => Actor::User,
-        "agent" => Actor::Agent,
-        "system" => Actor::System,
-        ext if ext.starts_with("extension:") => Actor::Extension {
-            id: ext["extension:".len()..].to_string(),
-        },
-        _ => Actor::User,
-    };
+        let actor_val = match actor.as_str() {
+            "user" => Actor::User,
+            "agent" => Actor::Agent,
+            "system" => Actor::System,
+            ext if ext.starts_with("extension:") => Actor::Extension {
+                id: ext["extension:".len()..].to_string(),
+            },
+            _ => Actor::User,
+        };
 
-    let strictness_val = match strictness.as_str() {
-        "strict" => SafetyStrictness::Strict,
-        "paranoid" => SafetyStrictness::Paranoid,
-        _ => SafetyStrictness::Standard,
-    };
+        let strictness_val = match strictness.as_str() {
+            "strict" => SafetyStrictness::Strict,
+            "paranoid" => SafetyStrictness::Paranoid,
+            _ => SafetyStrictness::Standard,
+        };
 
-    let ws = std::path::Path::new(&workspace_root);
-    let registry = ProtectedPathRegistry::load(ws);
-    let action = SafetyAction::new(actor_val, kind, &workspace_root);
-    Ok(gwenland_engine::safety::evaluate(
-        &action,
-        &registry,
-        strictness_val,
-    ))
+        let ws = Path::new(&workspace_root);
+        let registry = ProtectedPathRegistry::load(ws);
+        let action = SafetyAction::new(actor_val, kind, &workspace_root);
+        Ok(gwenland_engine::safety::evaluate(
+            &action,
+            &registry,
+            strictness_val,
+        ))
+    })
+    .await
 }
 
 /// Check whether a path should be excluded from local search results.
 #[tauri::command]
-fn search_should_exclude(path: String, workspace_root: String) -> bool {
-    gwenland_engine::search_policy::should_exclude_from_search(
-        &path,
-        std::path::Path::new(&workspace_root),
-    )
+async fn search_should_exclude(path: String, workspace_root: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        gwenland_engine::search_policy::should_exclude_from_search(
+            &path,
+            Path::new(&workspace_root),
+        )
+    })
+    .await
+    .unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -4300,45 +4578,52 @@ fn search_should_exclude(path: String, workspace_root: String) -> bool {
 /// permission kind. Never errors — falls back to default matrix when the
 /// registry file is absent or malformed.
 #[tauri::command]
-fn permissions_load_state(
+async fn permissions_load_state(
     workspace_root: String,
     extension_id: String,
 ) -> Vec<gwenland_engine::permissions::PermissionDecision> {
-    use gwenland_engine::permissions::{Permission, PermissionRegistry};
-    let registry = PermissionRegistry::load(std::path::Path::new(&workspace_root));
-    let known: &[Permission] = &[
-        Permission::ReadWorkspace,
-        Permission::WriteFile,
-        Permission::DeleteFile,
-        Permission::RunTerminal,
-        Permission::AccessGit,
-        Permission::AccessEnv,
-        Permission::AccessDatabase,
-    ];
-    known
-        .iter()
-        .map(|perm| registry.resolve(&extension_id, perm))
-        .collect()
+    tauri::async_runtime::spawn_blocking(move || {
+        use gwenland_engine::permissions::{Permission, PermissionRegistry};
+        let registry = PermissionRegistry::load(Path::new(&workspace_root));
+        let known: &[Permission] = &[
+            Permission::ReadWorkspace,
+            Permission::WriteFile,
+            Permission::DeleteFile,
+            Permission::RunTerminal,
+            Permission::AccessGit,
+            Permission::AccessEnv,
+            Permission::AccessDatabase,
+        ];
+        known
+            .iter()
+            .map(|perm| registry.resolve(&extension_id, perm))
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Record an extension permission approval or denial in the workspace approval
 /// history JSONL. The `target_summary` is bounded + redacted before writing.
 #[tauri::command]
-fn permissions_record_approval(
+async fn permissions_record_approval(
     workspace_root: String,
     extension_id: String,
     permission: String,
     approved: bool,
     target_summary: String,
 ) -> Result<(), String> {
-    let record = gwenland_engine::permissions::ApprovalRecord::new(
-        extension_id,
-        permission,
-        approved,
-        target_summary,
-    );
-    gwenland_engine::permissions::record_approval(std::path::Path::new(&workspace_root), &record)
-        .map_err(|e| e.to_string())
+    run_blocking("permissions_record_approval", move || {
+        let record = gwenland_engine::permissions::ApprovalRecord::new(
+            extension_id,
+            permission,
+            approved,
+            target_summary,
+        );
+        gwenland_engine::permissions::record_approval(Path::new(&workspace_root), &record)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -4355,27 +4640,51 @@ fn permissions_record_approval(
 /// Managed state holding the single live watcher. Built in `setup()` because the
 /// emit callback needs the `AppHandle` (same pattern as `LspManager`).
 struct FsWatcherState {
-    watcher: gwenland_engine::fs_watch::FsWatcher,
+    watcher: Arc<Mutex<gwenland_engine::fs_watch::FsWatcher>>,
 }
 
 /// Start watching a directory for changes. Re-registering an already-watched dir
 /// is a cheap idempotent re-seed. Paths inside `.git` are silently refused by the
 /// engine.
 #[tauri::command]
-fn fs_watch_dir(state: State<'_, FsWatcherState>, path: String) {
-    state.watcher.watch(&path);
+async fn fs_watch_dir(state: State<'_, FsWatcherState>, path: String) -> Result<(), String> {
+    let watcher = state.watcher.clone();
+    run_blocking("fs_watch_dir", move || {
+        watcher
+            .lock()
+            .map_err(|_| "fs watcher lock poisoned".to_string())?
+            .watch(&path);
+        Ok(())
+    })
+    .await
 }
 
 /// Stop watching a directory (e.g. the user collapsed the folder). Idempotent.
 #[tauri::command]
-fn fs_unwatch_dir(state: State<'_, FsWatcherState>, path: String) {
-    state.watcher.unwatch(&path);
+async fn fs_unwatch_dir(state: State<'_, FsWatcherState>, path: String) -> Result<(), String> {
+    let watcher = state.watcher.clone();
+    run_blocking("fs_unwatch_dir", move || {
+        watcher
+            .lock()
+            .map_err(|_| "fs watcher lock poisoned".to_string())?
+            .unwatch(&path);
+        Ok(())
+    })
+    .await
 }
 
 /// Stop watching every directory (e.g. workspace closed/switched).
 #[tauri::command]
-fn fs_watch_clear(state: State<'_, FsWatcherState>) {
-    state.watcher.clear();
+async fn fs_watch_clear(state: State<'_, FsWatcherState>) -> Result<(), String> {
+    let watcher = state.watcher.clone();
+    run_blocking("fs_watch_clear", move || {
+        watcher
+            .lock()
+            .map_err(|_| "fs watcher lock poisoned".to_string())?
+            .clear();
+        Ok(())
+    })
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -4394,62 +4703,74 @@ fn fs_watch_clear(state: State<'_, FsWatcherState>) {
 /// mutations are user-paced (expand/collapse) or coarse (poll-driven refresh).
 #[derive(Default)]
 struct WorkspaceTreeState {
-    tree: Mutex<gwenland_engine::tree::WorkspaceTree>,
+    tree: Arc<Mutex<gwenland_engine::tree::WorkspaceTree>>,
 }
 
 /// Open a workspace root and return its immediate child rows (the initial,
 /// non-diff render). Replaces any prior tree.
 #[tauri::command]
-fn tree_set_root(
+async fn tree_set_root(
     state: State<'_, WorkspaceTreeState>,
     path: String,
 ) -> Result<Vec<gwenland_engine::tree::FlatRow>, String> {
-    let mut tree = state
-        .tree
-        .lock()
-        .map_err(|_| "tree state lock poisoned".to_string())?;
-    Ok(tree.set_root(&path))
+    let tree = state.tree.clone();
+    run_blocking("tree_set_root", move || {
+        let mut tree = tree
+            .lock()
+            .map_err(|_| "tree state lock poisoned".to_string())?;
+        Ok(tree.set_root(&path))
+    })
+    .await
 }
 
 /// Expand a folder; returns the patches that splice its children in.
 #[tauri::command]
-fn tree_expand(
+async fn tree_expand(
     state: State<'_, WorkspaceTreeState>,
     path: String,
 ) -> Result<Vec<gwenland_engine::tree::TreePatch>, String> {
-    let mut tree = state
-        .tree
-        .lock()
-        .map_err(|_| "tree state lock poisoned".to_string())?;
-    Ok(tree.expand(&path))
+    let tree = state.tree.clone();
+    run_blocking("tree_expand", move || {
+        let mut tree = tree
+            .lock()
+            .map_err(|_| "tree state lock poisoned".to_string())?;
+        tree.expand(&path).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Collapse a folder; returns the patches that remove its subtree.
 #[tauri::command]
-fn tree_collapse(
+async fn tree_collapse(
     state: State<'_, WorkspaceTreeState>,
     path: String,
 ) -> Result<Vec<gwenland_engine::tree::TreePatch>, String> {
-    let mut tree = state
-        .tree
-        .lock()
-        .map_err(|_| "tree state lock poisoned".to_string())?;
-    Ok(tree.collapse(&path))
+    let tree = state.tree.clone();
+    run_blocking("tree_collapse", move || {
+        let mut tree = tree
+            .lock()
+            .map_err(|_| "tree state lock poisoned".to_string())?;
+        Ok(tree.collapse(&path))
+    })
+    .await
 }
 
 /// Reconcile a single directory against disk (driven by `fs:patch`). Returns the
 /// minimal add/remove patches; empty when nothing changed or the dir is not a
 /// visible/expanded part of the tree.
 #[tauri::command]
-fn tree_refresh_dir(
+async fn tree_refresh_dir(
     state: State<'_, WorkspaceTreeState>,
     path: String,
 ) -> Result<Vec<gwenland_engine::tree::TreePatch>, String> {
-    let mut tree = state
-        .tree
-        .lock()
-        .map_err(|_| "tree state lock poisoned".to_string())?;
-    Ok(tree.refresh_dir(&path))
+    let tree = state.tree.clone();
+    run_blocking("tree_refresh_dir", move || {
+        let mut tree = tree
+            .lock()
+            .map_err(|_| "tree state lock poisoned".to_string())?;
+        Ok(tree.refresh_dir(&path))
+    })
+    .await
 }
 
 fn main() {
@@ -4465,14 +4786,14 @@ fn main() {
         .setup(|app| {
             let diag_handle = app.handle().clone();
             let status_handle = app.handle().clone();
-            let manager = LspManager::new(
+            let manager = Arc::new(LspManager::new(
                 Arc::new(move |upd: DiagnosticsUpdate| {
                     let _ = diag_handle.emit("lsp://diagnostics", upd);
                 }),
                 Arc::new(move |upd: StatusUpdate| {
                     let _ = status_handle.emit("lsp://status", upd);
                 }),
-            );
+            ));
             app.manage(manager);
 
             // M19 Wave 1: start the polling file watcher. Each coalesced cycle
@@ -4483,7 +4804,9 @@ fn main() {
                     let _ = watch_handle.emit("fs:patch", patches);
                 },
             );
-            app.manage(FsWatcherState { watcher });
+            app.manage(FsWatcherState {
+                watcher: Arc::new(Mutex::new(watcher)),
+            });
             app.manage(SearchManager::default());
             Ok(())
         })

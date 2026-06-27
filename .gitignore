@@ -18,6 +18,7 @@ Thumbs.db
 .codex/
 .cargo/
 .kiro/
+internal-plan/
 *.suo
 *.ntvs*
 *.njsproj

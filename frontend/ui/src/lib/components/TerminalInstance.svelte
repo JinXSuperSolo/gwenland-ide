@@ -15,7 +15,14 @@
     type TerminalBundle,
   } from '../terminal/xterm-setup'
   import { TerminalScheduler } from '../terminal/terminal-scheduler'
-  import { bindPtyId, setDetectedPort, terminalSessions } from '../stores/terminal-sessions'
+  import {
+    bindPtyId,
+    markSessionFailed,
+    markSessionIdle,
+    markSessionStarting,
+    setDetectedPort,
+    terminalSessions,
+  } from '../stores/terminal-sessions'
   import { workspace } from '../stores/workspace'
   import { editorPreferences } from '../stores/editor-preferences'
   import { perfSettings } from '../stores/performance'
@@ -252,10 +259,20 @@
         // Start in the session's explicit cwd ("Open in Terminal"), else the
         // current project folder (snapshot at spawn time).
         const session = get(terminalSessions).sessions.find((s) => s.key === key)
+        if (!session) {
+          return
+        }
+        if (!markSessionStarting(key)) {
+          if (session.status === 'failed' && session.error) {
+            bundle?.term.writeln(`\x1b[31mFailed to start terminal: ${session.error}\x1b[0m`)
+          }
+          return
+        }
         const cwd = session?.cwd ?? get(workspace).folderPath
         const id = await terminalCreate(rows, cols, cwd, session?.shellCommand ?? null)
         if (disposed) {
           void terminalKill(id) // torn down mid-spawn; don't leak the PTY.
+          markSessionIdle(key)
           return
         }
         sessionId = id
@@ -271,7 +288,9 @@
         if (visible) bundle!.term.focus()
         refit()
       } catch (err) {
-        bundle?.term.writeln(`\x1b[31mFailed to start terminal: ${err}\x1b[0m`)
+        const message = String(err)
+        markSessionFailed(key, message)
+        bundle?.term.writeln(`\x1b[31mFailed to start terminal: ${message}\x1b[0m`)
       }
     })()
 
@@ -306,6 +325,7 @@
     if (sessionId) {
       void terminalKill(sessionId)
       sessionId = null
+      markSessionIdle(key)
     }
     bundle?.term.dispose()
     bundle = null

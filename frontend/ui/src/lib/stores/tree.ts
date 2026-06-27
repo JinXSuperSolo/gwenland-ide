@@ -9,6 +9,23 @@ import {
 } from '../tauri/commands'
 
 /**
+ * M21 file-tree migration plan
+ *
+ * 1. Keep structural state Rust-owned in `WorkspaceTree` / `FlatRow[]`; keep
+ *    selection, focus, and active editor state in `tree-interaction.ts`.
+ * 2. Preserve the existing flat virtual list (`FileTree.svelte` +
+ *    `FileTreeRow.svelte`) and tighten its overscan instead of reintroducing
+ *    recursive folder components.
+ * 3. Expand/collapse only through ordered splice patches; add local loading and
+ *    error row metadata around the async Rust command without changing
+ *    selection state.
+ * 4. Filter and coalesce watcher traffic in `engine/src/fs_watch.rs`, then let
+ *    the UI reconcile only structural or stale-folder changes.
+ * 5. Keep incremental create/delete/rename updates scoped to the affected row
+ *    range, preserving scroll position and avoiding full-tree rebuilds.
+ */
+
+/**
  * Rust-owned flat file tree, mirrored on the JS side (M19 Wave 2).
  *
  * Rust owns the tree shape; we hold a mirror `FlatRow[]` and splice in the
@@ -68,6 +85,17 @@ function commit(patches: TreePatch[]): void {
 function commitIfCurrent(generation: number, patches: TreePatch[]): void {
   if (generation !== treeGeneration) return
   commit(patches)
+}
+
+function patchRow(path: string, meta: Partial<FlatRow>): void {
+  const target = norm(path)
+  treeRows.update((rows) => {
+    const idx = rows.findIndex((row) => norm(row.path) === target)
+    if (idx === -1) return rows
+    const next = rows.slice()
+    next[idx] = { ...next[idx], ...meta }
+    return next
+  })
 }
 
 function enqueueTreeMutation(work: () => Promise<void>): Promise<void> {
@@ -151,8 +179,18 @@ export function clearTree(): void {
 /** Expand the folder at `path` and splice in its children. */
 export async function expandRow(path: string): Promise<void> {
   const generation = treeGeneration
+  const row = get(treeRows).find((candidate) => norm(candidate.path) === norm(path))
+  if (!row || !row.is_dir || row.is_expanded || row.is_loading) return
+  patchRow(path, { is_loading: true, error: null })
   await enqueueTreeMutation(async () => {
-    commitIfCurrent(generation, await treeExpand(path))
+    try {
+      commitIfCurrent(generation, await treeExpand(path))
+      if (generation === treeGeneration) patchRow(path, { is_loading: false, error: null })
+    } catch (e) {
+      if (generation === treeGeneration) {
+        patchRow(path, { is_loading: false, is_expanded: false, error: String(e) })
+      }
+    }
   })
 }
 
@@ -166,7 +204,7 @@ export async function collapseRow(path: string): Promise<void> {
 
 /** Toggle a folder row's expanded state. */
 export async function toggleRow(row: FlatRow): Promise<void> {
-  if (!row.is_dir) return
+  if (!row.is_dir || row.is_loading) return
   if (row.is_expanded) await collapseRow(row.path)
   else await expandRow(row.path)
 }

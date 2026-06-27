@@ -23,7 +23,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::fs::{DirEntry, list_directory};
+use crate::fs::{DirEntry, FsError, list_directory};
 
 /// One row in the flattened, depth-first tree — the unit the UI renders.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -41,6 +41,8 @@ pub struct FlatRow {
     /// a cheap "is the dir non-empty" probe so the UI can show/hide the twistie
     /// without listing. Always false for files.
     pub has_children: bool,
+    /// A collapsed folder whose contents changed since it was last expanded.
+    pub is_stale: bool,
 }
 
 /// A delta the UI applies to its mirror of the flat row array. Indices are into
@@ -64,6 +66,7 @@ pub struct WorkspaceTree {
     root: Option<String>,
     rows: Vec<FlatRow>,
     expanded: HashSet<String>,
+    stale: HashSet<String>,
 }
 
 /// Normalize a path for comparison/membership (separator + trailing slash). The
@@ -80,8 +83,14 @@ fn dir_has_children(dir: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn row_from_entry(entry: &DirEntry, depth: usize, expanded: &HashSet<String>) -> FlatRow {
+fn row_from_entry(
+    entry: &DirEntry,
+    depth: usize,
+    expanded: &HashSet<String>,
+    stale: &HashSet<String>,
+) -> FlatRow {
     let is_expanded = entry.is_dir && expanded.contains(&entry.path);
+    let is_stale = entry.is_dir && stale.contains(&entry.path);
     let has_children = if entry.is_dir {
         dir_has_children(&entry.path)
     } else {
@@ -95,6 +104,7 @@ fn row_from_entry(entry: &DirEntry, depth: usize, expanded: &HashSet<String>) ->
         is_dir: entry.is_dir,
         is_expanded,
         has_children,
+        is_stale,
     }
 }
 
@@ -136,10 +146,12 @@ impl WorkspaceTree {
     pub fn set_root(&mut self, root_path: &str) -> Vec<FlatRow> {
         self.root = Some(root_path.to_string());
         self.expanded.clear();
+        self.stale.clear();
         self.rows.clear();
         if let Ok(entries) = list_directory(Path::new(root_path)) {
             for entry in &entries {
-                self.rows.push(row_from_entry(entry, 0, &self.expanded));
+                self.rows
+                    .push(row_from_entry(entry, 0, &self.expanded, &self.stale));
             }
         }
         self.rows.clone()
@@ -149,31 +161,30 @@ impl WorkspaceTree {
     /// after the folder row. No-op (empty patch) if `path` is unknown, not a
     /// directory, or already expanded. Returns Insert + an Update flipping the
     /// folder's `is_expanded`.
-    pub fn expand(&mut self, path: &str) -> Vec<TreePatch> {
+    pub fn expand(&mut self, path: &str) -> Result<Vec<TreePatch>, FsError> {
         let Some(idx) = self.index_of(path) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let row = &self.rows[idx];
         if !row.is_dir || row.is_expanded {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let depth = row.depth;
         let dir_path = row.path.clone();
 
-        let entries = match list_directory(Path::new(&dir_path)) {
-            Ok(e) => e,
-            Err(_) => return Vec::new(),
-        };
+        let entries = list_directory(Path::new(&dir_path))?;
 
         self.expanded.insert(dir_path.clone());
+        self.stale.remove(&dir_path);
         // Mark the folder expanded (Update) and recompute has_children.
         self.rows[idx].is_expanded = true;
+        self.rows[idx].is_stale = false;
         self.rows[idx].has_children = !entries.is_empty();
         let updated = self.rows[idx].clone();
 
         let child_rows: Vec<FlatRow> = entries
             .iter()
-            .map(|e| row_from_entry(e, depth + 1, &self.expanded))
+            .map(|e| row_from_entry(e, depth + 1, &self.expanded, &self.stale))
             .collect();
 
         let insert_at = idx + 1;
@@ -181,7 +192,7 @@ impl WorkspaceTree {
             self.rows.insert(insert_at + offset, r.clone());
         }
 
-        vec![
+        Ok(vec![
             TreePatch::Update {
                 index: idx,
                 row: updated,
@@ -190,7 +201,7 @@ impl WorkspaceTree {
                 index: insert_at,
                 rows: child_rows,
             },
-        ]
+        ])
     }
 
     /// Collapse the folder at `path`: remove its entire subtree run. Also drops
@@ -212,6 +223,7 @@ impl WorkspaceTree {
         // Forget expansion for the folder and all removed descendants.
         for r in &self.rows[remove_at..end] {
             self.expanded.remove(&r.path);
+            self.stale.remove(&r.path);
         }
         self.expanded.remove(&self.rows[idx].path);
         self.rows[idx].is_expanded = false;
@@ -262,7 +274,7 @@ impl WorkspaceTree {
         };
         let new_rows: Vec<FlatRow> = entries
             .iter()
-            .map(|e| row_from_entry(e, child_depth, &self.expanded))
+            .map(|e| row_from_entry(e, child_depth, &self.expanded, &self.stale))
             .collect();
 
         let start = idx + 1;
@@ -281,7 +293,7 @@ impl WorkspaceTree {
         };
         let new_rows: Vec<FlatRow> = entries
             .iter()
-            .map(|e| row_from_entry(e, 0, &self.expanded))
+            .map(|e| row_from_entry(e, 0, &self.expanded, &self.stale))
             .collect();
         let end = self.rows.len();
         self.reconcile_range(0, end, 0, new_rows)
@@ -290,10 +302,12 @@ impl WorkspaceTree {
     /// Update only the twistie/has_children flag of an unexpanded folder row.
     fn refresh_twistie(&mut self, idx: usize) -> Vec<TreePatch> {
         let has = dir_has_children(&self.rows[idx].path);
-        if self.rows[idx].has_children == has {
+        if self.rows[idx].has_children == has && self.rows[idx].is_stale {
             return Vec::new();
         }
         self.rows[idx].has_children = has;
+        self.rows[idx].is_stale = true;
+        self.stale.insert(self.rows[idx].path.clone());
         vec![TreePatch::Update {
             index: idx,
             row: self.rows[idx].clone(),
@@ -315,12 +329,12 @@ impl WorkspaceTree {
     ) -> Vec<TreePatch> {
         // Snapshot the existing DIRECT children (depth == child_depth) and the
         // span each occupies (child row + its expanded subtree).
-        let mut old_children: Vec<(String, usize, usize)> = Vec::new(); // (norm path, start, end)
+        let mut old_children: Vec<(String, usize, usize, FlatRow)> = Vec::new(); // (norm path, start, end, row)
         let mut i = start;
         while i < old_end {
             if self.rows[i].depth == child_depth {
                 let sub_end = self.subtree_end(i);
-                old_children.push((norm(&self.rows[i].path), i, sub_end));
+                old_children.push((norm(&self.rows[i].path), i, sub_end, self.rows[i].clone()));
                 i = sub_end;
             } else {
                 i += 1; // defensive; shouldn't happen given subtree contiguity
@@ -328,14 +342,38 @@ impl WorkspaceTree {
         }
 
         let new_keys: HashSet<String> = new_rows.iter().map(|r| norm(&r.path)).collect();
-        let old_keys: HashSet<String> = old_children.iter().map(|(k, _, _)| k.clone()).collect();
+        let old_keys: HashSet<String> = old_children.iter().map(|(k, _, _, _)| k.clone()).collect();
 
         let mut patches: Vec<TreePatch> = Vec::new();
+        let mut renamed_old_keys: HashSet<String> = HashSet::new();
+        let mut renamed_new_keys: HashSet<String> = HashSet::new();
+
+        let removed_files: Vec<&(String, usize, usize, FlatRow)> = old_children
+            .iter()
+            .filter(|(key, c_start, c_end, row)| {
+                !new_keys.contains(key) && !row.is_dir && *c_end == *c_start + 1
+            })
+            .collect();
+        let added_files: Vec<&FlatRow> = new_rows
+            .iter()
+            .filter(|row| !old_keys.contains(&norm(&row.path)) && !row.is_dir)
+            .collect();
+        if removed_files.len() == 1 && added_files.len() == 1 {
+            let (old_key, old_start, _, _) = removed_files[0];
+            let renamed = added_files[0].clone();
+            self.rows[*old_start] = renamed.clone();
+            patches.push(TreePatch::Update {
+                index: *old_start,
+                row: renamed.clone(),
+            });
+            renamed_old_keys.insert(old_key.clone());
+            renamed_new_keys.insert(norm(&renamed.path));
+        }
 
         // 1. Remove vanished children (highest index first so earlier indices
         //    stay valid as we mutate `self.rows`).
-        for (key, c_start, c_end) in old_children.iter().rev() {
-            if !new_keys.contains(key) {
+        for (key, c_start, c_end, _) in old_children.iter().rev() {
+            if !new_keys.contains(key) && !renamed_old_keys.contains(key) {
                 let count = c_end - c_start;
                 self.rows.drain(*c_start..*c_end);
                 patches.push(TreePatch::Remove {
@@ -351,7 +389,7 @@ impl WorkspaceTree {
         //    sibling (or at the run's end).
         for new_row in &new_rows {
             let key = norm(&new_row.path);
-            if old_keys.contains(&key) {
+            if old_keys.contains(&key) || renamed_new_keys.contains(&key) {
                 continue; // survivor: leave it (and its subtree) in place
             }
             let insert_at = self.insertion_point(start, child_depth, &new_rows, new_row);
@@ -435,7 +473,7 @@ mod tests {
         touch(&d.path().join("sub"), "inner.txt");
         let mut t = WorkspaceTree::new();
         t.set_root(&s(d.path()));
-        let patches = t.expand(&s(&d.path().join("sub")));
+        let patches = t.expand(&s(&d.path().join("sub"))).unwrap();
 
         // Update (expanded flag) + Insert(1 child).
         assert_eq!(patches.len(), 2);
@@ -464,8 +502,8 @@ mod tests {
 
         let mut t = WorkspaceTree::new();
         t.set_root(&s(d.path()));
-        t.expand(&s(&sub));
-        t.expand(&s(&sub.join("deep")));
+        t.expand(&s(&sub)).unwrap();
+        t.expand(&s(&sub.join("deep"))).unwrap();
         assert_eq!(t.rows().len(), 4); // sub, deep, g.txt, f.txt
 
         let patches = t.collapse(&s(&sub));
@@ -488,9 +526,9 @@ mod tests {
         let sub = s(&d.path().join("sub"));
         let mut t = WorkspaceTree::new();
         t.set_root(&s(d.path()));
-        t.expand(&sub);
+        t.expand(&sub).unwrap();
         t.collapse(&sub);
-        let patches = t.expand(&sub);
+        let patches = t.expand(&sub).unwrap();
         assert!(
             patches
                 .iter()
@@ -548,7 +586,7 @@ mod tests {
 
         let mut t = WorkspaceTree::new();
         t.set_root(&s(d.path()));
-        t.expand(&s(&d.path().join("keep")));
+        t.expand(&s(&d.path().join("keep"))).unwrap();
         assert_eq!(t.rows().len(), 3); // keep, inner.txt, z_del.txt
 
         fs::remove_file(d.path().join("z_del.txt")).unwrap();
@@ -568,12 +606,12 @@ mod tests {
         let sub = s(&d.path().join("sub"));
         let mut t = WorkspaceTree::new();
         t.set_root(&s(d.path()));
-        let id1 = t.expand(&sub).into_iter().find_map(|p| match p {
+        let id1 = t.expand(&sub).unwrap().into_iter().find_map(|p| match p {
             TreePatch::Insert { rows, .. } => Some(rows[0].id.clone()),
             _ => None,
         });
         t.collapse(&sub);
-        let id2 = t.expand(&sub).into_iter().find_map(|p| match p {
+        let id2 = t.expand(&sub).unwrap().into_iter().find_map(|p| match p {
             TreePatch::Insert { rows, .. } => Some(rows[0].id.clone()),
             _ => None,
         });
@@ -602,8 +640,8 @@ mod tests {
         touch(d.path(), "f.txt");
         let mut t = WorkspaceTree::new();
         t.set_root(&s(d.path()));
-        assert!(t.expand(&s(&d.path().join("f.txt"))).is_empty());
-        assert!(t.expand("/nope").is_empty());
+        assert!(t.expand(&s(&d.path().join("f.txt"))).unwrap().is_empty());
+        assert!(t.expand("/nope").unwrap().is_empty());
     }
 
     // 2.11 — a refresh that changes nothing yields no patches.
@@ -625,7 +663,7 @@ mod tests {
         touch(&sub, "a.txt");
         let mut t = WorkspaceTree::new();
         t.set_root(&s(d.path()));
-        t.expand(&s(&sub));
+        t.expand(&s(&sub)).unwrap();
         assert_eq!(t.rows().len(), 2);
 
         touch(&sub, "b.txt");
@@ -638,5 +676,45 @@ mod tests {
         assert_eq!(t.rows().len(), 3);
         // New child sits at depth 1, contiguous under sub.
         assert!(t.rows()[1].depth == 1 && t.rows()[2].depth == 1);
+    }
+
+    // 2.13 — a simple file rename updates one row in place.
+    #[test]
+    fn refresh_root_renames_single_file_with_update() {
+        let d = tempdir().unwrap();
+        touch(d.path(), "old.txt");
+        let mut t = WorkspaceTree::new();
+        t.set_root(&s(d.path()));
+
+        fs::rename(d.path().join("old.txt"), d.path().join("new.txt")).unwrap();
+        let patches = t.refresh_dir(&s(d.path()));
+
+        assert_eq!(patches.len(), 1);
+        match &patches[0] {
+            TreePatch::Update { index, row } => {
+                assert_eq!(*index, 0);
+                assert_eq!(row.name, "new.txt");
+            }
+            _ => panic!("expected Update"),
+        }
+        assert_eq!(t.rows()[0].name, "new.txt");
+    }
+
+    // 2.14 — a collapsed folder can be marked stale and becomes fresh on expand.
+    #[test]
+    fn collapsed_folder_stale_clears_on_expand() {
+        let d = tempdir().unwrap();
+        mkdir(d.path(), "sub");
+        let sub = s(&d.path().join("sub"));
+        let mut t = WorkspaceTree::new();
+        t.set_root(&s(d.path()));
+
+        let stale = t.refresh_dir(&sub);
+        assert_eq!(stale.len(), 1);
+        assert!(t.rows()[0].is_stale);
+
+        t.expand(&sub).unwrap();
+        assert!(!t.rows()[0].is_stale);
+        assert!(t.rows()[0].is_expanded);
     }
 }
