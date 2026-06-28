@@ -147,3 +147,16 @@ impl SafetyDecision {
         self
     }
 }
+
+/// Safety strictness level: how aggressively to gate risky actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SafetyStrictness {
+    /// Ask for confirmation on medium-risk actions; block destructive/secret.
+    #[default]
+    Standard,
+    /// Ask on low-risk; block medium/high/destructive/secret.
+    Strict,
+    /// Block everything except explicitly safe reads.
+    Paranoid,
+}

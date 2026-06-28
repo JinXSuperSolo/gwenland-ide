@@ -1,7 +1,8 @@
 <script lang="ts">
   import { git, refreshGit } from '../stores/git'
   import { workspace } from '../stores/workspace'
-  import { showSidebarView } from '../stores/sidebar'
+  import { refreshGitGraph } from '../stores/gitGraph'
+  import { closeGitGraphWindow, gitGraphWindow, openGitGraphWindow } from '../stores/gitGraphWindow'
   import { openDiff } from '../stores/tabs'
   import {
     gitStage,
@@ -24,6 +25,9 @@
   const staged = $derived($git.files.filter((f) => f.staged))
   const unstaged = $derived($git.files.filter((f) => !f.staged))
   const canCommit = $derived(commitMsg.trim().length > 0 && staged.length > 0 && !busy)
+  const graphActive = $derived.by(() => {
+    return !!root && $gitGraphWindow.open && $gitGraphWindow.workspacePath === root
+  })
 
   async function withRefresh(fn: () => Promise<unknown>) {
     if (!root) return
@@ -61,13 +65,30 @@
   function viewDiff(f: GitFileStatus) {
     if (root) openDiff(root, f.path, f.untracked)
   }
+
+  function refreshPanel() {
+    if (graphActive && root) {
+      void refreshGitGraph(root)
+    } else {
+      void refreshGit()
+    }
+  }
+
+  function showGraph() {
+    if (root) openGitGraphWindow(root)
+  }
+
+  function showChanges() {
+    if (graphActive) closeGitGraphWindow()
+    void refreshGit()
+  }
 </script>
 
 <aside class="git-panel" aria-label="Source Control">
   <header class="panel-header">
     <span class="panel-title">Source Control</span>
     <div class="header-actions">
-      <button class="header-btn" title="Refresh" aria-label="Refresh" onclick={() => void refreshGit()}>
+      <button class="header-btn" title="Refresh" aria-label="Refresh" onclick={refreshPanel}>
         <Icon name="refresh" size={14} />
       </button>
     </div>
@@ -77,6 +98,23 @@
     {#if !$git.isRepo}
       <div class="empty">This folder is not a git repository.</div>
     {:else}
+      <div class="view-switch" role="tablist" aria-label="Source Control view">
+        <button
+          type="button"
+          class:active={!graphActive}
+          role="tab"
+          aria-selected={!graphActive}
+          onclick={showChanges}
+        >Changes</button>
+        <button
+          type="button"
+          class:active={graphActive}
+          role="tab"
+          aria-selected={graphActive}
+          onclick={showGraph}
+        >Graph</button>
+      </div>
+
       <!-- COMMIT -->
       <section class="commit">
         <textarea
@@ -215,6 +253,33 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+  .view-switch {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--secondary);
+  }
+  .view-switch button {
+    height: 24px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted-foreground);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .view-switch button:hover {
+    color: var(--foreground);
+  }
+  .view-switch button.active {
+    color: var(--primary-foreground);
+    background: var(--primary);
   }
   .empty {
     font-size: 12px;

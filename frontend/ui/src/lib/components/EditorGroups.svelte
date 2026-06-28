@@ -5,8 +5,10 @@
     closeAllTabs,
     closeSavedTabs,
     closeTab,
+    isCommitDiffTab,
     isDiffTab,
     isEditorTab,
+    isGitGraphTab,
     isPreviewTab,
     setActiveGroup,
     setGroupSizes,
@@ -30,6 +32,8 @@
   import EditorBreadcrumbs from './EditorBreadcrumbs.svelte'
   import PreviewPane from './PreviewPane.svelte'
   import GitDiffViewer from './GitDiffViewer.svelte'
+  import GitCommitDiffViewer from './git/GitCommitDiffViewer.svelte'
+  import GitGraph from './git/GitGraph.svelte'
 
   let host: HTMLDivElement
   let drag =
@@ -241,6 +245,14 @@
         <PreviewPane source={activeTab.source} />
       {:else if activeTab && isDiffTab(activeTab)}
         <GitDiffViewer root={activeTab.root} path={activeTab.path} untracked={activeTab.untracked} />
+      {:else if activeTab && isCommitDiffTab(activeTab)}
+        <GitCommitDiffViewer
+          workspacePath={activeTab.workspacePath}
+          hash={activeTab.hash}
+          title={activeTab.message}
+        />
+      {:else if activeTab && isGitGraphTab(activeTab)}
+        <GitGraph workspacePath={activeTab.workspacePath} />
       {:else}
         <div class="empty-state gw-anim-fade" role="presentation" oncontextmenu={onEmptyContextMenu}>
           <div class="empty-brand">GwenLand IDE</div>

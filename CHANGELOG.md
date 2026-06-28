@@ -6,6 +6,12 @@ All notable changes to GwenLand IDE are documented here.
 
 ## [Unreleased]
 
+### Added
+- Git Graph now opens as a floating IDE window with draggable, resizable, refresh, maximize/restore, and close controls.
+- Canvas2D Git Graph surface with pan/zoom, frustum-culling-friendly rendering, branch colors, branch labels, selected-node highlight, HEAD marker, hover tooltip, and commit detail popup.
+- Git Graph navigation dock with Find, Branch, Commit, and Date jump controls. Dock filtering uses the already-loaded graph payload and does not run git during hover, pan, zoom, or search.
+- Full commit detail flow from graph popup into the existing commit diff tab.
+
 ### Fixed
 - Production Tauri bundles no longer freeze during normal IDE interactions; blocking filesystem, Git, tree, watcher, safety, history, and process work now runs off the UI path.
 - Windows release builds no longer flash external terminal windows during normal subprocess work.
@@ -13,9 +19,14 @@ All notable changes to GwenLand IDE are documented here.
 - File tree expansion and watcher refreshes now target only affected expanded folders instead of reloading the full workspace.
 
 ### Changed
+- Source Control Graph now opens the floating Git Graph window instead of using a normal editor tab.
+- Git Graph dock styling now uses the app card surface and compact workbench-style controls instead of an outlined generic floating toolbar.
 - Release profile tightened for size with stripped symbols, no debug info, no split debug info, no incremental release artifacts, LTO, one codegen unit, `panic = "abort"`, and `opt-level = "z"`.
 - Temporary redacted process-spawn logging was removed; crash/safety redaction remains where it protects user data.
 - Windows bundling targets NSIS only.
+
+### Infrastructure
+- Git Graph frontend validation passed with `pnpm.cmd check`, `pnpm.cmd test`, `pnpm.cmd build`, and `git diff --check`; no new Rust crates or npm packages were added.
 
 ---
 

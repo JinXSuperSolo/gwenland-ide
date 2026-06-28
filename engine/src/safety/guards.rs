@@ -7,11 +7,11 @@
 
 use std::path::Path;
 
+use crate::safety::SafetyStrictness;
 use crate::safety::action::{Actor, SafetyAction, SafetyActionKind};
 use crate::safety::confirmation::evaluate;
 use crate::safety::decision::SafetyDecision;
 use crate::safety::protected_paths::ProtectedPathRegistry;
-use crate::workspace::SafetyStrictness;
 
 /// Evaluate a file-mutation action against local safety policy.
 ///

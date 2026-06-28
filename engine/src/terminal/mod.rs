@@ -39,9 +39,13 @@ use std::thread::JoinHandle;
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use thiserror::Error;
 
-use crate::devserver_detect::{DevServerDetector, DevServerSignal};
-use crate::error_detect::{ErrorDetector, ErrorSignal};
-use crate::ring_buffer::{DEFAULT_MAX_LINES, RingBuffer};
+pub mod devserver_detect;
+pub mod error_detect;
+pub mod ring_buffer;
+
+use devserver_detect::{DevServerDetector, DevServerSignal};
+use error_detect::{ErrorDetector, ErrorSignal};
+use ring_buffer::{DEFAULT_MAX_LINES, RingBuffer};
 
 #[derive(Debug, Error)]
 pub enum TerminalError {

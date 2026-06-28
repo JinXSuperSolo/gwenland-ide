@@ -14,6 +14,14 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+pub mod fs;
+pub mod fs_watch;
+pub mod git;
+pub mod search;
+pub mod tree;
+
+pub use crate::safety::SafetyStrictness;
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
@@ -139,19 +147,6 @@ fn resolve_nonexistent(path: &Path) -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 // WorkspaceSettings model
 // ---------------------------------------------------------------------------
-
-/// Safety strictness level: how aggressively to gate risky actions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SafetyStrictness {
-    /// Ask for confirmation on medium-risk actions; block destructive/secret.
-    #[default]
-    Standard,
-    /// Ask on low-risk; block medium/high/destructive/secret.
-    Strict,
-    /// Block everything except explicitly safe reads.
-    Paranoid,
-}
 
 /// Per-workspace settings overlay. Stored under `.gwenland/settings.json`.
 /// Merged over global settings at runtime; absent fields inherit global values.

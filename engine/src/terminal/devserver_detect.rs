@@ -23,7 +23,7 @@
 //!     preview once); a server that re-announces after a restart does not reopen
 //!     a pane the user may have closed.
 
-use crate::error_detect::strip_ansi;
+use crate::terminal::error_detect::strip_ansi;
 
 /// Hard cap on the carry-over line so a stream that never emits a newline can't
 /// grow `pending` without bound. Matches [`crate::error_detect`]'s cap.

@@ -45,8 +45,8 @@ fn read_file_attachment(path: &str, project_root: &Path) -> Result<String, AiErr
         )));
     }
     // Reuse the engine's UTF-8/binary-aware reader.
-    crate::fs::read_file(&canon).map_err(|e| match e {
-        crate::fs::FsError::BinaryFile => {
+    crate::workspace::fs::read_file(&canon).map_err(|e| match e {
+        crate::workspace::fs::FsError::BinaryFile => {
             AiError::ProviderError(format!("cannot attach binary file: {path}"))
         }
         other => AiError::ProviderError(format!("cannot read attachment {path}: {other}")),

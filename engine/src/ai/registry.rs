@@ -12,7 +12,7 @@ use crate::ai::gemini::GeminiAdapter;
 use crate::ai::generic::GenericAdapter;
 use crate::ai::openai::OpenAiAdapter;
 use crate::ai::provider::AiProvider;
-use crate::settings::AiSettings;
+use crate::system::settings::AiSettings;
 
 /// Build a provider instance for `provider_id`. `settings` supplies generic
 /// provider configuration.
@@ -43,7 +43,7 @@ pub fn resolve_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::GenericProviderSetting;
+    use crate::system::settings::GenericProviderSetting;
 
     fn settings_with_generic() -> AiSettings {
         AiSettings {
