@@ -13,7 +13,7 @@ use gwenland_engine::agentic::{
     FileChangeKind, OmissionReason, ProposedFileChange, ValidationRun, ValidationStatus,
 };
 use gwenland_engine::ai::{AiError, AiProvider, ChatMessage, ContextAttachment, MessageRequest};
-use gwenland_engine::lsp::{DiagnosticsUpdate, LspManager, LspStatus, StatusUpdate};
+use gwenland_engine::lsp::{DiagnosticsUpdate, LspManager, LspStatus, MessageUpdate, StatusUpdate};
 use gwenland_engine::terminal::PtySession;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -4837,12 +4837,16 @@ fn main() {
         .setup(|app| {
             let diag_handle = app.handle().clone();
             let status_handle = app.handle().clone();
+            let message_handle = app.handle().clone();
             let manager = Arc::new(LspManager::new(
                 Arc::new(move |upd: DiagnosticsUpdate| {
                     let _ = diag_handle.emit("lsp://diagnostics", upd);
                 }),
                 Arc::new(move |upd: StatusUpdate| {
                     let _ = status_handle.emit("lsp://status", upd);
+                }),
+                Arc::new(move |upd: MessageUpdate| {
+                    let _ = message_handle.emit("lsp://message", upd);
                 }),
             ));
             app.manage(manager);

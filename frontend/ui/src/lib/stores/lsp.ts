@@ -4,12 +4,15 @@ import {
   lspChangeDocument,
   lspCloseDocument,
   onLspDiagnostics,
+  onLspMessage,
   onLspStatus,
   type LspDiagnostic,
   type LspLanguage,
+  type LspMessageEvent,
   type LspStatus,
 } from '../tauri/commands'
 import { workspace } from './workspace'
+import { toast, type ToastKind } from './toast'
 
 /**
  * UI-side LSP state (Milestone 6, Wave 4). Diagnostics and status are keyed by
@@ -170,4 +173,17 @@ export function initLsp(): void {
       return { ...s, status }
     })
   }).catch(() => {})
+
+  onLspMessage((event) => {
+    toast(formatLspMessage(event), toastKind(event), event.kind === 'error' ? 7000 : 4500)
+  }).catch(() => {})
+}
+
+function toastKind(event: LspMessageEvent): ToastKind {
+  return event.kind === 'error' ? 'error' : 'info'
+}
+
+function formatLspMessage(event: LspMessageEvent): string {
+  const label = event.language === 'typescript' ? 'TypeScript' : event.language
+  return `${label} LSP: ${event.message}`
 }

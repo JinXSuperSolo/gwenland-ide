@@ -938,6 +938,9 @@ export type LspStatus =
   | { state: 'connected'; language: LspLanguage; server_name: string | null }
   | { state: 'crashed'; language: LspLanguage; message: string }
 
+/** `window/showMessage` severity (mirrors `LspMessageKind`). */
+export type LspMessageKind = 'error' | 'warning' | 'info' | 'log'
+
 /** UI diagnostic severity (mirrors `DiagnosticSeverity`). */
 export type LspDiagnosticSeverity = 'error' | 'warning' | 'information' | 'hint'
 
@@ -1066,6 +1069,7 @@ export function lspHover(
 
 export const LSP_DIAGNOSTICS_EVENT = 'lsp://diagnostics'
 export const LSP_STATUS_EVENT = 'lsp://status'
+export const LSP_MESSAGE_EVENT = 'lsp://message'
 export const WORKSPACE_SEARCH_RESULT_EVENT = 'search:result'
 export const WORKSPACE_SEARCH_DONE_EVENT = 'search:done'
 
@@ -1083,6 +1087,14 @@ export interface LspDiagnosticsEvent {
 export type LspStatusEvent = LspStatus & {
   language: LspLanguage | null
   workspace_root: string | null
+}
+
+/** `lsp://message` payload (mirrors `MessageUpdate`). */
+export interface LspMessageEvent {
+  language: LspLanguage
+  workspace_root: string
+  kind: LspMessageKind
+  message: string
 }
 
 /**
@@ -1103,6 +1115,13 @@ export async function onLspStatus(
   handler: (event: LspStatusEvent) => void
 ): Promise<UnlistenFn> {
   return listen<LspStatusEvent>(LSP_STATUS_EVENT, (event) => handler(event.payload))
+}
+
+/** Subscribe to user-facing LSP server messages. Returns the unlisten function. */
+export async function onLspMessage(
+  handler: (event: LspMessageEvent) => void
+): Promise<UnlistenFn> {
+  return listen<LspMessageEvent>(LSP_MESSAGE_EVENT, (event) => handler(event.payload))
 }
 
 export async function onWorkspaceSearchResult(

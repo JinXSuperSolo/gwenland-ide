@@ -54,8 +54,8 @@ pub mod process;
 pub mod root;
 
 pub use client::{
-    DiagnosticsCallback, DiagnosticsUpdate, LspClient, LspManager, LspStatus, StatusCallback,
-    StatusUpdate,
+    DiagnosticsCallback, DiagnosticsUpdate, LspClient, LspManager, LspMessageKind, LspStatus,
+    MessageCallback, MessageUpdate, StatusCallback, StatusUpdate,
 };
 pub use completion::LspCompletionOption;
 pub use config::{LanguageServerSettings, LspSettings};

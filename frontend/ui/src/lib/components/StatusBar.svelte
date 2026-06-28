@@ -150,6 +150,7 @@
 <footer class="status-bar" aria-label="Status Bar">
   <div class="status-left">
     <GitStatusBar />
+    <LspStatusIndicator />
   </div>
   <div class="status-right">
     {#if perfBadges.length > 0}
@@ -196,7 +197,6 @@
       <span class="status-item">UTF-8</span>
       <span class="status-item">{indent?.kind ?? 'Spaces'}: {indent?.size ?? 2}</span>
     {/if}
-    <LspStatusIndicator />
     <button
       class="ai-btn"
       class:active={$aiChat.isOpen}

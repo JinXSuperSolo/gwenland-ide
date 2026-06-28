@@ -77,6 +77,26 @@ pub struct StatusUpdate {
     pub status: LspStatus,
 }
 
+/// Server-facing message type for `window/showMessage`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspMessageKind {
+    Error,
+    Warning,
+    Info,
+    Log,
+}
+
+/// Payload pushed to the Tauri layer when a language server asks the client to
+/// surface a message.
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageUpdate {
+    pub language: LanguageId,
+    pub workspace_root: String,
+    pub kind: LspMessageKind,
+    pub message: String,
+}
+
 /// Payload pushed to the Tauri layer when diagnostics change for a document.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiagnosticsUpdate {
@@ -91,6 +111,8 @@ pub struct DiagnosticsUpdate {
 pub type DiagnosticsCallback = Arc<dyn Fn(DiagnosticsUpdate) + Send + Sync>;
 /// Callback the manager invokes on every status transition.
 pub type StatusCallback = Arc<dyn Fn(StatusUpdate) + Send + Sync>;
+/// Callback the manager invokes for `window/showMessage` notifications.
+pub type MessageCallback = Arc<dyn Fn(MessageUpdate) + Send + Sync>;
 
 /// `(server_key, root)` — the identity of one server process.
 type ClientKey = (String, PathBuf);
@@ -130,6 +152,7 @@ impl LspClient {
         args: &[String],
         on_diagnostics: DiagnosticsCallback,
         on_status: StatusCallback,
+        on_message: MessageCallback,
     ) -> Result<LspClient, LspError> {
         let status = Arc::new(Mutex::new(LspStatus::Starting { language }));
         let shared = Arc::new(ClientShared {
@@ -142,39 +165,53 @@ impl LspClient {
         // window/showMessage, and $/progress are ignored in M6 (Requirement 7.6).
         let notif = {
             let on_diagnostics = on_diagnostics.clone();
+            let on_message = on_message.clone();
             let root_str = root.to_string_lossy().into_owned();
             let shared = shared.clone();
             Box::new(move |method: String, params: Value| {
-                if method != "textDocument/publishDiagnostics" {
-                    return;
+                match method.as_str() {
+                    "textDocument/publishDiagnostics" => {
+                        let Some((uri, diagnostics)) = parse_publish_diagnostics(&params) else {
+                            return;
+                        };
+                        let doc_key = document_key_from_uri(&uri);
+                        // Drop diagnostics for a document that is not open
+                        // (closed or never opened) so stale markers never
+                        // reach the UI.
+                        if !shared
+                            .versions
+                            .lock()
+                            .map(|v| v.contains_key(&doc_key))
+                            .unwrap_or(false)
+                        {
+                            return;
+                        }
+                        if let Ok(mut store) = shared.diagnostics.lock() {
+                            store.set(uri.clone(), diagnostics.clone());
+                        }
+                        let path = file_uri_to_path(&uri)
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| uri.clone());
+                        on_diagnostics(DiagnosticsUpdate {
+                            uri,
+                            path,
+                            language,
+                            workspace_root: root_str.clone(),
+                            diagnostics,
+                        });
+                    }
+                    "window/showMessage" => {
+                        if let Some((kind, message)) = parse_show_message(&params) {
+                            on_message(MessageUpdate {
+                                language,
+                                workspace_root: root_str.clone(),
+                                kind,
+                                message,
+                            });
+                        }
+                    }
+                    _ => {}
                 }
-                let Some((uri, diagnostics)) = parse_publish_diagnostics(&params) else {
-                    return;
-                };
-                let doc_key = document_key_from_uri(&uri);
-                // Drop diagnostics for a document that is not open (closed or
-                // never opened) so stale markers never reach the UI.
-                if !shared
-                    .versions
-                    .lock()
-                    .map(|v| v.contains_key(&doc_key))
-                    .unwrap_or(false)
-                {
-                    return;
-                }
-                if let Ok(mut store) = shared.diagnostics.lock() {
-                    store.set(uri.clone(), diagnostics.clone());
-                }
-                let path = file_uri_to_path(&uri)
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| uri.clone());
-                on_diagnostics(DiagnosticsUpdate {
-                    uri,
-                    path,
-                    language,
-                    workspace_root: root_str.clone(),
-                    diagnostics,
-                });
             })
         };
 
@@ -419,6 +456,17 @@ fn document_key_from_raw(value: &str) -> String {
     }
 }
 
+fn parse_show_message(params: &Value) -> Option<(LspMessageKind, String)> {
+    let message = params.get("message")?.as_str()?.to_string();
+    let kind = match params.get("type").and_then(Value::as_u64) {
+        Some(1) => LspMessageKind::Error,
+        Some(2) => LspMessageKind::Warning,
+        Some(4) => LspMessageKind::Log,
+        _ => LspMessageKind::Info,
+    };
+    Some((kind, message))
+}
+
 /// `textDocument/didOpen` params with full text.
 fn did_open_params(uri: &str, language_id: &str, version: i32, text: &str) -> Value {
     json!({
@@ -488,15 +536,21 @@ pub struct LspManager {
     doc_index: Mutex<HashMap<String, ClientKey>>,
     on_diagnostics: DiagnosticsCallback,
     on_status: StatusCallback,
+    on_message: MessageCallback,
 }
 
 impl LspManager {
-    pub fn new(on_diagnostics: DiagnosticsCallback, on_status: StatusCallback) -> Self {
+    pub fn new(
+        on_diagnostics: DiagnosticsCallback,
+        on_status: StatusCallback,
+        on_message: MessageCallback,
+    ) -> Self {
         Self {
             clients: Mutex::new(HashMap::new()),
             doc_index: Mutex::new(HashMap::new()),
             on_diagnostics,
             on_status,
+            on_message,
         }
     }
 
@@ -562,6 +616,7 @@ impl LspManager {
             &args,
             self.on_diagnostics.clone(),
             self.on_status.clone(),
+            self.on_message.clone(),
         ) {
             Ok(client) => {
                 let st = client.status();
@@ -830,7 +885,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn noop_manager() -> LspManager {
-        LspManager::new(Arc::new(|_| {}), Arc::new(|_| {}))
+        LspManager::new(Arc::new(|_| {}), Arc::new(|_| {}), Arc::new(|_| {}))
     }
 
     fn diagnostics_manager() -> (LspManager, Arc<Mutex<Vec<DiagnosticsUpdate>>>) {
@@ -840,6 +895,7 @@ mod tests {
             Arc::new(move |update| {
                 captured.lock().expect("diagnostics poisoned").push(update);
             }),
+            Arc::new(|_| {}),
             Arc::new(|_| {}),
         );
         (mgr, updates)
@@ -854,6 +910,7 @@ mod tests {
             Arc::new(move |_| {
                 c.fetch_add(1, Ordering::SeqCst);
             }),
+            Arc::new(|_| {}),
         );
         (mgr, count)
     }
@@ -988,6 +1045,24 @@ mod tests {
         assert!(is_newer_version(Some(1), 2));
         assert!(!is_newer_version(Some(2), 2)); // equal is not newer
         assert!(!is_newer_version(Some(5), 3)); // older dropped
+    }
+
+    #[test]
+    fn show_message_parses_lsp_message_types() {
+        let (kind, message) =
+            parse_show_message(&json!({ "type": 1, "message": "server failed" })).unwrap();
+        assert_eq!(kind, LspMessageKind::Error);
+        assert_eq!(message, "server failed");
+
+        let (kind, _) =
+            parse_show_message(&json!({ "type": 2, "message": "watching files" })).unwrap();
+        assert_eq!(kind, LspMessageKind::Warning);
+
+        let (kind, _) = parse_show_message(&json!({ "type": 4, "message": "indexed" })).unwrap();
+        assert_eq!(kind, LspMessageKind::Log);
+
+        let (kind, _) = parse_show_message(&json!({ "message": "hello" })).unwrap();
+        assert_eq!(kind, LspMessageKind::Info);
     }
 
     #[cfg(windows)]
