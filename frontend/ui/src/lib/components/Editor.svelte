@@ -598,6 +598,16 @@
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-lg);
   }
+  .editor-host :global(.cm-lsp-hover) {
+    max-width: min(560px, 70vw);
+    max-height: 280px;
+    overflow: auto;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+  }
   /* M6 LSP diagnostics — tooltip + gutter markers themed to match the editor. */
   .editor-host :global(.cm-tooltip-lint) {
     background-color: var(--popover);

@@ -1044,6 +1044,24 @@ export function lspDefinition(
   })
 }
 
+export interface LspHover {
+  contents: string
+}
+
+export function lspHover(
+  path: string,
+  line: number,
+  character: number,
+  version: number
+): Promise<LspHover | null> {
+  return invoke<LspHover | null>('lsp_hover', {
+    path,
+    line,
+    character,
+    version,
+  })
+}
+
 // --- Events ----------------------------------------------------------------
 
 export const LSP_DIAGNOSTICS_EVENT = 'lsp://diagnostics'

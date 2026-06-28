@@ -3958,6 +3958,24 @@ async fn lsp_definition(
     .await
 }
 
+/// Request hover contents at a position. Fail-soft: returns `None` for missing
+/// servers, unsupported languages, or timeouts.
+#[tauri::command]
+async fn lsp_hover(
+    manager: State<'_, Arc<LspManager>>,
+    path: String,
+    line: u32,
+    character: u32,
+    version: i32,
+) -> Result<Option<gwenland_engine::lsp::LspHover>, String> {
+    let _ = version;
+    let manager = Arc::clone(manager.inner());
+    run_blocking("lsp_hover", move || {
+        Ok(manager.hover(Path::new(&path), line, character))
+    })
+    .await
+}
+
 /// Manually restart the server bucket for `language` (`"rust"`, `"typescript"`,
 /// or `"python"`). Tears down the old client(s); the UI re-opens documents to
 /// reconnect. Returns the fresh status.
@@ -4920,6 +4938,7 @@ fn main() {
             lsp_close_document,
             lsp_completion,
             lsp_definition,
+            lsp_hover,
             git_is_repo,
             git_status,
             get_git_graph,

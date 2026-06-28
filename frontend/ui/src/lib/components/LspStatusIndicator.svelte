@@ -3,7 +3,7 @@
   // Shows the language + connection state, diagnostic counts when connected, and
   // a Restart action when the server has crashed.
   import { tabs, isEditorTab } from '../stores/tabs'
-  import { lsp, serverKeyForLanguage, lspOpenPath } from '../stores/lsp'
+  import { lsp, normPath, serverKeyForLanguage, lspOpenPath } from '../stores/lsp'
   import { lspRestart, type LspLanguage, type LspStatus } from '../tauri/commands'
   import { activeDoc } from '../editor/active-editor'
 
@@ -11,10 +11,11 @@
     const t = $tabs.tabs.find((x) => x.id === $tabs.activeId)
     return t && isEditorTab(t) ? t.path : null
   })
+  const activeKey = $derived(activePath ? normPath(activePath) : null)
   const status = $derived<LspStatus | null>(
-    activePath ? ($lsp.status[activePath] ?? null) : null
+    activeKey ? ($lsp.status[activeKey] ?? null) : null
   )
-  const diags = $derived(activePath ? ($lsp.diagnostics[activePath] ?? []) : [])
+  const diags = $derived(activeKey ? ($lsp.diagnostics[activeKey] ?? []) : [])
   const errorCount = $derived(diags.filter((d) => d.severity === 'error').length)
   const warnCount = $derived(diags.filter((d) => d.severity === 'warning').length)
 

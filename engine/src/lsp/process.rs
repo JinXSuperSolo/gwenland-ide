@@ -30,6 +30,9 @@ use super::json_rpc::{
 /// Responder channel stored per in-flight request: the reader thread sends the
 /// response (or a crash error) back to the waiting caller.
 type Responder = SyncSender<Result<Value, LspError>>;
+type ExitCallback = Box<dyn Fn(String) + Send>;
+
+const MAX_STDERR_TAIL_CHARS: usize = 2_000;
 
 /// Check whether `base` (or, on Windows, `base` + a `PATHEXT` extension) is an
 /// executable file, returning the resolved path.
@@ -115,7 +118,7 @@ impl ServerProcess {
         args: &[String],
         root: &Path,
         on_notification: Box<dyn Fn(String, Value) + Send>,
-        on_exit: Box<dyn Fn() + Send>,
+        on_exit: ExitCallback,
     ) -> Result<ServerProcess, LspError> {
         let mut cmd = Command::new(program);
         cmd.args(args)
@@ -154,12 +157,14 @@ impl ServerProcess {
         let pending: Arc<Mutex<PendingRequests<Responder>>> =
             Arc::new(Mutex::new(PendingRequests::new()));
         let shutting_down = Arc::new(AtomicBool::new(false));
+        let stderr_tail = Arc::new(Mutex::new(String::new()));
 
         // Reader thread: decode frames and route them.
         let reader = {
             let pending = pending.clone();
             let stdin_for_replies = stdin.clone();
             let shutting_down = shutting_down.clone();
+            let stderr_tail = stderr_tail.clone();
             thread::spawn(move || {
                 reader_loop(
                     stdout,
@@ -168,6 +173,7 @@ impl ServerProcess {
                     on_notification,
                     on_exit,
                     shutting_down,
+                    stderr_tail,
                 );
             })
         };
@@ -175,12 +181,14 @@ impl ServerProcess {
         // Drain stderr so a chatty server can't fill the pipe and stall. In
         // debug builds the (sanitized) lines are echoed for troubleshooting.
         let stderr_drain = stderr.map(|mut err| {
+            let stderr_tail = stderr_tail.clone();
             thread::spawn(move || {
                 let mut buf = [0u8; 4096];
                 loop {
                     match err.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
+                            append_stderr_tail(&stderr_tail, &buf[..n]);
                             #[cfg(debug_assertions)]
                             {
                                 let text = String::from_utf8_lossy(&buf[..n]);
@@ -330,8 +338,9 @@ fn reader_loop(
     pending: Arc<Mutex<PendingRequests<Responder>>>,
     stdin_for_replies: Arc<Mutex<ChildStdin>>,
     on_notification: Box<dyn Fn(String, Value) + Send>,
-    on_exit: Box<dyn Fn() + Send>,
+    on_exit: ExitCallback,
     shutting_down: Arc<AtomicBool>,
+    stderr_tail: Arc<Mutex<String>>,
 ) {
     let mut decoder = FrameDecoder::new();
     let mut buf = [0u8; 8192];
@@ -380,15 +389,60 @@ fn reader_loop(
         }
     }
 
+    let crash_message = stderr_crash_message(&stderr_tail);
+
     // Transport closed: fail every waiter so no request hangs (Requirement 7.4).
     if let Ok(mut p) = pending.lock() {
         for tx in p.drain() {
-            let _ = tx.send(Err(LspError::Crashed("language server exited".into())));
+            let _ = tx.send(Err(LspError::Crashed(crash_message.clone())));
         }
     }
     // Only surface a crash if this wasn't an intentional teardown.
     if !shutting_down.load(Ordering::SeqCst) {
-        on_exit();
+        on_exit(crash_message);
+    }
+}
+
+fn append_stderr_tail(tail: &Arc<Mutex<String>>, bytes: &[u8]) {
+    let text = sanitize(&String::from_utf8_lossy(bytes));
+    if text.trim().is_empty() {
+        return;
+    }
+    let Ok(mut tail) = tail.lock() else {
+        return;
+    };
+    if !tail.is_empty() && !tail.ends_with(' ') {
+        tail.push(' ');
+    }
+    tail.push_str(text.trim());
+    let len = tail.chars().count();
+    if len > MAX_STDERR_TAIL_CHARS {
+        *tail = tail
+            .chars()
+            .skip(len - MAX_STDERR_TAIL_CHARS)
+            .collect::<String>();
+    }
+}
+
+fn stderr_crash_message(tail: &Arc<Mutex<String>>) -> String {
+    // The stdout reader often observes EOF just before the stderr drain thread
+    // stores the final line. Give very short-lived failing servers a tiny window
+    // so the user sees the real startup error rather than a generic exit.
+    for _ in 0..5 {
+        if tail.lock().map(|t| !t.trim().is_empty()).unwrap_or(false) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let detail = tail
+        .lock()
+        .ok()
+        .map(|t| t.trim().to_string())
+        .unwrap_or_default();
+    if detail.is_empty() {
+        "language server exited".into()
+    } else {
+        format!("language server exited: {detail}")
     }
 }
 
@@ -465,7 +519,7 @@ mod tests {
             &args,
             Path::new("."),
             Box::new(|_, _| {}),
-            Box::new(move || exited_cb.store(true, Ordering::SeqCst)),
+            Box::new(move |_| exited_cb.store(true, Ordering::SeqCst)),
         )
         .expect("spawn quick-exit child");
 
@@ -512,7 +566,7 @@ mod tests {
             &args,
             Path::new("."),
             Box::new(|_, _| {}),
-            Box::new(move || crashed_cb.store(true, Ordering::SeqCst)),
+            Box::new(move |_| crashed_cb.store(true, Ordering::SeqCst)),
         )
         .expect("spawn long-lived child");
 
@@ -524,6 +578,43 @@ mod tests {
         assert!(
             !crashed.load(Ordering::SeqCst),
             "intentional kill must not be reported as a crash"
+        );
+    }
+
+    #[test]
+    fn quick_exit_child_surfaces_stderr() {
+        let (program, args): (PathBuf, Vec<String>) = if cfg!(windows) {
+            let cmd = resolve_command("cmd").expect("cmd.exe present on Windows");
+            (
+                cmd,
+                vec![
+                    "/c".into(),
+                    "echo lsp startup failed 1>&2 & exit /b 1".into(),
+                ],
+            )
+        } else {
+            (
+                PathBuf::from("/bin/sh"),
+                vec!["-c".into(), "echo lsp startup failed >&2; exit 1".into()],
+            )
+        };
+
+        let proc = ServerProcess::spawn(
+            &program,
+            &args,
+            Path::new("."),
+            Box::new(|_, _| {}),
+            Box::new(move |_| {}),
+        )
+        .expect("spawn stderr child");
+
+        let err = proc
+            .request("initialize", Value::Null, Duration::from_secs(5))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("lsp startup failed"),
+            "stderr detail should be included, got {err:?}"
         );
     }
 }

@@ -10,6 +10,7 @@ import {
   type DecorationSet,
   EditorView,
   WidgetType,
+  hoverTooltip,
   keymap,
   lineNumbers,
   highlightActiveLine,
@@ -53,7 +54,7 @@ import {
   type CompletionResult,
 } from '@codemirror/autocomplete'
 import type { Text } from '@codemirror/state'
-import { lspCompletion, openBrowser, type LspDiagnostic } from '../tauri/commands'
+import { lspCompletion, lspHover, openBrowser, type LspDiagnostic } from '../tauri/commands'
 import { lspChangePath, languageForPath } from '../stores/lsp'
 import { reviewExtension } from './diff-overlay'
 import { getLanguageExtension } from './language-detect'
@@ -304,6 +305,16 @@ function tokenAt(doc: Text, pos: number): string {
     .replace(/:\d+(?::\d+)?$/, '')
 }
 
+function wordRangeAt(doc: Text, pos: number): { from: number; to: number } | null {
+  const line = doc.lineAt(pos)
+  const isWord = /[\w$]/
+  let from = pos
+  let to = pos
+  while (from > line.from && isWord.test(doc.sliceString(from - 1, from))) from--
+  while (to < line.to && isWord.test(doc.sliceString(to, to + 1))) to++
+  return from === to ? null : { from, to }
+}
+
 function maybeOpenCtrlClickTarget(
   event: MouseEvent,
   view: EditorView,
@@ -376,6 +387,35 @@ async function lspCompletionSource(
       apply: o.insert_text,
     })),
     validFor: /^[\w$]*$/,
+  }
+}
+
+async function lspHoverSource(view: EditorView, pos: number) {
+  const path = view.state.facet(lspPath)
+  if (!path || !languageForPath(path)) return null
+  const range = wordRangeAt(view.state.doc, pos)
+  if (!range) return null
+
+  const line = view.state.doc.lineAt(pos)
+  const lspLine = line.number - 1
+  const lspChar = pos - line.from
+
+  await lspChangePath(path, view.state.doc.toString())
+
+  const hover = await lspHover(path, lspLine, lspChar, 0).catch(() => null)
+  const contents = hover?.contents?.trim()
+  if (!contents) return null
+
+  return {
+    pos: range.from,
+    end: range.to,
+    above: true,
+    create() {
+      const dom = document.createElement('div')
+      dom.className = 'cm-lsp-hover'
+      dom.textContent = contents
+      return { dom }
+    },
   }
 }
 
@@ -455,6 +495,7 @@ export function createEditorState(
     : [
         getLanguageExtension(path ?? ''),
         autocompletion({ override: [lspCompletionSource] }),
+        hoverTooltip(lspHoverSource, { hideOnChange: true }),
         closeBrackets(),
         indentOnInput(),
         bracketMatching(),

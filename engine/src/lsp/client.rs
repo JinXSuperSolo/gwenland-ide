@@ -23,6 +23,7 @@ use super::config::LspSettings;
 use super::definition::{LspDefinitionLocation, normalize_definition};
 use super::diagnostics::{DiagnosticsStore, LspDiagnostic, parse_publish_diagnostics};
 use super::error::LspError;
+use super::hover::{LspHover, normalize_hover};
 use super::language::LanguageId;
 use super::process::{ServerProcess, resolve_command};
 use super::root::{detect_root, file_uri_to_path, path_to_file_uri};
@@ -35,6 +36,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Completion deadline — fail-soft so typing never freezes (Requirement 11.9).
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFINITION_TIMEOUT: Duration = Duration::from_secs(2);
+const HOVER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Per-file/per-language LSP state shown in the editor (Requirement 12.2). The
 /// serde tag is `state` so the UI can discriminate.
@@ -176,11 +178,8 @@ impl LspClient {
             let status = status.clone();
             let on_status = on_status.clone();
             let root_str = root.to_string_lossy().into_owned();
-            Box::new(move || {
-                let crashed = LspStatus::Crashed {
-                    language,
-                    message: "language server exited unexpectedly".into(),
-                };
+            Box::new(move |message: String| {
+                let crashed = LspStatus::Crashed { language, message };
                 if let Ok(mut s) = status.lock() {
                     *s = crashed.clone();
                 }
@@ -350,6 +349,35 @@ impl LspClient {
             .process
             .request("textDocument/definition", params, timeout)?;
         Ok(normalize_definition(&result))
+    }
+
+    fn hover(
+        &self,
+        uri: &str,
+        line: u32,
+        character: u32,
+        timeout: Duration,
+    ) -> Result<Option<LspHover>, LspError> {
+        if !matches!(self.status(), LspStatus::Connected { .. }) {
+            return Err(LspError::NotInitialized);
+        }
+        let is_open = self
+            .shared
+            .versions
+            .lock()
+            .map(|v| v.contains_key(uri))
+            .unwrap_or(false);
+        if !is_open {
+            return Ok(None);
+        }
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+        });
+        let result = self
+            .process
+            .request("textDocument/hover", params, timeout)?;
+        Ok(normalize_hover(&result))
     }
 
     fn shutdown(&mut self) {
@@ -645,6 +673,23 @@ impl LspManager {
         let client = clients.get_mut(&key)?;
         client
             .definition(&uri, line, character, DEFINITION_TIMEOUT)
+            .unwrap_or_default()
+    }
+
+    /// Request hover contents for `path` at `line`/`character`.
+    /// Fail-soft: missing servers, unsupported files, and timeouts return None.
+    pub fn hover(&self, path: &Path, line: u32, character: u32) -> Option<LspHover> {
+        let uri = path_to_file_uri(path);
+        let key = self
+            .doc_index
+            .lock()
+            .expect("doc_index poisoned")
+            .get(&uri)
+            .cloned()?;
+        let mut clients = self.clients.lock().expect("clients poisoned");
+        let client = clients.get_mut(&key)?;
+        client
+            .hover(&uri, line, character, HOVER_TIMEOUT)
             .unwrap_or_default()
     }
 
@@ -957,6 +1002,12 @@ mod tests {
     fn definition_for_unopened_document_is_none() {
         let mgr = noop_manager();
         assert_eq!(mgr.definition(Path::new("src/main.rs"), 0, 0), None);
+    }
+
+    #[test]
+    fn hover_for_unopened_document_is_none() {
+        let mgr = noop_manager();
+        assert_eq!(mgr.hover(Path::new("src/main.rs"), 0, 0), None);
     }
 
     #[test]

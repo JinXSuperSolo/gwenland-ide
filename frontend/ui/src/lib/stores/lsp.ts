@@ -98,8 +98,12 @@ export async function lspOpenPath(path: string, text: string): Promise<void> {
   try {
     const status = await lspOpenDocument(path, text, version, get(workspace).folderPath)
     setStatus(path, status)
-  } catch {
-    // Backend rejection (e.g. settings load): leave editing fully usable.
+  } catch (e) {
+    setStatus(path, {
+      state: 'crashed',
+      language,
+      message: String(e || 'LSP command failed'),
+    })
   }
 }
 
