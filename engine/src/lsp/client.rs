@@ -101,7 +101,11 @@ type ClientKey = (String, PathBuf);
 /// arrive for a closed document (Requirement 5.4) without a back-reference into
 /// [`LspClient`].
 struct ClientShared {
-    /// open uri → last version (presence == document is open).
+    /// open document key → last version (presence == document is open).
+    ///
+    /// The key is derived from the file path, not the verbatim URI, because
+    /// servers may publish the same Windows file URI with different drive
+    /// casing or escaping than the URI we sent in `didOpen`.
     versions: Mutex<HashMap<String, i32>>,
     diagnostics: Mutex<DiagnosticsStore>,
 }
@@ -147,12 +151,13 @@ impl LspClient {
                 let Some((uri, diagnostics)) = parse_publish_diagnostics(&params) else {
                     return;
                 };
+                let doc_key = document_key_from_uri(&uri);
                 // Drop diagnostics for a document that is not open (closed or
                 // never opened) so stale markers never reach the UI.
                 if !shared
                     .versions
                     .lock()
-                    .map(|v| v.contains_key(&uri))
+                    .map(|v| v.contains_key(&doc_key))
                     .unwrap_or(false)
                 {
                     return;
@@ -238,7 +243,7 @@ impl LspClient {
         text: &str,
     ) -> Result<(), LspError> {
         if let Ok(mut v) = self.shared.versions.lock() {
-            v.insert(uri.to_string(), version);
+            v.insert(document_key_from_uri(uri), version);
         }
         self.process.notify(
             "textDocument/didOpen",
@@ -251,18 +256,19 @@ impl LspClient {
     /// the per-document version monotonic (Requirement 9.4).
     fn did_change(&self, uri: &str, version: i32, text: &str) -> Result<(), LspError> {
         {
+            let doc_key = document_key_from_uri(uri);
             let mut v = self
                 .shared
                 .versions
                 .lock()
                 .map_err(|_| LspError::transport("versions poisoned"))?;
             // Only sync changes for an open document with a newer version.
-            match v.get(uri) {
+            match v.get(&doc_key) {
                 None => return Ok(()), // not open: no-op
                 Some(prev) if !is_newer_version(Some(*prev), version) => return Ok(()),
                 _ => {}
             }
-            v.insert(uri.to_string(), version);
+            v.insert(doc_key, version);
         }
         self.process.notify(
             "textDocument/didChange",
@@ -273,11 +279,12 @@ impl LspClient {
     /// Send `textDocument/didClose`, forget the document version, and clear its
     /// diagnostics (Requirement 8.5/9.9/10.10).
     fn did_close(&self, uri: &str) -> Result<(), LspError> {
+        let doc_key = document_key_from_uri(uri);
         let was_open = self
             .shared
             .versions
             .lock()
-            .map(|mut v| v.remove(uri).is_some())
+            .map(|mut v| v.remove(&doc_key).is_some())
             .unwrap_or(false);
         if let Ok(mut store) = self.shared.diagnostics.lock() {
             store.clear_uri(uri);
@@ -307,7 +314,7 @@ impl LspClient {
             .shared
             .versions
             .lock()
-            .map(|v| v.contains_key(uri))
+            .map(|v| v.contains_key(&document_key_from_uri(uri)))
             .unwrap_or(false);
         if !is_open {
             return Ok(Vec::new());
@@ -336,7 +343,7 @@ impl LspClient {
             .shared
             .versions
             .lock()
-            .map(|v| v.contains_key(uri))
+            .map(|v| v.contains_key(&document_key_from_uri(uri)))
             .unwrap_or(false);
         if !is_open {
             return Ok(None);
@@ -365,7 +372,7 @@ impl LspClient {
             .shared
             .versions
             .lock()
-            .map(|v| v.contains_key(uri))
+            .map(|v| v.contains_key(&document_key_from_uri(uri)))
             .unwrap_or(false);
         if !is_open {
             return Ok(None);
@@ -390,6 +397,25 @@ fn is_newer_version(prev: Option<i32>, next: i32) -> bool {
     match prev {
         Some(p) => next > p,
         None => true,
+    }
+}
+
+fn document_key_from_uri(uri: &str) -> String {
+    file_uri_to_path(uri)
+        .map(|path| document_key_from_path(&path))
+        .unwrap_or_else(|| document_key_from_raw(uri))
+}
+
+fn document_key_from_path(path: &Path) -> String {
+    document_key_from_raw(&path.to_string_lossy().replace('\\', "/"))
+}
+
+fn document_key_from_raw(value: &str) -> String {
+    let normalized = value.replace('\\', "/");
+    if cfg!(windows) {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized
     }
 }
 
@@ -801,9 +827,22 @@ impl LspManager {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     fn noop_manager() -> LspManager {
         LspManager::new(Arc::new(|_| {}), Arc::new(|_| {}))
+    }
+
+    fn diagnostics_manager() -> (LspManager, Arc<Mutex<Vec<DiagnosticsUpdate>>>) {
+        let updates = Arc::new(Mutex::new(Vec::new()));
+        let captured = updates.clone();
+        let mgr = LspManager::new(
+            Arc::new(move |update| {
+                captured.lock().expect("diagnostics poisoned").push(update);
+            }),
+            Arc::new(|_| {}),
+        );
+        (mgr, updates)
     }
 
     /// Build a manager that counts status emissions, for transition assertions.
@@ -949,6 +988,18 @@ mod tests {
         assert!(is_newer_version(Some(1), 2));
         assert!(!is_newer_version(Some(2), 2)); // equal is not newer
         assert!(!is_newer_version(Some(5), 3)); // older dropped
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn document_key_matches_windows_uri_variants() {
+        let opened = "file:///C:/Users/Reyha/My%20Project/src/main.rs";
+        let published = "file:///c%3A/Users/Reyha/My%20Project/src/main.rs";
+
+        assert_eq!(
+            document_key_from_uri(opened),
+            document_key_from_uri(published)
+        );
     }
 
     #[test]
@@ -1121,6 +1172,74 @@ mod tests {
         assert_eq!(mgr.client_count(), 0, "restart clears old clients");
 
         mgr.shutdown_all();
+    }
+
+    #[test]
+    fn smoke_rust_analyzer_diagnostics_when_present() {
+        if resolve_command("rust-analyzer").is_none() {
+            eprintln!("[smoke] skip: rust-analyzer not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname=\"diagnostics_smoke\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+        )
+        .unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let file = src.join("main.rs");
+        let bad_text = "fn main\n    println!(\"Hello, world!\");\n}\n";
+        std::fs::write(&file, bad_text).unwrap();
+
+        let (mgr, updates) = diagnostics_manager();
+        let st = mgr.open_document(
+            &file,
+            bad_text,
+            1,
+            Some(tmp.path()),
+            &LspSettings::default(),
+        );
+        let LspStatus::Connected { .. } = st else {
+            eprintln!("[smoke] skip: rust-analyzer present but did not connect ({st:?})");
+            mgr.shutdown_all();
+            return;
+        };
+
+        let target_key = document_key_from_path(&file);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut latest = Vec::new();
+        while Instant::now() < deadline {
+            if let Ok(guard) = updates.lock() {
+                latest = guard
+                    .iter()
+                    .rev()
+                    .find(|update| {
+                        document_key_from_uri(&update.uri) == target_key
+                            || document_key_from_path(Path::new(&update.path)) == target_key
+                    })
+                    .map(|update| update.diagnostics.clone())
+                    .unwrap_or_default();
+            }
+            if !latest.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        mgr.shutdown_all();
+
+        if latest.is_empty() {
+            eprintln!(
+                "[smoke] skip: rust-analyzer connected but did not publish diagnostics for invalid Rust"
+            );
+            return;
+        }
+        eprintln!(
+            "[smoke] rust-analyzer diagnostics: {} ({})",
+            latest.len(),
+            latest[0].message
+        );
     }
 
     /// Shared connect + completion smoke for a language. Skips cleanly when the

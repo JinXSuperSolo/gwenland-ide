@@ -526,7 +526,7 @@ export function mountEditorView(state: EditorState, parent: HTMLElement): Editor
 
 /** Map an LSP severity string to CodeMirror's diagnostic severity. */
 function cmSeverity(s: LspDiagnostic['severity']): CmDiagnostic['severity'] {
-  return s === 'information' ? 'info' : s // error | warning | hint pass through
+  return s === 'error' || s === 'warning' ? s : 'info'
 }
 
 /**
