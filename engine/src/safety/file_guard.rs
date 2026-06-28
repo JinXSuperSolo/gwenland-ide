@@ -17,13 +17,12 @@
 
 use std::path::Path;
 
-use crate::audit::{AuditCategory, AuditKind, AuditWriter};
-use crate::recovery::{RecoveryError, SnapshotRecord, create_snapshot};
 use crate::safety::action::{Actor, SafetyAction, SafetyActionKind};
+use crate::safety::audit::{AuditCategory, AuditKind, AuditWriter};
 use crate::safety::confirmation::evaluate;
-use crate::safety::decision::{SafetyDecision, SafetyVerdict};
+use crate::safety::decision::{SafetyDecision, SafetyStrictness, SafetyVerdict};
 use crate::safety::protected_paths::ProtectedPathRegistry;
-use crate::workspace::SafetyStrictness;
+use crate::safety::recovery::{RecoveryError, SnapshotRecord, create_snapshot};
 
 /// Outcome of a file-mutation preflight check.
 #[derive(Debug)]
@@ -67,7 +66,7 @@ pub fn preflight_file_mutation(
         AuditKind::SafetyDecision,
     );
     if let Err(_audit_err) = audit_result
-        && crate::audit::should_block_on_audit_failure(decision.risk)
+        && crate::safety::audit::should_block_on_audit_failure(decision.risk)
     {
         // Audit failed for a destructive/secret action → block.
         return PreflightOutcome::Blocked(crate::safety::decision::SafetyDecision::block(

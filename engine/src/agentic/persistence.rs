@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::agentic::session::{AgentPhase, AgentSession};
 
 fn sessions_dir() -> Result<PathBuf, String> {
-    let dir = crate::app_data::get_app_data_dir()
+    let dir = crate::system::app_data::get_app_data_dir()
         .map_err(|e| e.to_string())?
         .join("agent_sessions");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

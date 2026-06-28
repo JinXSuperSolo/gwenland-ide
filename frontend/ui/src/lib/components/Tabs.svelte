@@ -75,6 +75,8 @@
   function tabTitle(tab: Tab): string {
     if (tab.kind === 'editor') return tab.path
     if (tab.kind === 'diff') return `${tab.path} (diff)`
+    if (tab.kind === 'git-graph') return `Git Graph: ${tab.workspacePath}`
+    if (tab.kind === 'commit-diff') return `${tab.shortHash}: ${tab.message}`
     return tab.source.kind === 'static-file' ? tab.source.path : tab.source.url
   }
 

@@ -23,7 +23,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::fs::{DirEntry, FsError, list_directory};
+use crate::workspace::fs::{DirEntry, FsError, list_directory};
 
 /// One row in the flattened, depth-first tree — the unit the UI renders.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

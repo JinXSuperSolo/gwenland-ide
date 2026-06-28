@@ -11,7 +11,7 @@ import { workspace } from './workspace'
 import { scheduleHistorySnapshot } from './history-snapshots'
 import { editorPreferences } from './editor-preferences'
 
-export type TabKind = 'editor' | 'preview' | 'diff'
+export type TabKind = 'editor' | 'preview' | 'diff' | 'git-graph' | 'commit-diff'
 export type EditorGroupOrientation = 'horizontal' | 'vertical'
 
 export type PreviewSource =
@@ -49,7 +49,20 @@ export interface DiffTab extends TabCommon {
   untracked: boolean
 }
 
-export type Tab = EditorTab | PreviewTab | DiffTab
+export interface GitGraphTab extends TabCommon {
+  kind: 'git-graph'
+  workspacePath: string
+}
+
+export interface CommitDiffTab extends TabCommon {
+  kind: 'commit-diff'
+  workspacePath: string
+  hash: string
+  shortHash: string
+  message: string
+}
+
+export type Tab = EditorTab | PreviewTab | DiffTab | GitGraphTab | CommitDiffTab
 
 export interface EditorGroup {
   id: string
@@ -221,6 +234,8 @@ function tabRestoreKey(tab: Tab): string {
   if (isEditorTab(tab)) return tab.path
   if (isPreviewTab(tab)) return tab.source.kind === 'static-file' ? tab.source.path : tab.source.url
   if (isDiffTab(tab)) return tab.path
+  if (isGitGraphTab(tab)) return ''
+  if (isCommitDiffTab(tab)) return ''
   return ''
 }
 
@@ -306,6 +321,14 @@ export function isPreviewTab(tab: Tab): tab is PreviewTab {
 
 export function isDiffTab(tab: Tab): tab is DiffTab {
   return tab.kind === 'diff'
+}
+
+export function isGitGraphTab(tab: Tab): tab is GitGraphTab {
+  return tab.kind === 'git-graph'
+}
+
+export function isCommitDiffTab(tab: Tab): tab is CommitDiffTab {
+  return tab.kind === 'commit-diff'
 }
 
 export function isImagePath(path: string): boolean {
@@ -536,6 +559,87 @@ export function openDiff(
     ...state,
     activeGroupId: targetGroupId,
     groups: mapGroup(state, targetGroupId, (group) => ({ ...group, tabs: [...group.tabs, tab], activeId: id })),
+  }))
+  return id
+}
+
+export function openCommitDiff(
+  workspacePath: string,
+  hash: string,
+  shortHash: string,
+  message: string,
+  groupId?: string,
+  ignoreLock = false,
+): string {
+  const existingGroup = get(tabs).groups.find((group) =>
+    group.tabs.some(
+      (tab) => isCommitDiffTab(tab) && tab.workspacePath === workspacePath && tab.hash === hash,
+    ),
+  )
+  const existing = existingGroup?.tabs.find(
+    (tab): tab is CommitDiffTab =>
+      isCommitDiffTab(tab) && tab.workspacePath === workspacePath && tab.hash === hash,
+  )
+  if (existing && existingGroup) {
+    activateTab(existing.id, existingGroup.id)
+    return existing.id
+  }
+
+  const targetGroupId = ensureWritableGroupId(groupId, ignoreLock)
+  const id = genId('commit-diff')
+  const tab: CommitDiffTab = {
+    id,
+    kind: 'commit-diff',
+    workspacePath,
+    hash,
+    shortHash,
+    message,
+    name: `${shortHash} (commit)`,
+  }
+  updateTabs((state) => ({
+    ...state,
+    activeGroupId: targetGroupId,
+    groups: mapGroup(state, targetGroupId, (group) => ({
+      ...group,
+      tabs: [...group.tabs, tab],
+      activeId: id,
+    })),
+  }))
+  return id
+}
+
+export function openGitGraph(
+  workspacePath: string,
+  groupId?: string,
+  ignoreLock = false,
+): string {
+  const existingGroup = get(tabs).groups.find((group) =>
+    group.tabs.some((tab) => isGitGraphTab(tab) && tab.workspacePath === workspacePath),
+  )
+  const existing = existingGroup?.tabs.find(
+    (tab): tab is GitGraphTab => isGitGraphTab(tab) && tab.workspacePath === workspacePath,
+  )
+  if (existing && existingGroup) {
+    activateTab(existing.id, existingGroup.id)
+    return existing.id
+  }
+
+  const targetGroupId = ensureWritableGroupId(groupId, ignoreLock)
+  const id = genId('git-graph')
+  const tab: GitGraphTab = {
+    id,
+    kind: 'git-graph',
+    name: 'Git Graph',
+    workspacePath,
+  }
+  updateTabs((state) => ({
+    ...state,
+    activeGroupId: targetGroupId,
+    groups: mapGroup(state, targetGroupId, (group) => ({
+      ...group,
+      tabs: [...group.tabs, tab],
+      activeId: id,
+    })),
   }))
   return id
 }

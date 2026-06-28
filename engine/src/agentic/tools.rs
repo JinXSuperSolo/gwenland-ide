@@ -303,7 +303,7 @@ fn exec_read_file(root: &Path, call: &ToolCall) -> ToolResult {
         Ok(c) => c,
         Err(e) => return ToolResult::err(&call.id, format!("refused: {e}")),
     };
-    match crate::fs::read_file(&canon) {
+    match crate::workspace::fs::read_file(&canon) {
         Ok(text) => {
             let (text, truncated) = truncate_bytes(text, MAX_ITEM_BYTES);
             let suffix = if truncated { "\n…(truncated)" } else { "" };
@@ -321,7 +321,7 @@ fn exec_list_dir(root: &Path, call: &ToolCall) -> ToolResult {
         Ok(c) => c,
         Err(e) => return ToolResult::err(&call.id, format!("refused: {e}")),
     };
-    match crate::fs::list_directory(&canon) {
+    match crate::workspace::fs::list_directory(&canon) {
         Ok(entries) => {
             let mut lines = Vec::new();
             for e in entries {

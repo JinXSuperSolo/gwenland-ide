@@ -19,7 +19,7 @@ use crate::ai::error::AiError;
 use crate::ai::keychain;
 use crate::ai::openai::{OpenAiStream, build_chat_body, parse_models};
 use crate::ai::provider::{AiProvider, MessageRequest, ModelInfo, TokenStream};
-use crate::settings::GenericProviderSetting;
+use crate::system::settings::GenericProviderSetting;
 
 pub struct GenericAdapter {
     /// Provider id (e.g. `generic-groq`); also the keychain account id.

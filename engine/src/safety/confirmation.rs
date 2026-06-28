@@ -8,10 +8,10 @@
 //! 5. Protected paths → ask (or block under Paranoid).
 //! 6. All other actions → allow (or ask under Strict, block under Paranoid for writes).
 
+use crate::safety::SafetyStrictness;
 use crate::safety::action::{SafetyAction, SafetyActionKind};
 use crate::safety::decision::{ConfirmationKind, RiskLevel, SafetyDecision};
 use crate::safety::protected_paths::ProtectedPathRegistry;
-use crate::workspace::SafetyStrictness;
 
 /// Evaluate `action` against `registry` and `strictness`, returning a
 /// `SafetyDecision`. This is the single authoritative policy function —

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::search_policy::should_exclude_fast;
+use crate::safety::search_policy::should_exclude_fast;
 
 pub const DEFAULT_MAX_RESULTS: usize = 2_000;
 const MAX_LINE_BYTES: usize = 8 * 1024;

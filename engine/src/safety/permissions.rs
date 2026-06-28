@@ -288,9 +288,9 @@ pub fn evaluate_permission(
     permission: &Permission,
     workspace_root: &Path,
 ) -> crate::safety::SafetyDecision {
+    use crate::safety::SafetyStrictness;
     use crate::safety::action::{Actor, SafetyAction, SafetyActionKind};
     use crate::safety::protected_paths::ProtectedPathRegistry;
-    use crate::workspace::SafetyStrictness;
 
     let kind = SafetyActionKind::ExtensionPermission {
         extension_id: extension_id.to_string(),

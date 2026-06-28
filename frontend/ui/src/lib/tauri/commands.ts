@@ -1,10 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import type { CommitDetails, CommitGraphPayload } from '../types/git'
 
 /**
  * Thin typed wrappers over the existing Rust `#[tauri::command]`s in
- * `frontend/src/main.rs`. No new backend commands are introduced — these just
- * give the Svelte side a typed surface. Argument names match the Rust fn params
+ * `frontend/src/main.rs`. These give the Svelte side a typed surface over the
+ * backend commands. Argument names match the Rust fn params
  * (Tauri maps camelCase JS keys, but these are already single-word snake-safe).
  */
 
@@ -840,6 +841,24 @@ export function gitIsRepo(root: string): Promise<boolean> {
 /** Full status snapshot (branch, dirty count, per-file list). */
 export function gitStatus(root: string): Promise<GitStatus> {
   return invoke<GitStatus>('git_status', { root })
+}
+
+/** Bounded, read-only commit graph payload for the Canvas2D graph view. */
+export function getGitGraph(
+  workspacePath: string,
+  maxCommits: number | null = 300
+): Promise<CommitGraphPayload> {
+  return invoke<CommitGraphPayload>('get_git_graph', { workspacePath, maxCommits })
+}
+
+/** Lazy, read-only metadata for one commit. */
+export function getCommitDetails(workspacePath: string, hash: string): Promise<CommitDetails> {
+  return invoke<CommitDetails>('get_commit_details', { workspacePath, hash })
+}
+
+/** Lazy, read-only unified diff for one commit. */
+export function getCommitDiff(workspacePath: string, hash: string): Promise<string> {
+  return invoke<string>('get_commit_diff', { workspacePath, hash })
 }
 
 /** Stage one path, or everything when `all` is true. */

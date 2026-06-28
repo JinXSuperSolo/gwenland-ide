@@ -17,13 +17,14 @@
   import DiffActionBar from './lib/components/DiffActionBar.svelte'
   import LocalHistoryPanel from './lib/components/LocalHistoryPanel.svelte'
   import SimpleDiffPanel from './lib/components/SimpleDiffPanel.svelte'
+  import GitGraphWindow from './lib/components/git/GitGraphWindow.svelte'
   import ContextMenuRoot from './lib/context-menu/ContextMenuRoot.svelte'
   import PromptDialog from './lib/components/PromptDialog.svelte'
   import WelcomeScreen from './lib/components/WelcomeScreen.svelte'
   import { aiChat } from './lib/stores/ai-chat'
   import { workspace } from './lib/stores/workspace'
   import { sidebarView } from './lib/stores/sidebar'
-  import { activateTab, isEditorTab, isDiffTab, isPreviewTab, openFile, tabs, type Tab } from './lib/stores/tabs'
+  import { activateTab, isCommitDiffTab, isEditorTab, isDiffTab, isGitGraphTab, isPreviewTab, openFile, tabs, type Tab } from './lib/stores/tabs'
   import { handleGlobalKeydown } from './lib/commands/keybinding-handler'
   import { initWorkspaceStatePersistence } from './lib/stores/workspace-state'
   import { handleGlobalContextMenu } from './lib/context-menu/globalContextMenu'
@@ -64,6 +65,8 @@
 
   function tabSubtitle(tab: Tab): string {
     if (isEditorTab(tab) || isDiffTab(tab)) return tab.path
+    if (isGitGraphTab(tab)) return tab.workspacePath
+    if (isCommitDiffTab(tab)) return `${tab.shortHash} - ${tab.workspacePath}`
     if (isPreviewTab(tab)) return tab.source.kind === 'static-file' ? tab.source.path : tab.source.url
     return ''
   }
@@ -197,6 +200,7 @@
   <PromptDialog />
   <LocalHistoryPanel />
   <SimpleDiffPanel />
+  <GitGraphWindow />
   {#if quickSwitchOpen && quickSwitchTabs.length}
     <div class="quick-switcher" role="listbox" aria-label="Open Editors">
       {#each quickSwitchTabs as tab, index (tab.id)}

@@ -4117,6 +4117,39 @@ async fn git_status(root: String) -> Result<gwenland_engine::git::GitStatus, Str
 }
 
 #[tauri::command]
+async fn get_git_graph(
+    workspace_path: String,
+    max_commits: Option<u32>,
+) -> Result<gwenland_engine::git::CommitGraphPayload, String> {
+    run_blocking("get_git_graph", move || {
+        gwenland_engine::git::graph(Path::new(&workspace_path), max_commits)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_commit_details(
+    workspace_path: String,
+    hash: String,
+) -> Result<gwenland_engine::git::CommitDetails, String> {
+    run_blocking("get_commit_details", move || {
+        gwenland_engine::git::commit_details(Path::new(&workspace_path), &hash)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_commit_diff(workspace_path: String, hash: String) -> Result<String, String> {
+    run_blocking("get_commit_diff", move || {
+        gwenland_engine::git::commit_diff(Path::new(&workspace_path), &hash)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn git_stage(root: String, path: String, all: bool) -> Result<(), String> {
     run_blocking("git_stage", move || {
         let r = Path::new(&root);
@@ -4889,6 +4922,9 @@ fn main() {
             lsp_definition,
             git_is_repo,
             git_status,
+            get_git_graph,
+            get_commit_details,
+            get_commit_diff,
             git_stage,
             git_unstage,
             git_discard,
