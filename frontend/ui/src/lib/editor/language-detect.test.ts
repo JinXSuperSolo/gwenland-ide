@@ -8,6 +8,7 @@ describe('languageIdForFilename', () => {
     expect(languageIdForFilename('lib/index.ts')).toBe('javascript')
     expect(languageIdForFilename('script.py')).toBe('python')
     expect(languageIdForFilename('package.json')).toBe('json')
+    expect(languageIdForFilename('Cargo.toml')).toBe('toml')
     expect(languageIdForFilename('README.md')).toBe('markdown')
     expect(languageIdForFilename('styles.scss')).toBe('css')
   })

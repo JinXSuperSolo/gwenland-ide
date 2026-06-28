@@ -1,11 +1,11 @@
 import type { Extension } from '@codemirror/state'
 import {
-  defaultHighlightStyle,
   StreamLanguage,
   syntaxHighlighting,
   type StreamParser,
   type StringStream,
 } from '@codemirror/language'
+import { EditorView } from '@codemirror/view'
 
 type LanguageId =
   | 'javascript'
@@ -15,6 +15,7 @@ type LanguageId =
   | 'html'
   | 'json'
   | 'markdown'
+  | 'toml'
 
 interface SimpleState {
   block: string | null
@@ -133,6 +134,59 @@ function eatIdentifier(stream: StringStream): string {
   return stream.current()
 }
 
+function nextNonSpace(stream: StringStream): string {
+  return stream.string.slice(stream.pos).match(/^\s*(.)/)?.[1] ?? ''
+}
+
+function classifyIdentifier(stream: StringStream, word: string): string {
+  const before = stream.string.slice(0, stream.start).trimEnd()
+  const next = nextNonSpace(stream)
+  if (before.endsWith('.')) return next === '(' ? 'propertyName.function' : 'propertyName'
+  if (/\b(fn|function|def)\s+$/.test(before)) return 'variableName.function'
+  if (next === '(') return 'variableName.function'
+  if (/^[A-Z]/.test(word)) return 'typeName'
+  return 'variableName'
+}
+
+const gwenHighlighter = {
+  style(tags: readonly unknown[]): string | null {
+    const names = tags
+      .map((tag) => (tag as { name?: string }).name ?? '')
+      .filter(Boolean)
+    const has = (needle: string) => names.some((name) => name.includes(needle))
+    if (has('invalid')) return 'gw-syn-invalid'
+    if (has('comment')) return 'gw-syn-comment'
+    if (has('keyword')) return 'gw-syn-keyword'
+    if (has('string')) return 'gw-syn-string'
+    if (has('tagName')) return 'gw-syn-tag'
+    if (has('attributeName')) return 'gw-syn-attribute'
+    if (has('typeName') || has('className')) return 'gw-syn-type'
+    if (has('propertyName')) return 'gw-syn-property'
+    if (has('function')) return 'gw-syn-function'
+    if (has('number') || has('literal') || has('atom') || has('bool')) return 'gw-syn-number'
+    if (has('operator') || has('punctuation')) return 'gw-syn-operator'
+    if (has('variableName')) return 'gw-syn-variable'
+    if (has('heading')) return 'gw-syn-heading'
+    return null
+  },
+}
+
+const gwenSyntaxTheme = EditorView.theme({
+  '.gw-syn-keyword': { color: '#d68d5c' },
+  '.gw-syn-string': { color: '#89b96e' },
+  '.gw-syn-comment': { color: '#5a5a5a', fontStyle: 'italic' },
+  '.gw-syn-function': { color: '#dcdcaa' },
+  '.gw-syn-type': { color: '#4ec9b0' },
+  '.gw-syn-number': { color: '#b5cea8' },
+  '.gw-syn-variable': { color: '#9cdcfe' },
+  '.gw-syn-operator': { color: '#cccccc' },
+  '.gw-syn-property': { color: '#ce9178' },
+  '.gw-syn-tag': { color: '#f28b55' },
+  '.gw-syn-attribute': { color: '#d7ba7d' },
+  '.gw-syn-heading': { color: '#d68d5c', fontWeight: '600' },
+  '.gw-syn-invalid': { color: '#f87171' },
+})
+
 function cLikeParser(name: LanguageId): StreamParser<SimpleState> {
   return {
     name,
@@ -165,7 +219,11 @@ function cLikeParser(name: LanguageId): StreamParser<SimpleState> {
       }
       if (/[A-Za-z_$]/.test(ch)) {
         const word = eatIdentifier(stream)
-        return C_LIKE_KEYWORDS.has(word) ? 'keyword' : 'variableName'
+        return C_LIKE_KEYWORDS.has(word) ? 'keyword' : classifyIdentifier(stream, word)
+      }
+      if (/[+\-*/%=!<>|&^~?:]/.test(ch)) {
+        stream.eatWhile(/[+\-*/%=!<>|&^~?:]/)
+        return 'operator'
       }
       return /[{}()[\];,.]/.test(ch) ? 'punctuation' : null
     },
@@ -191,7 +249,11 @@ function pythonParser(): StreamParser<SimpleState> {
       }
       if (/[A-Za-z_]/.test(ch)) {
         const word = eatIdentifier(stream)
-        return PY_KEYWORDS.has(word) ? 'keyword' : 'variableName'
+        return PY_KEYWORDS.has(word) ? 'keyword' : classifyIdentifier(stream, word)
+      }
+      if (/[+\-*/%=!<>|&^~]/.test(ch)) {
+        stream.eatWhile(/[+\-*/%=!<>|&^~]/)
+        return 'operator'
       }
       return /[{}()[\]:,.]/.test(ch) ? 'punctuation' : null
     },
@@ -232,7 +294,7 @@ function cssParser(): StreamParser<SimpleState> {
         stream.eatWhile(/[0-9.%a-zA-Z-]/)
         return 'number'
       }
-      return /[{}:;,]/.test(ch) ? 'punctuation' : null
+      return /[{}:;,]/.test(ch) ? 'punctuation' : 'operator'
     },
   }
 }
@@ -273,7 +335,10 @@ function jsonParser(): StreamParser<SimpleState> {
     token(stream) {
       if (stream.eatSpace()) return null
       const ch = stream.next() ?? ''
-      if (ch === '"') return eatString(stream, ch)
+      if (ch === '"') {
+        eatString(stream, ch)
+        return nextNonSpace(stream) === ':' ? 'propertyName' : 'string'
+      }
       if (/\d|-/.test(ch)) {
         stream.eatWhile(/[0-9.eE+-]/)
         return 'number'
@@ -283,6 +348,35 @@ function jsonParser(): StreamParser<SimpleState> {
         return word === 'true' || word === 'false' || word === 'null' ? 'atom' : null
       }
       return /[{}[\]:,]/.test(ch) ? 'punctuation' : null
+    },
+  }
+}
+
+function tomlParser(): StreamParser<SimpleState> {
+  return {
+    name: 'toml',
+    startState: () => ({ block: null }),
+    languageData: { commentTokens: { line: '#' } },
+    token(stream) {
+      if (stream.eatSpace()) return null
+      if (stream.match('#')) {
+        stream.skipToEnd()
+        return 'comment'
+      }
+      if (stream.sol() && stream.match(/^\s*\[[^\]]+\]/)) return 'heading'
+      const ch = stream.next() ?? ''
+      if (ch === '"' || ch === "'") return eatString(stream, ch)
+      if (/\d|-/.test(ch)) {
+        stream.eatWhile(/[0-9.eE+_\-]/)
+        return 'number'
+      }
+      if (/[A-Za-z_]/.test(ch)) {
+        const word = eatIdentifier(stream)
+        if (word === 'true' || word === 'false') return 'atom'
+        return nextNonSpace(stream) === '=' ? 'propertyName' : 'variableName'
+      }
+      if (ch === '=') return 'operator'
+      return /[{}[\],.]/.test(ch) ? 'punctuation' : null
     },
   }
 }
@@ -311,6 +405,7 @@ const LANGUAGES: Record<LanguageId, Extension> = {
   html: StreamLanguage.define(htmlParser()).extension,
   json: StreamLanguage.define(jsonParser()).extension,
   markdown: StreamLanguage.define(markdownParser()).extension,
+  toml: StreamLanguage.define(tomlParser()).extension,
 }
 
 export function languageIdForFilename(filename: string): LanguageId | null {
@@ -337,6 +432,8 @@ export function languageIdForFilename(filename: string): LanguageId | null {
     case 'json':
     case 'jsonl':
       return 'json'
+    case 'toml':
+      return 'toml'
     case 'md':
     case 'mdx':
       return 'markdown'
@@ -347,5 +444,5 @@ export function languageIdForFilename(filename: string): LanguageId | null {
 
 export function getLanguageExtension(filename: string): Extension {
   const id = languageIdForFilename(filename)
-  return id ? [syntaxHighlighting(defaultHighlightStyle, { fallback: true }), LANGUAGES[id]] : []
+  return id ? [gwenSyntaxTheme, syntaxHighlighting(gwenHighlighter, { fallback: true }), LANGUAGES[id]] : []
 }
