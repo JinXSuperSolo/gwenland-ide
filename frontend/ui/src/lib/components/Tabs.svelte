@@ -25,6 +25,20 @@
   let tabsBar: HTMLDivElement | null = null
   let dragOver = $state(false)
   let draggingId = $state<string | null>(null)
+  let isOverflowing = $state(false)
+
+  $effect(() => {
+    if (!tabsBar) return
+    const ro = new ResizeObserver(() => {
+      isOverflowing = tabsBar!.scrollWidth > tabsBar!.clientWidth
+    })
+    ro.observe(tabsBar)
+    void groupTabs.length
+    requestAnimationFrame(() => {
+      if (tabsBar) isOverflowing = tabsBar.scrollWidth > tabsBar.clientWidth
+    })
+    return () => ro.disconnect()
+  })
 
   $effect(() => {
     const id = activeId
@@ -138,10 +152,19 @@
     dragOver = false
     moveTabToGroup(payload.tabId, groupId, dropIndex(e))
   }
+
+  function onWheel(e: WheelEvent) {
+    if (!tabsBar) return
+    if (e.deltaY !== 0 && e.deltaX === 0) {
+      e.preventDefault()
+      tabsBar.scrollLeft += e.deltaY
+    }
+  }
 </script>
 
-<div
-  class="tabs-bar"
+<div class="tabs-container" class:overflowing={isOverflowing}>
+  <div
+    class="tabs-bar"
   class:empty={groupTabs.length === 0}
   class:drag-over={dragOver}
   role="tablist"
@@ -152,6 +175,7 @@
     if (e.currentTarget === e.target) dragOver = false
   }}
   ondrop={onDrop}
+  onwheel={onWheel}
 >
   {#each groupTabs as tab (tab.id)}
     <div
@@ -202,34 +226,43 @@
       ><Icon name="xmark" size={13} /></button>
     </div>
   {/each}
+  </div>
 </div>
 
 <style>
-  .tabs-bar {
+  .tabs-container {
+    position: relative;
     height: 36px;
     flex-shrink: 0;
     background-color: var(--background);
     border-bottom: 1px solid var(--border);
+    min-width: 0;
+    display: flex;
+  }
+  .tabs-container.overflowing::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 24px;
+    background: linear-gradient(to right, transparent, var(--background));
+    pointer-events: none;
+    z-index: 10;
+  }
+  .tabs-bar {
+    flex: 1;
     display: flex;
     align-items: stretch;
     overflow-x: auto;
     overflow-y: hidden;
-    min-width: 0;
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+    scrollbar-width: none;
   }
   .tabs-bar.drag-over {
     background-color: color-mix(in srgb, var(--primary) 8%, var(--background));
   }
   .tabs-bar::-webkit-scrollbar {
-    height: 4px;
-  }
-  .tabs-bar::-webkit-scrollbar-thumb {
-    background-color: var(--border);
-    border-radius: 999px;
-  }
-  .tabs-bar::-webkit-scrollbar-track {
-    background-color: transparent;
+    display: none;
   }
   .tab-item {
     display: flex;
@@ -249,9 +282,12 @@
     position: relative;
     white-space: nowrap;
   }
-  .tab-item:hover {
+  .tab-item:not(.active):hover {
     color: var(--foreground);
-    background-color: var(--secondary);
+    background-color: var(--hover-bg);
+  }
+  .tab-item:hover .tab-close {
+    opacity: 1;
   }
   .tab-item.active {
     color: var(--foreground);
@@ -286,9 +322,6 @@
     font-size: 14px;
     line-height: 1;
     transition: opacity 0.15s ease, background-color 0.15s ease;
-  }
-  .tab-item:hover .tab-close {
-    opacity: 1;
   }
   .tab-close:hover {
     background-color: var(--border);

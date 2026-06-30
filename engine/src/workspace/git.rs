@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Output};
 
 use serde::Serialize;
 use thiserror::Error;
@@ -75,27 +75,64 @@ pub struct GitStatus {
 /// Run `git <args>` in `root`, returning stdout on success. Maps a missing
 /// binary, a non-repo, and any other non-zero exit to a typed error.
 fn run_git(root: &Path, args: &[&str]) -> Result<String, GitError> {
+    let output = run_git_command(root, args)?;
+    git_stdout_or_error(args, output)
+}
+
+fn run_git_command(root: &Path, args: &[&str]) -> Result<Output, GitError> {
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(root);
     hide_child_window(&mut cmd);
-    let output = cmd.output().map_err(|e| {
+    cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             GitError::GitMissing
         } else {
             GitError::Io(e.to_string())
         }
-    })?;
+    })
+}
+
+fn git_stdout_or_error(args: &[&str], output: Output) -> Result<String, GitError> {
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let lower = stderr.to_lowercase();
-        if lower.contains("not a git repository") {
+        if output_mentions_not_repo(&output) {
             Err(GitError::NotARepo)
         } else {
-            Err(GitError::CommandFailed(stderr.trim().to_string()))
+            Err(GitError::CommandFailed(format_git_failure(args, &output)))
         }
     }
+}
+
+fn output_mentions_not_repo(output: &Output) -> bool {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let message = format!("{stderr}\n{stdout}").to_lowercase();
+    message.contains("not a git repository")
+}
+
+fn format_git_failure(args: &[&str], output: &Output) -> String {
+    let code = output
+        .status
+        .code()
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "terminated by signal".to_string());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = stderr.trim();
+    let stdout = stdout.trim();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "no output"
+    };
+
+    format!(
+        "git {} failed with exit code {code}: {detail}",
+        args.join(" ")
+    )
 }
 
 /// Whether `root` is inside a git work tree. Cheap; used to hide all git UI when
@@ -842,17 +879,15 @@ pub fn diff_file(root: &Path, path: &str, untracked: bool) -> Result<String, Git
         // they always do here), so treat a non-empty stdout as success.
         let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
         let args = ["diff", "--no-index", "--", null, path];
-        let mut cmd = Command::new("git");
-        cmd.args(args).current_dir(root);
-        hide_child_window(&mut cmd);
-        let output = cmd.output().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                GitError::GitMissing
-            } else {
-                GitError::Io(e.to_string())
-            }
-        })?;
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        let output = run_git_command(root, &args)?;
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        if output.status.success() || !stdout.trim().is_empty() {
+            Ok(stdout)
+        } else if output_mentions_not_repo(&output) {
+            Err(GitError::NotARepo)
+        } else {
+            Err(GitError::CommandFailed(format_git_failure(&args, &output)))
+        }
     } else {
         run_git(root, &["diff", "HEAD", "--", path])
     }
@@ -904,9 +939,9 @@ mod tests {
 
     #[test]
     fn parses_porcelain_states() {
-        let out = " M src/a.rs\nA  src/b.rs\n?? new.txt\nD  gone.rs\n";
+        let out = " M src/a.rs\nA  src/b.rs\n?? new.txt\nD  gone.rs\n D deleted.txt\n";
         let files = parse_porcelain(out);
-        assert_eq!(files.len(), 4);
+        assert_eq!(files.len(), 5);
         assert_eq!(files[0].path, "src/a.rs");
         assert_eq!(files[0].status, "M");
         assert!(!files[0].staged);
@@ -916,6 +951,9 @@ mod tests {
         assert_eq!(files[2].status, "U");
         assert_eq!(files[3].status, "D");
         assert!(files[3].staged);
+        assert_eq!(files[4].path, "deleted.txt");
+        assert_eq!(files[4].status, "D");
+        assert!(!files[4].staged);
     }
 
     #[test]
@@ -1085,9 +1123,37 @@ mod tests {
         assert_eq!(message, "Subject\n\nBody line");
     }
 
+    #[cfg(unix)]
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code << 8)
+    }
+
+    #[cfg(windows)]
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code as u32)
+    }
+
+    #[test]
+    fn git_failure_message_includes_exit_code_and_diagnostics() {
+        let output = Output {
+            status: exit_status(128),
+            stdout: b"stdout details".to_vec(),
+            stderr: b"fatal: bad revision".to_vec(),
+        };
+
+        let message = format_git_failure(&["show", "bad"], &output);
+
+        assert!(message.contains("git show bad"));
+        assert!(message.contains("exit code 128"));
+        assert!(message.contains("fatal: bad revision"));
+        assert!(!message.contains("stdout details"));
+    }
+
     #[test]
     fn rejects_non_hash_commit_ids() {
-        assert!(validate_commit_hash("aaaaaaaa").is_ok());
+        assert!(matches!(validate_commit_hash("aaaaaaaa"), Ok("aaaaaaaa")));
         assert!(validate_commit_hash("--all").is_err());
         assert!(validate_commit_hash("main").is_err());
     }

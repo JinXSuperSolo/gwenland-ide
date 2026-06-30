@@ -13,12 +13,13 @@
   import { workspace } from '../stores/workspace'
   import { setCursorFromState, clearCursor } from '../stores/cursor'
   import { editorGoToDefinitionAt, setActiveEditor } from '../editor/active-editor'
-  import { lsp, lspChangePath, languageForPath, normPath } from '../stores/lsp'
+  import { lsp, lspChangePath, lspOpenPath, languageForPath, normPath } from '../stores/lsp'
   import { editorPreferences } from '../stores/editor-preferences'
   import { perfSettings } from '../stores/performance'
   import { openContextMenuSmart } from '../context-menu/globalContextMenu'
   import { diffReview, acceptHunk, rejectHunk, sameFilePath } from '../stores/diff-review'
   import { applyReviewOverlay, clearReviewOverlay } from '../editor/diff-overlay'
+  import LspOnboardingBanner from './LspOnboardingBanner.svelte'
   import MarkdownPreview from './MarkdownPreview.svelte'
   import {
     createEditorState,
@@ -52,6 +53,9 @@
       !mountedLarge &&
       !!mountedPath &&
       /\.md(?:own)?$/i.test(mountedPath),
+  )
+  const mountedLspStatus = $derived(
+    mountedPath ? ($lsp.status[normPath(mountedPath)] ?? null) : null
   )
   // Debounce handle for didChange notifications (Requirement 9.8).
   let changeTimer: ReturnType<typeof setTimeout> | null = null
@@ -294,6 +298,11 @@
     setCursorFromState(view.state)
   }
 
+  async function checkLspAgain() {
+    if (!view || !mountedPath) return
+    await lspOpenPath(mountedPath, view.state.doc.toString())
+  }
+
   /** Tear down the current view and mount the given tab's stored state. */
   function mountTab(id: string) {
     destroyView()
@@ -445,35 +454,50 @@
   class:has-minimap={minimapEnabled}
   class:markdown-split={markdownEnabled}
 >
-  {#if stickyScope}
-    <div class="sticky-scope" title={stickyScope}>{stickyScope}</div>
-  {/if}
-  <div
-    class="editor-host"
-    class:inactive={!$appActive}
-    bind:this={host}
-    onmousedown={activateThisEditor}
-    onfocusin={activateThisEditor}
-    oncontextmenu={onEditorContextMenu}
-  ></div>
-  {#if minimapEnabled}
-    <canvas
-      bind:this={minimapCanvas}
-      class="editor-minimap"
-      aria-label="Editor minimap"
-      onpointerdown={startMinimapDrag}
-      onpointermove={dragMinimap}
-      onpointerup={stopMinimapDrag}
-      onpointercancel={stopMinimapDrag}
-    ></canvas>
-  {/if}
-  {#if markdownEnabled}
-    <MarkdownPreview source={markdownPreviewText} />
-  {/if}
+  <LspOnboardingBanner
+    path={mountedPath}
+    status={mountedLspStatus}
+    onCheckAgain={checkLspAgain}
+  />
+  <div class="editor-main">
+    {#if stickyScope}
+      <div class="sticky-scope" title={stickyScope}>{stickyScope}</div>
+    {/if}
+    <div
+      class="editor-host"
+      class:inactive={!$appActive}
+      bind:this={host}
+      onmousedown={activateThisEditor}
+      onfocusin={activateThisEditor}
+      oncontextmenu={onEditorContextMenu}
+    ></div>
+    {#if minimapEnabled}
+      <canvas
+        bind:this={minimapCanvas}
+        class="editor-minimap"
+        aria-label="Editor minimap"
+        onpointerdown={startMinimapDrag}
+        onpointermove={dragMinimap}
+        onpointerup={stopMinimapDrag}
+        onpointercancel={stopMinimapDrag}
+      ></canvas>
+    {/if}
+    {#if markdownEnabled}
+      <MarkdownPreview source={markdownPreviewText} />
+    {/if}
+  </div>
 </div>
 
 <style>
   .editor-frame {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .editor-main {
     position: relative;
     flex: 1;
     min-height: 0;
@@ -534,18 +558,23 @@
     position: relative;
     background-color: var(--background);
     color: var(--foreground);
+    border: none !important;
+    outline: none !important;
   }
   .editor-host :global(.cm-editor.cm-focused) {
-    outline: none;
+    outline: none !important;
+    border: none !important;
+  }
+  .editor-host :global(.cm-scroller) {
+    border: none !important;
+    outline: none !important;
+    font-family: var(--font-mono);
+    line-height: 1.6;
   }
   /* Background throttle: stop the cursor-blink animation while the window is
      inactive so CodeMirror isn't repainting the caret in the background. */
   .editor-host.inactive :global(.cm-cursorLayer) {
     animation: none !important;
-  }
-  .editor-host :global(.cm-scroller) {
-    font-family: var(--font-mono);
-    line-height: 1.6;
   }
   .editor-host :global(.cm-content) {
     caret-color: var(--primary);
@@ -557,7 +586,7 @@
   .editor-host :global(.cm-gutters) {
     background-color: var(--background);
     color: var(--muted-foreground);
-    border-right: 1px solid var(--border);
+    border-right: none;
   }
   .editor-host :global(.cm-lineNumbers .cm-gutterElement) {
     padding: 0 8px 0 12px;

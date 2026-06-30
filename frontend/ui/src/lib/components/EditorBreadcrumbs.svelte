@@ -59,21 +59,33 @@
     }
     return next.length ? next : [{ label: path, path, file: true }]
   })
+  const displaySegments = $derived.by<Segment[]>(() => {
+    if (segments.length > 4) {
+      return [
+        segments[0],
+        { label: '...', path: '', file: false },
+        ...segments.slice(-3),
+      ]
+    }
+    return segments
+  })
 
   function openSegment(segment: Segment): void {
+    if (!segment.path) return
     expandPanel('fileTree')
     requestTreeReveal(segment.path)
     if (segment.file) void openFile(segment.path, { groupId })
   }
 </script>
 
-{#if segments.length}
+{#if displaySegments.length}
   <nav class="breadcrumbs" aria-label="Editor Breadcrumbs">
-    {#each segments as segment, index (segment.path + index)}
+    {#each displaySegments as segment, index (segment.path + index)}
       {#if index > 0}<span class="crumb-sep">/</span>{/if}
       <button
         type="button"
         class:file={segment.file}
+        class:ellipsis={!segment.path}
         title={segment.path}
         onclick={() => openSegment(segment)}
       >
@@ -91,7 +103,6 @@
     align-items: center;
     gap: 4px;
     padding: 0 10px;
-    border-bottom: 1px solid var(--border);
     background: color-mix(in srgb, var(--background) 92%, var(--card));
     overflow: hidden;
     white-space: nowrap;
@@ -109,6 +120,12 @@
     overflow: hidden;
     text-overflow: ellipsis;
     cursor: pointer;
+  }
+  .breadcrumbs button.ellipsis {
+    cursor: default;
+    pointer-events: none;
+    letter-spacing: 1px;
+    max-width: none;
   }
   .breadcrumbs button:hover,
   .breadcrumbs button.file {

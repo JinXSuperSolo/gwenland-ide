@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -102,7 +103,7 @@ pub enum SettingsError {
     AppData(#[from] crate::app_data::AppDataError),
     #[error("failed to serialize settings: {0}")]
     Serialize(#[from] toml::ser::Error),
-    #[error("I/O error writing settings: {0}")]
+    #[error("I/O error reading or writing settings: {0}")]
     Io(#[from] std::io::Error),
 }
 
@@ -118,13 +119,10 @@ pub fn load_settings() -> Result<Settings, SettingsError> {
 fn load_settings_from(app_data_dir: &Path) -> Result<Settings, SettingsError> {
     let path = settings_path(app_data_dir);
 
-    if !path.exists() {
-        return Ok(Settings::default());
-    }
-
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return Ok(Settings::default()),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Settings::default()),
+        Err(err) => return Err(err.into()),
     };
 
     let settings: Settings = match toml::from_str(&content) {
@@ -148,11 +146,16 @@ pub fn save_settings(settings: &Settings) -> Result<(), SettingsError> {
 }
 
 fn save_settings_to(settings: &Settings, app_data_dir: &Path) -> Result<(), SettingsError> {
+    std::fs::create_dir_all(app_data_dir)?;
+
     let path = settings_path(app_data_dir);
     let tmp_path = path.with_extension("toml.tmp");
 
     let content = toml::to_string(settings)?;
     std::fs::write(&tmp_path, content)?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
     std::fs::rename(&tmp_path, &path)?;
 
     Ok(())
@@ -162,19 +165,10 @@ fn save_settings_to(settings: &Settings, app_data_dir: &Path) -> Result<(), Sett
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::{TempDir, tempdir};
 
-    fn isolated_app_data_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "gwenland-settings-test-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        path
+    fn isolated_app_data_dir() -> TempDir {
+        tempdir().expect("temp app-data dir")
     }
 
     #[test]
@@ -243,13 +237,69 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_file_returns_default() {
+    fn missing_settings_file_returns_default() {
         let app_data_dir = isolated_app_data_dir();
-        let mut s = Settings::default();
-        s.theme.mode = "dark".to_string();
-        save_settings_to(&s, &app_data_dir).unwrap();
-        let loaded = load_settings_from(&app_data_dir).unwrap();
-        assert_eq!(s, loaded);
+        let loaded = load_settings_from(app_data_dir.path()).unwrap();
+
+        assert_eq!(loaded, Settings::default());
+        assert!(!settings_path(app_data_dir.path()).exists());
+    }
+
+    #[test]
+    fn empty_settings_file_returns_default() {
+        let app_data_dir = isolated_app_data_dir();
+        std::fs::write(settings_path(app_data_dir.path()), "").unwrap();
+
+        let loaded = load_settings_from(app_data_dir.path()).unwrap();
+
+        assert_eq!(loaded, Settings::default());
+    }
+
+    #[test]
+    fn malformed_settings_file_returns_default() {
+        let app_data_dir = isolated_app_data_dir();
+        std::fs::write(settings_path(app_data_dir.path()), "not = [valid").unwrap();
+
+        let loaded = load_settings_from(app_data_dir.path()).unwrap();
+
+        assert_eq!(loaded, Settings::default());
+    }
+
+    #[test]
+    fn invalid_theme_mode_returns_default() {
+        let app_data_dir = isolated_app_data_dir();
+        std::fs::write(
+            settings_path(app_data_dir.path()),
+            "version = 1\n\n[theme]\nmode = \"neon\"\n",
+        )
+        .unwrap();
+
+        let loaded = load_settings_from(app_data_dir.path()).unwrap();
+
+        assert_eq!(loaded, Settings::default());
+    }
+
+    #[test]
+    fn save_settings_persists_actual_values_and_overwrites() {
+        let app_data_dir = isolated_app_data_dir();
+        let mut first = Settings::default();
+        first.theme.mode = "dark".to_string();
+        first.ai.active_provider = "openai".to_string();
+        first.ai.active_model = "gpt-4o".to_string();
+        save_settings_to(&first, app_data_dir.path()).unwrap();
+
+        let mut second = first.clone();
+        second.theme.mode = "light".to_string();
+        second.ai.training_opt_in = true;
+        save_settings_to(&second, app_data_dir.path()).unwrap();
+
+        let loaded = load_settings_from(app_data_dir.path()).unwrap();
+        let raw = std::fs::read_to_string(settings_path(app_data_dir.path())).unwrap();
+
+        assert_eq!(loaded, second);
+        assert!(raw.contains("mode = \"light\""));
+        assert!(raw.contains("training_opt_in = true"));
+        assert!(!raw.contains("mode = \"dark\""));
     }
 
     proptest! {
@@ -257,8 +307,8 @@ mod tests {
         fn test_settings_roundtrip(mode in prop_oneof![Just("dark".to_string()), Just("light".to_string()), Just("system".to_string())]) {
             let app_data_dir = isolated_app_data_dir();
             let s = Settings { version: 1, theme: ThemeSettings { mode }, ai: AiSettings::default(), lsp: Default::default() };
-            save_settings_to(&s, &app_data_dir).unwrap();
-            let loaded = load_settings_from(&app_data_dir).unwrap();
+            save_settings_to(&s, app_data_dir.path()).unwrap();
+            let loaded = load_settings_from(app_data_dir.path()).unwrap();
             assert_eq!(s, loaded);
         }
     }

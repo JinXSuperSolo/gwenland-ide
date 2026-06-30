@@ -35,6 +35,7 @@ import {
   optimisticPermanentDeletePath,
   optimisticRenamePath,
 } from '../stores/file-ops'
+import { openConfirm } from '../stores/confirm-dialog'
 
 // --- Path helpers (OS-separator aware: engine paths use the native separator) ---
 
@@ -84,24 +85,17 @@ function inWorkspace(ctx: ContextMenuContext): boolean {
   return ctx.scope === 'file_tree' && !!ctx.path && !!ctx.workspaceRoot
 }
 
-async function moveContextPathToTrash(ctx: ContextMenuContext): Promise<void> {
-  if (!ctx.path || !ctx.workspaceRoot) return
-  if (!confirm(`Move "${basename(ctx.path)}" to Trash?`)) return
-  const name = basename(ctx.path)
-  // Yield to the render thread before the blocking operation begins, keeping
-  // the UI responsive. A toast shows on completion so the user knows it's done.
-  await new Promise<void>((resolve) => setTimeout(resolve, 0))
-  if (await optimisticDeletePath(ctx.path, ctx.workspaceRoot)) {
-    toast(`"${name}" moved to Trash`, 'success')
-  }
-}
-
 async function deleteContextPathPermanently(ctx: ContextMenuContext): Promise<void> {
   if (!ctx.path || !ctx.workspaceRoot) return
-  if (!confirm(`Are you sure? This cannot be undone.\n\nDelete "${basename(ctx.path)}" permanently?`)) {
-    return
-  }
   const name = basename(ctx.path)
+  const confirmed = await openConfirm({
+    title: 'Delete Permanently',
+    message: `Are you sure? This action cannot be undone.\n\nDelete "${name}" permanently?`,
+    confirmLabel: 'Delete',
+    danger: true,
+  })
+  if (!confirmed) return
+
   // Yield to the render thread before the blocking operation begins.
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
   if (await optimisticPermanentDeletePath(ctx.path, ctx.workspaceRoot)) {
@@ -200,18 +194,6 @@ const fileTreeActions: ContextAction[] = [
       if (!target) return
       await optimisticMovePath(ctx.path, resolveMoveTarget(target, ctx.workspaceRoot), ctx.workspaceRoot)
     },
-  },
-  {
-    id: 'file.delete',
-    label: 'Move to Trash',
-    icon: 'bin',
-    group: 'edit',
-    order: 40,
-    shortcut: 'Del',
-    danger: true,
-    when: (ctx) => ctx.scope === 'file_tree',
-    enabled: inWorkspace,
-    run: moveContextPathToTrash,
   },
   {
     id: 'file.deletePermanently',

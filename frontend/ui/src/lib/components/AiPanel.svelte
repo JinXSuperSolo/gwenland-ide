@@ -672,8 +672,12 @@
   <DiffReviewPanel />
 
   <div class="ai-messages" bind:this={listEl}>
-    <!-- No empty state: the composer below is always live. With no messages the
-         list is simply empty. -->
+    {#if $aiChat.messages.length === 0}
+      <div class="ai-empty-state">
+        <Icon name="chat-teardrop" size={48} class="ai-empty-icon" />
+        <p class="ai-empty-text">Ask anything to get started.</p>
+      </div>
+    {/if}
     {#each $aiChat.messages as message (message.id)}
       {#if message.agent}
         <AgentMessage {message} />
@@ -1037,6 +1041,20 @@
     min-width: 0;
     max-width: 100%;
   }
+  .ai-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    gap: 12px;
+    color: var(--ai-text-muted);
+    opacity: 0.7;
+  }
+  .ai-empty-text {
+    font-size: 13px;
+    margin: 0;
+  }
   /* Muted ~4px AI pane scrollbar (Req 2.8). */
   .ai-messages::-webkit-scrollbar {
     width: 4px;
@@ -1246,6 +1264,14 @@
     gap: 2px;
     flex: 1;
     min-width: 0;
+    container-type: inline-size;
+  }
+  @container (max-width: 280px) {
+    .composer-controls :global(.mode-trigger-label),
+    .composer-controls :global(.cm-label),
+    .composer-controls :global(.tier-trigger-label) {
+      display: none;
+    }
   }
   .composer-attach {
     flex-shrink: 0;

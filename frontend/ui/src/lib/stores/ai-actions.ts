@@ -1,7 +1,7 @@
 import { get } from 'svelte/store'
 import { activeDoc, activeSelection } from '../editor/active-editor'
 import { readFile } from '../tauri/commands'
-import { aiChat, setUnsentInput } from './ai-chat'
+import { aiChat, openAiChat } from './ai-chat'
 import { isEditorTab, tabs } from './tabs'
 
 function activePath(): string | null {
@@ -11,6 +11,7 @@ function activePath(): string | null {
 }
 
 function openAiWith(prompt: string): void {
+  openAiChat()
   aiChat.update((s) => ({ ...s, isOpen: true, unsentInput: prompt }))
 }
 

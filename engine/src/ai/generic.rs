@@ -10,11 +10,11 @@
 //! parser verbatim (Requirement 7.9). The key is fetched from the keychain
 //! account matching the generic provider id.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 
+use crate::ai::curl_client::{curl_get, curl_post_stream};
 use crate::ai::error::AiError;
 use crate::ai::keychain;
 use crate::ai::openai::{OpenAiStream, build_chat_body, parse_models};
@@ -49,21 +49,27 @@ impl GenericAdapter {
 pub(crate) fn build_headers(
     api_key: &str,
     extra: &BTreeMap<String, String>,
-) -> Result<HeaderMap, AiError> {
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    let auth = format!("Bearer {api_key}");
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&auth)
-            .map_err(|_| AiError::ProviderError("invalid characters in API key".into()))?,
-    );
+) -> Result<HashMap<String, String>, AiError> {
+    let mut headers = HashMap::new();
+    if api_key.bytes().any(|b| b == b'\r' || b == b'\n') {
+        return Err(AiError::ProviderError(
+            "invalid characters in API key".into(),
+        ));
+    }
+    headers.insert("content-type".to_string(), "application/json".to_string());
+    headers.insert("authorization".to_string(), format!("Bearer {api_key}"));
     for (k, v) in extra {
-        let name = HeaderName::from_bytes(k.as_bytes())
-            .map_err(|_| AiError::ProviderError(format!("invalid extra header name: {k}")))?;
-        let value = HeaderValue::from_str(v)
-            .map_err(|_| AiError::ProviderError(format!("invalid extra header value for {k}")))?;
-        headers.insert(name, value);
+        if k.is_empty() || k.bytes().any(|b| b == b':' || b == b'\r' || b == b'\n') {
+            return Err(AiError::ProviderError(format!(
+                "invalid extra header name: {k}"
+            )));
+        }
+        if v.bytes().any(|b| b == b'\r' || b == b'\n') {
+            return Err(AiError::ProviderError(format!(
+                "invalid extra header value for {k}"
+            )));
+        }
+        headers.insert(k.clone(), v.clone());
     }
     Ok(headers)
 }
@@ -79,28 +85,24 @@ impl AiProvider for GenericAdapter {
         };
         let headers = build_headers(&api_key, &self.extra_headers)?;
         let body = build_chat_body(&model, &request);
+        let body = serde_json::to_string(&body)
+            .map_err(|_| AiError::ProviderError("failed to serialize provider request".into()))?;
 
-        let response = reqwest::Client::new()
-            .post(self.endpoint("chat/completions"))
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AiError::Network(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = crate::ai::http::retry_after_secs(response.headers());
-            let body = response.text().await.unwrap_or_default();
-            return Err(crate::ai::http::map_status(
-                status,
-                retry_after,
-                &body,
+        let response = curl_post_stream(&self.endpoint("chat/completions"), &headers, body).await?;
+        if !(200..300).contains(&response.status) {
+            return Err(crate::ai::http::map_stream_error(
+                response.status,
+                &response.headers,
+                response.body,
                 &self.id,
-            ));
+            )
+            .await);
         }
 
-        Ok(Box::new(OpenAiStream::new(request.stream_id, response)))
+        Ok(Box::new(OpenAiStream::new(
+            request.stream_id,
+            response.body,
+        )))
     }
 
     async fn list_models(&self) -> Result<Option<Vec<ModelInfo>>, AiError> {
@@ -112,22 +114,14 @@ impl AiProvider for GenericAdapter {
             Ok(h) => h,
             Err(_) => return Ok(None),
         };
-        let response = match reqwest::Client::new()
-            .get(self.endpoint("models"))
-            .headers(headers)
-            .send()
-            .await
-        {
+        let response = match curl_get(&self.endpoint("models"), &headers).await {
             Ok(r) => r,
             Err(_) => return Ok(None),
         };
-        if !response.status().is_success() {
+        if !(200..300).contains(&response.status) {
             return Ok(None);
         }
-        match response.text().await {
-            Ok(body) => Ok(parse_models(&body).ok()),
-            Err(_) => Ok(None),
-        }
+        Ok(parse_models(&response.body).ok())
     }
 
     fn provider_name(&self) -> &'static str {
@@ -150,8 +144,8 @@ mod tests {
 
         let headers = build_headers("test-key-123", &extra).unwrap();
 
-        assert_eq!(headers[AUTHORIZATION], "Bearer test-key-123");
-        assert_eq!(headers[CONTENT_TYPE], "application/json");
+        assert_eq!(headers["authorization"], "Bearer test-key-123");
+        assert_eq!(headers["content-type"], "application/json");
         assert_eq!(headers["HTTP-Referer"], "https://gwenland.dev");
         assert_eq!(headers["X-Title"], "GwenLand IDE");
     }

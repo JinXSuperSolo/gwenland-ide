@@ -70,6 +70,21 @@ pub struct LspSettings {
     pub typescript: LanguageServerSettings,
     #[serde(default)]
     pub python: LanguageServerSettings,
+    #[serde(default)]
+    pub onboarding: LspOnboardingSettings,
+}
+
+/// Per-language dismissal state for missing-server onboarding notices.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct LspOnboardingSettings {
+    #[serde(default)]
+    pub rust: bool,
+    #[serde(default)]
+    pub typescript: bool,
+    #[serde(default)]
+    pub javascript: bool,
+    #[serde(default)]
+    pub python: bool,
 }
 
 impl LspSettings {
@@ -179,8 +194,18 @@ mod tests {
         let mut s = LspSettings::default();
         s.python.command = "pylsp".to_string();
         s.python.enabled = false;
+        s.onboarding.rust = true;
         let toml = toml::to_string(&s).unwrap();
         let back: LspSettings = toml::from_str(&toml).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn onboarding_defaults_to_not_dismissed() {
+        let s = LspSettings::default();
+        assert!(!s.onboarding.rust);
+        assert!(!s.onboarding.typescript);
+        assert!(!s.onboarding.javascript);
+        assert!(!s.onboarding.python);
     }
 }

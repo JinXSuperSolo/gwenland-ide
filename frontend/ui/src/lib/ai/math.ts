@@ -136,6 +136,17 @@ function readAtom(tex: string, i: number): [string | null, number] {
   if (c === '\\') return readCommand(tex, i)
   // Single variables render italic (like real math); digits/operators upright.
   if (/[A-Za-z]/.test(c)) return [`<i>${c}</i>`, i + 1]
+  if (/[0-9]/.test(c)) {
+    let j = i
+    while (j < tex.length && /[0-9.]/.test(tex[j])) {
+      j++
+    }
+    const num = tex.slice(i, j)
+    return [`<span class="math-num-val">${esc(num)}</span>`, j]
+  }
+  if (/[+\-*=/<>()\[\],]/.test(c)) {
+    return [`<span class="math-op">${esc(c)}</span>`, i + 1]
+  }
   return [esc(c), i + 1]
 }
 

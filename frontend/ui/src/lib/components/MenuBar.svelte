@@ -154,7 +154,7 @@
   .menu-title:hover,
   .menu-title.active {
     color: var(--primary);
-    background-color: var(--secondary);
+    background-color: var(--hover-bg);
   }
   .menu-dropdown {
     position: absolute;
@@ -186,7 +186,7 @@
     position: relative;
   }
   .menu-item:not(.disabled):hover {
-    background-color: var(--sidebar-accent);
+    background-color: var(--hover-bg);
   }
   .menu-item.disabled {
     color: var(--muted-foreground);

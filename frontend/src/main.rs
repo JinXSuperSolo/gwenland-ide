@@ -127,6 +127,36 @@ struct AiManager {
     search_resolvers: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>>,
 }
 
+static NEXT_WINDOW_LABEL_ID: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_window_label(app: &AppHandle) -> String {
+    loop {
+        let id = NEXT_WINDOW_LABEL_ID.fetch_add(1, Ordering::Relaxed);
+        let label = format!("window-{id}");
+        if app.get_webview_window(&label).is_none() {
+            return label;
+        }
+    }
+}
+
+#[tauri::command]
+async fn open_new_window(app: AppHandle) -> Result<String, String> {
+    let label = allocate_window_label(&app);
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        label.clone(),
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("GwenLand IDE")
+    .inner_size(1280.0, 800.0)
+    .min_inner_size(800.0, 600.0)
+    .resizable(true)
+    .decorations(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+    Ok(label)
+}
+
 // --- AI streaming event payloads -------------------------------------------
 // Every event for a request carries its `stream_id` so the UI can correlate.
 
@@ -4236,6 +4266,51 @@ async fn git_diff_file(root: String, path: String, untracked: bool) -> Result<St
     .await
 }
 
+const AI_DIFF_REVIEW_SYSTEM: &str = "\
+You are GwenLand IDE's inline code reviewer. Review only the provided git diff.
+Return concise Markdown with high-signal findings first. Prioritize correctness,
+bugs, regressions, security, data loss, performance cliffs, and missing tests.
+Call out exact changed areas when possible. If you find no high-confidence issue,
+say that clearly. Do not propose a full rewrite and do not claim to apply code.";
+
+#[tauri::command]
+async fn ai_review_diff(root: String, path: String, untracked: bool) -> Result<String, String> {
+    let diff_path = path.clone();
+    let diff = run_blocking("ai_review_diff.git_diff", move || {
+        gwenland_engine::git::diff_file(Path::new(&root), &diff_path, untracked)
+            .map_err(|e| e.to_string())
+    })
+    .await?;
+
+    if diff.trim().is_empty() {
+        return Ok("No changes to review.".to_string());
+    }
+
+    let settings = gwenland_engine::settings::load_settings().map_err(|e| e.to_string())?;
+    let provider_id = settings.ai.active_provider.trim().to_string();
+    let model_id = settings.ai.active_model.trim().to_string();
+    if provider_id.is_empty() {
+        return Err("No active AI provider configured.".to_string());
+    }
+    if model_id.is_empty() {
+        return Err("No active AI model selected.".to_string());
+    }
+
+    let prompt = format!(
+        "Review this git diff for `{path}`. untracked={untracked}.\n\n```diff\n{diff}\n```"
+    );
+
+    complete_once(
+        Some(AI_DIFF_REVIEW_SYSTEM.to_string()),
+        prompt,
+        &provider_id,
+        &model_id,
+        Some(1200),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn git_list_branches(root: String) -> Result<Vec<String>, String> {
     run_blocking("git_list_branches", move || {
@@ -4837,12 +4912,16 @@ fn main() {
         .setup(|app| {
             let diag_handle = app.handle().clone();
             let status_handle = app.handle().clone();
+            let missing_handle = app.handle().clone();
             let message_handle = app.handle().clone();
             let manager = Arc::new(LspManager::new(
                 Arc::new(move |upd: DiagnosticsUpdate| {
                     let _ = diag_handle.emit("lsp://diagnostics", upd);
                 }),
                 Arc::new(move |upd: StatusUpdate| {
+                    if matches!(&upd.status, LspStatus::MissingServer { .. }) {
+                        let _ = missing_handle.emit("lsp://server-not-found", upd.clone());
+                    }
                     let _ = status_handle.emit("lsp://status", upd);
                 }),
                 Arc::new(move |upd: MessageUpdate| {
@@ -4900,6 +4979,7 @@ fn main() {
             terminal_write,
             terminal_resize,
             terminal_kill,
+            open_new_window,
             ai_set_key,
             ai_delete_key,
             ai_check_key,
@@ -4955,6 +5035,7 @@ fn main() {
             git_push,
             git_pull,
             git_diff_file,
+            ai_review_diff,
             git_list_branches,
             git_checkout,
             git_create_branch,

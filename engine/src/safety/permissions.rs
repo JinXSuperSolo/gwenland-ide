@@ -132,6 +132,21 @@ pub fn default_for_permission(perm: &Permission) -> PermissionDefault {
     }
 }
 
+fn bound_summary(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+
+    const SUFFIX: &str = "...";
+    let suffix_len = SUFFIX.chars().count();
+    if max <= suffix_len {
+        return s.chars().take(max).collect();
+    }
+
+    let truncated: String = s.chars().take(max - suffix_len).collect();
+    format!("{truncated}{SUFFIX}")
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -243,11 +258,7 @@ impl ApprovalRecord {
         use crate::agentic::policy::redact_secrets;
         let raw = target_summary.into();
         let (redacted, _) = redact_secrets(&raw);
-        let bounded = if redacted.len() > 256 {
-            format!("{}…", &redacted[..256])
-        } else {
-            redacted
-        };
+        let bounded = bound_summary(&redacted, 256);
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             timestamp: time::OffsetDateTime::now_utc()
@@ -437,6 +448,16 @@ mod tests {
             "secret must not appear in approval history"
         );
         assert!(content.contains("[REDACTED]"), "redaction must be present");
+    }
+
+    #[test]
+    fn approval_summary_bounds_without_splitting_unicode() {
+        let summary = "日本語".repeat(120);
+
+        let record = ApprovalRecord::new("ext-a", "write_file", true, summary);
+
+        assert!(record.target_summary.chars().count() <= 256);
+        assert!(record.target_summary.ends_with("..."));
     }
 
     // Safety Engine integration: read_workspace → Allow; delete_file → Block

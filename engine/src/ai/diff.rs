@@ -103,8 +103,10 @@ pub fn parse_unified_diff(input: &str) -> Result<Vec<DiffFile>, DiffParseError> 
         let line = raw.strip_suffix('\r').unwrap_or(raw);
 
         // 1. Consume hunk body lines while the declared counts remain.
-        if cur_hunk.is_some() && (old_rem > 0 || new_rem > 0) {
-            if consume_body_line(line, cur_hunk.as_mut().unwrap(), &mut old_rem, &mut new_rem) {
+        if let Some(hunk) = cur_hunk.as_mut()
+            && (old_rem > 0 || new_rem > 0)
+        {
+            if consume_body_line(line, hunk, &mut old_rem, &mut new_rem) {
                 if old_rem <= 0 && new_rem <= 0 {
                     finalize_hunk(&mut cur_file, &mut cur_hunk);
                 }

@@ -12,7 +12,7 @@
 //! (Requirement 14.6). Count and total byte-size limits are enforced before any
 //! provider request (Requirement 14.10).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::ai::error::AiError;
 use crate::ai::provider::ContextAttachment;
@@ -29,7 +29,12 @@ fn escape_attr(s: &str) -> String {
 /// Read + validate a file attachment under `project_root`, returning its text.
 fn read_file_attachment(path: &str, project_root: &Path) -> Result<String, AiError> {
     let p = Path::new(path);
-    let canon = std::fs::canonicalize(p)
+    let candidate: PathBuf = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        project_root.join(p)
+    };
+    let canon = std::fs::canonicalize(&candidate)
         .map_err(|_| AiError::ProviderError(format!("cannot read attachment: {path}")))?;
     // Reject paths outside the active project root (Requirement 14.6).
     let root = std::fs::canonicalize(project_root)
@@ -143,6 +148,21 @@ mod tests {
         assert!(out.contains("<context type=\"file\""));
         assert!(out.contains("fn main() {}"));
         assert!(out.trim_end().ends_with("explain"));
+    }
+
+    #[test]
+    fn relative_file_attachment_resolves_under_project_root() {
+        let root = tempdir().unwrap();
+        let src = root.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("lib.rs"), "pub fn answer() -> i32 { 42 }\n").unwrap();
+
+        let att = ContextAttachment::File {
+            path: "src/lib.rs".into(),
+        };
+        let out = expand_message("explain", std::slice::from_ref(&att), root.path()).unwrap();
+        assert!(out.contains("path=\"src/lib.rs\""));
+        assert!(out.contains("pub fn answer() -> i32 { 42 }"));
     }
 
     #[test]

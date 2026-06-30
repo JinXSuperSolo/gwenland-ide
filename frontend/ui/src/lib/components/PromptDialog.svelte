@@ -25,10 +25,10 @@
     if (e.key === 'Enter') {
       e.preventDefault()
       submit()
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      cancelPrompt()
     }
+    // Escape is owned by the centralized overlay stack (App.svelte → closeTopmost),
+    // which calls cancelPrompt for this dialog. Not handled here so a single press
+    // never closes this AND an overlay beneath it.
   }
 </script>
 

@@ -1,33 +1,26 @@
 <script lang="ts">
-  import { tick } from 'svelte'
   import { renderMarkdown } from '../preview/markdown'
 
   let { source }: { source: string } = $props()
 
-  let articleEl = $state<HTMLElement | null>(null)
   let html = $state('')
 
   $effect(() => {
     const src = source
+    let active = true
+
     void renderMarkdown(src).then((rendered) => {
+      if (!active) return
       html = rendered
-      // Inject KaTeX stylesheet lazily the first time math is rendered
-      if (rendered.includes('katex')) {
-        const id = 'katex-css'
-        if (!document.getElementById(id)) {
-          const link = document.createElement('link')
-          link.id = id
-          link.rel = 'stylesheet'
-          link.href = new URL('katex/dist/katex.min.css', import.meta.url).href
-          document.head.appendChild(link)
-        }
-      }
-      void tick()
     })
+
+    return () => {
+      active = false
+    }
   })
 </script>
 
-<article class="markdown-preview" bind:this={articleEl}>
+<article class="markdown-preview">
   {@html html}
 </article>
 
@@ -127,15 +120,15 @@
     max-width: 100%;
     border-radius: var(--radius-sm);
   }
-  .markdown-preview :global(.katex-display) {
+  .markdown-preview :global(math) {
+    color: var(--foreground);
+    font-size: 1.02em;
+  }
+  .markdown-preview :global(math[display='block']) {
+    display: block;
     overflow-x: auto;
     padding: 8px 0;
     margin: 0 0 14px;
-  }
-  .markdown-preview :global(.katex-error) {
-    color: var(--destructive, #e05252);
-    font-family: var(--font-mono);
-    font-size: 0.9em;
   }
   .markdown-preview :global(.mermaid-diagram) {
     display: flex;
@@ -147,5 +140,20 @@
   .markdown-preview :global(.mermaid-diagram svg) {
     max-width: 100%;
     height: auto;
+  }
+  .markdown-preview :global(.tok-comment) {
+    color: color-mix(in srgb, var(--muted-foreground) 82%, var(--primary));
+    font-style: italic;
+  }
+  .markdown-preview :global(.tok-string) {
+    color: #d19a66;
+  }
+  .markdown-preview :global(.tok-number) {
+    color: #b5cea8;
+  }
+  .markdown-preview :global(.tok-keyword),
+  .markdown-preview :global(.tok-self) {
+    color: #c586c0;
+    font-weight: 600;
   }
 </style>

@@ -6,26 +6,23 @@
 //! 413/context bodies → `ContextLengthExceeded`, 5xx → `ProviderError`. The
 //! `provider` label is only used to build a key-free diagnostic string.
 
+use std::collections::HashMap;
+
+use crate::ai::curl_client::CurlStream;
 use crate::ai::error::AiError;
 
 /// Parse the `Retry-After` header as whole seconds, if present and numeric.
-pub fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+pub fn retry_after_secs(headers: &HashMap<String, String>) -> Option<u64> {
     headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
+        .get("retry-after")
         .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
 /// Map a non-success status + response body to a normalized error. `body` is a
 /// best-effort text snapshot used only to sniff context-length failures; it is
 /// never echoed verbatim into the error (avoids leaking request payloads).
-pub fn map_status(
-    status: reqwest::StatusCode,
-    retry_after: Option<u64>,
-    body: &str,
-    provider: &str,
-) -> AiError {
-    match status.as_u16() {
+pub fn map_status(status: u16, retry_after: Option<u64>, body: &str, provider: &str) -> AiError {
+    match status {
         401 | 403 => AiError::InvalidKey,
         429 => AiError::RateLimit { retry_after },
         413 => AiError::ContextLengthExceeded,
@@ -35,6 +32,27 @@ pub fn map_status(
             AiError::ContextLengthExceeded
         }
         s => AiError::ProviderError(format!("{provider} HTTP {s}")),
+    }
+}
+
+/// Convert a non-2xx streaming curl response into a normalized provider error.
+/// We still classify by status if the body cannot be read; only the generic
+/// provider-error text is annotated with the body-read failure.
+pub async fn map_stream_error(
+    status: u16,
+    headers: &HashMap<String, String>,
+    body: CurlStream,
+    provider: &str,
+) -> AiError {
+    let retry_after = retry_after_secs(headers);
+    match body.read_to_string().await {
+        Ok(body) => map_status(status, retry_after, &body, provider),
+        Err(read_error) => match map_status(status, retry_after, "", provider) {
+            AiError::ProviderError(msg) => {
+                AiError::ProviderError(format!("{msg}; failed to read error body: {read_error}"))
+            }
+            classified => classified,
+        },
     }
 }
 
@@ -52,24 +70,17 @@ pub fn looks_like_context_error(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reqwest::StatusCode;
 
     #[test]
     fn maps_auth_failures_to_invalid_key() {
-        assert_eq!(
-            map_status(StatusCode::UNAUTHORIZED, None, "", "X"),
-            AiError::InvalidKey
-        );
-        assert_eq!(
-            map_status(StatusCode::FORBIDDEN, None, "", "X"),
-            AiError::InvalidKey
-        );
+        assert_eq!(map_status(401, None, "", "X"), AiError::InvalidKey);
+        assert_eq!(map_status(403, None, "", "X"), AiError::InvalidKey);
     }
 
     #[test]
     fn maps_429_to_rate_limit_with_retry_after() {
         assert_eq!(
-            map_status(StatusCode::TOO_MANY_REQUESTS, Some(7), "", "X"),
+            map_status(429, Some(7), "", "X"),
             AiError::RateLimit {
                 retry_after: Some(7)
             }
@@ -79,15 +90,15 @@ mod tests {
     #[test]
     fn maps_413_and_context_body_to_context_length() {
         assert_eq!(
-            map_status(StatusCode::PAYLOAD_TOO_LARGE, None, "", "X"),
+            map_status(413, None, "", "X"),
             AiError::ContextLengthExceeded
         );
         assert_eq!(
             map_status(
-                StatusCode::BAD_REQUEST,
+                400,
                 None,
                 "This model's maximum context length is 8192 tokens",
-                "X"
+                "X",
             ),
             AiError::ContextLengthExceeded
         );
@@ -96,20 +107,30 @@ mod tests {
     #[test]
     fn maps_5xx_and_other_4xx_to_provider_error() {
         assert!(matches!(
-            map_status(StatusCode::INTERNAL_SERVER_ERROR, None, "", "X"),
+            map_status(500, None, "", "X"),
             AiError::ProviderError(_)
         ));
         assert!(matches!(
-            map_status(StatusCode::NOT_FOUND, None, "nope", "X"),
+            map_status(404, None, "nope", "X"),
             AiError::ProviderError(_)
         ));
     }
 
     #[test]
     fn retry_after_parses_numeric_header() {
-        let mut h = reqwest::header::HeaderMap::new();
-        h.insert(reqwest::header::RETRY_AFTER, "42".parse().unwrap());
+        let mut h = HashMap::new();
+        h.insert("retry-after".to_string(), "42".to_string());
         assert_eq!(retry_after_secs(&h), Some(42));
-        assert_eq!(retry_after_secs(&reqwest::header::HeaderMap::new()), None);
+        assert_eq!(retry_after_secs(&HashMap::new()), None);
+    }
+
+    #[test]
+    fn retry_after_ignores_non_numeric_header() {
+        let mut h = HashMap::new();
+        h.insert(
+            "retry-after".to_string(),
+            "Wed, 21 Oct 2015 07:28:00 GMT".to_string(),
+        );
+        assert_eq!(retry_after_secs(&h), None);
     }
 }

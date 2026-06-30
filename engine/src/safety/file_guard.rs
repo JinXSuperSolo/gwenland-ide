@@ -175,14 +175,27 @@ mod tests {
     #[test]
     fn normal_file_write_allowed_standard() {
         let ws = tempdir().unwrap();
+        let file = ws.path().join("src/main.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "before").unwrap();
+
         let outcome = preflight_file_mutation(
             SafetyActionKind::FileWrite {
-                path: "src/main.rs".into(),
+                path: file.to_string_lossy().into_owned(),
             },
             ws.path(),
             Actor::Agent,
             SafetyStrictness::Standard,
         );
-        assert!(matches!(outcome, PreflightOutcome::Allowed { .. }));
+        let snapshot = match outcome {
+            PreflightOutcome::Allowed {
+                snapshot: Some(snapshot),
+            } => snapshot,
+            other => panic!("expected allowed preflight with snapshot, got {other:?}"),
+        };
+        assert_eq!(
+            std::fs::read_to_string(&snapshot.snapshot_path).unwrap(),
+            "before"
+        );
     }
 }

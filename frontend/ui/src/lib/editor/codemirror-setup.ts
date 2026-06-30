@@ -58,6 +58,30 @@ import { lspCompletion, lspHover, openBrowser, type LspDiagnostic } from '../tau
 import { lspChangePath, languageForPath } from '../stores/lsp'
 import { reviewExtension } from './diff-overlay'
 import { getLanguageExtension } from './language-detect'
+import { syncOverwriteFromView } from './overwrite-mode'
+
+/**
+ * Hard block for the Insert key (M-keynav §5). CodeMirror 6 has no overwrite
+ * mode, but we still intercept Insert at the highest keymap precedence and
+ * swallow it so nothing — current or future — can flip the editor into
+ * overwrite/typeover. `run` returning true marks the key handled; `preventDefault`
+ * stops the browser default. As a safety net it also re-syncs the OVR indicator
+ * (which must stay off). Exported so tests can exercise the binding directly.
+ */
+export const insertBlockBindings = [
+  {
+    key: 'Insert',
+    preventDefault: true,
+    run: (view: EditorView) => {
+      // Swallow Insert (no overwrite toggle) and keep the OVR indicator honest.
+      // Shift+Insert is intentionally left alone so native paste still works.
+      syncOverwriteFromView(view)
+      return true
+    },
+  },
+]
+
+export const blockInsertKeymap = keymap.of(insertBlockBindings)
 // foldGutter/foldKeymap intentionally NOT imported — meaningful folding needs a
 // language grammar (Milestone 6).
 
@@ -454,6 +478,8 @@ export function createEditorState(
 
   // Shared base: present in every mode (incl. large). Cheap, structural-only.
   const base: Extension[] = [
+    // Highest-precedence keymap: hard-block Insert before anything else sees it.
+    blockInsertKeymap,
     lspPath.of(path ?? ''),
     lineNumbers(),
     highlightActiveLineGutter(),

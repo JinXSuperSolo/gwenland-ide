@@ -25,7 +25,7 @@ pub struct TokenChunk {
 /// We model the stream as a boxed trait object with an async `next_chunk`
 /// method rather than a `futures::Stream`. This keeps the engine free of stream
 /// combinator dependencies while staying object-safe (each adapter owns its own
-/// parsing state + the live `reqwest::Response`). The consumer loops:
+/// parsing state + the live transport response). The consumer loops:
 ///
 /// ```ignore
 /// while let Some(chunk) = stream.next_chunk().await? { emit(chunk); }

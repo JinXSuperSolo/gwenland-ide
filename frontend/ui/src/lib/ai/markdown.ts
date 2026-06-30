@@ -35,7 +35,10 @@ function inline(raw: string): string {
   s = s.replace(/\$\$([^$]+?)\$\$/g, (_m, t) => keep(renderMath(t, true)))
   s = s.replace(/\\\[([\s\S]+?)\\\]/g, (_m, t) => keep(renderMath(t, true)))
   s = s.replace(/\\\(([\s\S]+?)\\\)/g, (_m, t) => keep(renderMath(t, false)))
-  s = s.replace(/\$([^$\n]+?)\$/g, (m, t) => (/[\\^_{}]/.test(t) ? keep(renderMath(t, false)) : m))
+  s = s.replace(/\$([^$\n]+?)\$/g, (m, t) => {
+    const isMath = /[\\^_{}=+\-*/[\]()]/.test(t) || (!/\s/.test(t.trim()) && t.trim().length > 0)
+    return isMath ? keep(renderMath(t, false)) : m
+  })
   // Inline code (stashed so its contents stay literal).
   s = s.replace(/`([^`]+)`/g, (_m, c) => keep(`<code class="md-code">${escapeHtml(c)}</code>`))
 

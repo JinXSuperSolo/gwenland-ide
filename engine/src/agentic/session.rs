@@ -403,6 +403,12 @@ mod tests {
         }
     }
 
+    fn expect_transition(s: &mut AgentSession, to: AgentPhase) {
+        s.transition(to)
+            .unwrap_or_else(|err| panic!("expected transition to {to:?}, got {err}"));
+        assert_eq!(s.phase, to);
+    }
+
     #[test]
     fn starts_in_goal_phase() {
         assert_eq!(session().phase, AgentPhase::Goal);
@@ -411,8 +417,8 @@ mod tests {
     #[test]
     fn happy_path_plan_flow() {
         let mut s = session();
-        assert!(s.transition(AgentPhase::DraftingPlan).is_ok());
-        assert!(s.transition(AgentPhase::AwaitingPlanApproval).is_ok());
+        expect_transition(&mut s, AgentPhase::DraftingPlan);
+        expect_transition(&mut s, AgentPhase::AwaitingPlanApproval);
     }
 
     #[test]
@@ -432,7 +438,7 @@ mod tests {
 
         // Approve the plan, then the transition is allowed.
         s.record_approval(ApprovalKind::Plan, "plan-1");
-        assert!(s.transition(AgentPhase::DraftingEdits).is_ok());
+        expect_transition(&mut s, AgentPhase::DraftingEdits);
     }
 
     #[test]
@@ -450,8 +456,8 @@ mod tests {
         s.plan = Some(plan("plan-1"));
         s.phase = AgentPhase::AwaitingPlanApproval;
         s.record_approval(ApprovalKind::Plan, "plan-1");
-        assert!(s.transition(AgentPhase::DraftingEdits).is_ok());
-        assert!(s.transition(AgentPhase::AwaitingPlanApproval).is_ok());
+        expect_transition(&mut s, AgentPhase::DraftingEdits);
+        expect_transition(&mut s, AgentPhase::AwaitingPlanApproval);
     }
 
     #[test]
@@ -467,7 +473,7 @@ mod tests {
         // Approve a hunk, then apply transition is allowed.
         let hunk_id = s.change_sets[0].files[0].hunks[0].id.clone();
         s.change_sets[0].set_hunk_approval(&hunk_id, ApprovalState::Approved);
-        assert!(s.transition(AgentPhase::ApplyingApprovedEdits).is_ok());
+        expect_transition(&mut s, AgentPhase::ApplyingApprovedEdits);
     }
 
     #[test]
@@ -476,18 +482,18 @@ mod tests {
         s.phase = AgentPhase::AwaitingValidationApproval;
         assert!(s.transition(AgentPhase::Validating).is_err());
         s.record_approval(ApprovalKind::ValidationCommand, "cmd-1");
-        assert!(s.transition(AgentPhase::Validating).is_ok());
+        expect_transition(&mut s, AgentPhase::Validating);
     }
 
     #[test]
     fn summary_can_start_from_edit_review_or_validation_review() {
         let mut from_edit_review = session();
         from_edit_review.phase = AgentPhase::AwaitingEditApproval;
-        assert!(from_edit_review.transition(AgentPhase::Summarizing).is_ok());
+        expect_transition(&mut from_edit_review, AgentPhase::Summarizing);
 
         let mut from_validation = session();
         from_validation.phase = AgentPhase::AwaitingValidationApproval;
-        assert!(from_validation.transition(AgentPhase::Summarizing).is_ok());
+        expect_transition(&mut from_validation, AgentPhase::Summarizing);
     }
 
     #[test]
@@ -501,10 +507,7 @@ mod tests {
         ] {
             let mut s = session();
             s.phase = phase;
-            assert!(
-                s.transition(AgentPhase::Cancelled).is_ok(),
-                "cancel from {phase:?}"
-            );
+            expect_transition(&mut s, AgentPhase::Cancelled);
         }
     }
 

@@ -200,6 +200,11 @@ pub fn move_to_trash(
         ));
     }
 
+    let meta = std::fs::symlink_metadata(source_path)?;
+    if !meta.is_dir() && meta.len() > MAX_SNAPSHOT_BYTES {
+        return Err(RecoveryError::FileTooLarge { size: meta.len() });
+    }
+
     let id = new_id();
     let trash_entry_dir = crate::workspace::trash_dir(workspace_root)
         .join("files")
@@ -213,15 +218,10 @@ pub fn move_to_trash(
     let dest = trash_entry_dir.join(filename.as_ref());
 
     // Copy then delete (safer than rename across filesystems).
-    let meta = std::fs::symlink_metadata(source_path)?;
     if meta.is_dir() {
         copy_dir_recursive(source_path, &dest)?;
         std::fs::remove_dir_all(source_path)?;
     } else {
-        let size = meta.len();
-        if size > MAX_SNAPSHOT_BYTES {
-            return Err(RecoveryError::FileTooLarge { size });
-        }
         std::fs::copy(source_path, &dest)?;
         std::fs::remove_file(source_path)?;
     }
@@ -262,6 +262,7 @@ pub fn restore_from_trash(
     }
 
     let src = Path::new(&record.trash_path);
+    assert_inside(src, workspace_root)?;
     if !src.exists() {
         return Err(RecoveryError::NotFound(record.trash_path.clone()));
     }
@@ -318,9 +319,24 @@ pub fn create_git_patch_backup(
         .output()
         .map_err(|e| RecoveryError::Git(e.to_string()))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
 
     if !output.status.success() {
-        return Err(RecoveryError::Git(stderr.trim().to_string()));
+        let code = output
+            .status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "terminated by signal".to_string());
+        let detail = if !stderr.trim().is_empty() {
+            stderr.trim()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim()
+        } else {
+            "no output"
+        };
+        return Err(RecoveryError::Git(format!(
+            "git diff HEAD failed with exit code {code}: {detail}"
+        )));
     }
 
     if output.stdout.is_empty() {
@@ -367,6 +383,7 @@ pub fn rollback_from_snapshot(
     }
 
     let src = Path::new(&record.snapshot_path);
+    assert_inside(src, workspace_root)?;
     if !src.exists() {
         return Err(RecoveryError::NotFound(record.snapshot_path.clone()));
     }
@@ -535,18 +552,60 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn tampered_restore_records_cannot_read_outside_workspace() {
+        let ws = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, b"secret").unwrap();
+
+        let trash = TrashRecord {
+            id: "tampered-trash".to_string(),
+            timestamp: now_rfc3339(),
+            original_path: "restored.txt".to_string(),
+            trash_path: outside_file.to_string_lossy().into_owned(),
+            actor: "agent".to_string(),
+        };
+        assert!(matches!(
+            restore_from_trash(&trash, ws.path(), false),
+            Err(RecoveryError::OutsideWorkspace)
+        ));
+
+        let snapshot = SnapshotRecord {
+            id: "tampered-snapshot".to_string(),
+            timestamp: now_rfc3339(),
+            original_path: "restored.txt".to_string(),
+            snapshot_path: outside_file.to_string_lossy().into_owned(),
+            action_kind: "file_write".to_string(),
+            actor: "agent".to_string(),
+        };
+        assert!(matches!(
+            rollback_from_snapshot(&snapshot, ws.path(), false),
+            Err(RecoveryError::OutsideWorkspace)
+        ));
+    }
+
     // 4.7.6 — huge files fail safely without creating partial artifacts
     #[test]
     fn huge_file_fails_safely() {
         let ws = tempdir().unwrap();
         let big = ws.path().join("big.bin");
-        // We can't actually write 10MiB in a test; override by making the
-        // metadata check trigger via a mocked size. Instead we test the exact
-        // boundary: write MAX_SNAPSHOT_BYTES + 1 bytes would be too slow, so
-        // we just verify the error variant exists and the constant is correct.
-        assert_eq!(MAX_SNAPSHOT_BYTES, 10 * 1024 * 1024);
-        // Attempt to snapshot a non-existent file → NotFound (not a panic).
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_SNAPSHOT_BYTES + 1).unwrap();
+
         let result = create_snapshot(&big, ws.path(), "write", "agent");
-        assert!(matches!(result, Err(RecoveryError::NotFound(_))));
+
+        assert!(matches!(
+            result,
+            Err(RecoveryError::FileTooLarge { size }) if size == MAX_SNAPSHOT_BYTES + 1
+        ));
+        let snapshot_root = crate::workspace::snapshots_dir(ws.path());
+        assert!(
+            !snapshot_root.exists()
+                || std::fs::read_dir(snapshot_root)
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(true),
+            "oversized snapshot must not leave partial artifacts"
+        );
     }
 }

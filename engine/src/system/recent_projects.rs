@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
 use thiserror::Error;
 
 pub const MAX_RECENT_PROJECTS: usize = 10;
@@ -19,6 +20,8 @@ pub enum RecentProjectsError {
     Json(#[from] serde_json::Error),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("system clock is before the Unix epoch: {0}")]
+    Clock(#[from] SystemTimeError),
 }
 
 pub fn recent_projects_path(app_data_dir: &Path) -> PathBuf {
@@ -52,14 +55,15 @@ pub fn load_raw() -> Result<Vec<RecentProject>, RecentProjectsError> {
 fn load_raw_from(app_data_dir: &Path) -> Result<Vec<RecentProject>, RecentProjectsError> {
     let path = recent_projects_path(app_data_dir);
 
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return Ok(vec![]),
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(vec![]),
+        Err(err) => return Err(err.into()),
     };
+
+    if content.trim().is_empty() {
+        return Ok(vec![]);
+    }
 
     match serde_json::from_str(&content) {
         Ok(v) => Ok(v),
@@ -86,14 +90,9 @@ fn add_recent_project_to(
 
     projects.retain(|p| normalize_for_dedup(&p.path) != normalized);
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
     let entry = RecentProject {
         path: project_path.to_path_buf(),
-        last_opened: format!("{}", now),
+        last_opened: unix_timestamp_secs()?.to_string(),
     };
 
     projects.insert(0, entry);
@@ -101,63 +100,145 @@ fn add_recent_project_to(
 
     let path_out = recent_projects_path(app_data_dir);
 
+    std::fs::create_dir_all(app_data_dir)?;
     let content = serde_json::to_string(&projects)?;
     std::fs::write(&path_out, content)?;
 
     Ok(())
 }
 
+fn unix_timestamp_secs() -> Result<u64, SystemTimeError> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempfile::{TempDir, tempdir};
 
-    fn isolated_app_data_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "gwenland-recent-projects-test-{}-{nanos}",
-            std::process::id()
-        ));
+    fn isolated_app_data_dir() -> TempDir {
+        tempdir().expect("temp app-data dir")
+    }
+
+    fn create_project(root: &TempDir, name: &str) -> PathBuf {
+        let path = root.path().join(name);
         std::fs::create_dir_all(&path).unwrap();
         path
     }
 
     #[test]
-    fn test_recent_projects_crud() {
+    fn add_recent_project_persists_newest_first_and_deduplicates() {
         let app_data_dir = isolated_app_data_dir();
-        let p = std::env::temp_dir();
-        add_recent_project_to(&p, &app_data_dir).unwrap();
+        let workspace = tempdir().unwrap();
+        let first = create_project(&workspace, "first");
+        let second = create_project(&workspace, "second");
 
-        let loaded = load_raw_from(&app_data_dir).unwrap();
-        assert!(!loaded.is_empty());
-        assert_eq!(loaded[0].path, p);
+        add_recent_project_to(&first, app_data_dir.path()).unwrap();
+        add_recent_project_to(&second, app_data_dir.path()).unwrap();
+        add_recent_project_to(&first, app_data_dir.path()).unwrap();
 
-        add_recent_project_to(&p, &app_data_dir).unwrap();
-        let loaded = load_raw_from(&app_data_dir).unwrap();
+        let loaded = load_raw_from(app_data_dir.path()).unwrap();
+
         assert_eq!(
-            loaded
-                .iter()
-                .filter(|x| normalize_for_dedup(&x.path) == normalize_for_dedup(&p))
-                .count(),
-            1
+            loaded.iter().map(|p| &p.path).collect::<Vec<_>>(),
+            vec![&first, &second]
         );
+        let timestamps = loaded
+            .iter()
+            .map(|project| {
+                project
+                    .last_opened
+                    .parse::<u64>()
+                    .expect("recent project timestamp is Unix seconds")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(timestamps.len(), 2);
+        assert!(timestamps.iter().all(|timestamp| *timestamp > 0));
+    }
+
+    #[test]
+    fn add_recent_project_trims_to_max_length() {
+        let app_data_dir = isolated_app_data_dir();
+        let workspace = tempdir().unwrap();
+        let projects = (0..(MAX_RECENT_PROJECTS + 3))
+            .map(|index| create_project(&workspace, &format!("project-{index}")))
+            .collect::<Vec<_>>();
+
+        for project in &projects {
+            add_recent_project_to(project, app_data_dir.path()).unwrap();
+        }
+
+        let loaded = load_raw_from(app_data_dir.path()).unwrap();
+        let expected = projects
+            .iter()
+            .rev()
+            .take(MAX_RECENT_PROJECTS)
+            .collect::<Vec<_>>();
+
+        assert_eq!(loaded.len(), MAX_RECENT_PROJECTS);
+        assert_eq!(loaded.iter().map(|p| &p.path).collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn filter_existing_keeps_only_directories() {
+        let workspace = tempdir().unwrap();
+        let existing_dir = create_project(&workspace, "dir");
+        let file_path = workspace.path().join("file.txt");
+        let missing_dir = workspace.path().join("missing");
+        std::fs::write(&file_path, "not a project dir").unwrap();
+
+        let filtered = filter_existing(vec![
+            RecentProject {
+                path: missing_dir,
+                last_opened: "1".to_string(),
+            },
+            RecentProject {
+                path: file_path,
+                last_opened: "2".to_string(),
+            },
+            RecentProject {
+                path: existing_dir.clone(),
+                last_opened: "3".to_string(),
+            },
+        ]);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].path, existing_dir);
+        assert_eq!(filtered[0].last_opened, "3");
+    }
+
+    #[test]
+    fn load_raw_handles_missing_empty_and_malformed_files() {
+        let app_data_dir = isolated_app_data_dir();
+        assert_eq!(load_raw_from(app_data_dir.path()).unwrap(), Vec::new());
+
+        let path = recent_projects_path(app_data_dir.path());
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(load_raw_from(app_data_dir.path()).unwrap(), Vec::new());
+
+        std::fs::write(&path, "not-json").unwrap();
+        assert_eq!(load_raw_from(app_data_dir.path()).unwrap(), Vec::new());
     }
 
     proptest! {
         #[test]
         fn test_recent_projects_invariants(paths in proptest::collection::vec("[a-zA-Z0-9]{1,5}", 0..20)) {
             let app_data_dir = isolated_app_data_dir();
-            // we execute the addition and check invariants
             for p_str in &paths {
                 let p = PathBuf::from(p_str);
-                let _ = add_recent_project_to(&p, &app_data_dir);
+                let _ = add_recent_project_to(&p, app_data_dir.path());
             }
-            let loaded = load_raw_from(&app_data_dir).unwrap();
+            let loaded = load_raw_from(app_data_dir.path()).unwrap();
+            let mut normalized = loaded
+                .iter()
+                .map(|project| normalize_for_dedup(&project.path))
+                .collect::<Vec<_>>();
+            normalized.sort();
+            normalized.dedup();
+
             assert!(loaded.len() <= MAX_RECENT_PROJECTS);
+            assert_eq!(loaded.len(), normalized.len());
         }
     }
 }

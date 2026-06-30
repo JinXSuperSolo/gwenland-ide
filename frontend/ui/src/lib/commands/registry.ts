@@ -47,7 +47,7 @@ import {
 import { terminalSessions, createSession, removeSession } from '../stores/terminal-sessions'
 import { openFolder, workspace } from '../stores/workspace'
 import { openWorkspaceSearch } from '../stores/workspace-search'
-import { openPalette, openSettings } from '../stores/ui'
+import { openPalette, openSettings, openAbout, openChangelog } from '../stores/ui'
 import { toggleEditorMinimap, toggleTerminalMinimap } from '../stores/editor-preferences'
 import {
   clearLocalHistory,
@@ -702,13 +702,16 @@ const COMMANDS: Command[] = [
     handler: () => void deleteBranch(),
   },
   {
+    id: 'help.changelog',
+    title: 'Changelog',
+    category: 'Help',
+    handler: () => openChangelog(),
+  },
+  {
     id: 'help.about',
     title: 'About',
     category: 'Help',
-    handler: () =>
-      alert(
-        'GwenLand IDE\nVersion 0.1.0\n\nA lightweight, local-first code editor built with Tauri + Rust.',
-      ),
+    handler: () => openAbout(),
   },
   {
     id: 'help.keyboardShortcuts',

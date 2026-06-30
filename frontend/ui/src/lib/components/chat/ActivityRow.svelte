@@ -45,7 +45,7 @@
     opacity: 0.78;
   }
   .row.failed {
-    color: #ffb4a9;
+    color: var(--destructive);
     opacity: 0.95;
   }
   .row.pending {

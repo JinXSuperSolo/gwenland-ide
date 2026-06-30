@@ -427,6 +427,17 @@
     font-family: 'Cambria Math', 'Latin Modern Math', 'Times New Roman', serif;
     white-space: nowrap;
   }
+  .ai-msg-text :global(.math-inline i),
+  .ai-msg-text :global(.math-block i) {
+    font-style: italic;
+    padding: 0 1px;
+  }
+  .ai-msg-text :global(.math-op) {
+    padding: 0 3px;
+  }
+  .ai-msg-text :global(.math-num-val) {
+    padding: 0 1px;
+  }
   .ai-msg-text :global(.math-block) {
     display: block;
     text-align: center;
@@ -460,6 +471,7 @@
     vertical-align: middle;
     font-size: 0.72em;
     line-height: 1;
+    margin-left: 2px;
   }
   .ai-msg-text :global(.math-ss sup),
   .ai-msg-text :global(.math-ss sub) {

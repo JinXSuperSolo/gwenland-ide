@@ -10,7 +10,7 @@ import { registerGitCommands } from './actions/gitActions'
 import { openFolder, workspace } from './stores/workspace'
 import { saveActiveTab, closeActiveTab, cycleTab, newUntitledFile } from './stores/tabs'
 import { togglePanel } from './stores/panels'
-import { openPalette, openSettings } from './stores/ui'
+import { openPalette, openSettings, openAbout, openChangelog } from './stores/ui'
 import {
   hasActiveEditor,
   editorUndo,
@@ -133,11 +133,9 @@ const terminalMenu: MenuItem[] = [
 ]
 
 const helpMenu: MenuItem[] = [
-  {
-    label: 'About GwenLand IDE',
-    action: () =>
-      alert('GwenLand IDE\nVersion 0.1.0\n\nA lightweight, local-first code editor built with Tauri + Rust.'),
-  },
+  { label: 'Changelog', action: () => openChangelog() },
+  { type: 'divider' },
+  { label: 'About GwenLand IDE', action: () => openAbout() },
   { label: 'Open Repository', disabled: true },
 ]
 

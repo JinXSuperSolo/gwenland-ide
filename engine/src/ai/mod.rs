@@ -9,6 +9,7 @@
 pub mod anthropic;
 pub mod context;
 pub mod conversation;
+pub mod curl_client;
 pub mod diff;
 pub mod error;
 pub mod gemini;

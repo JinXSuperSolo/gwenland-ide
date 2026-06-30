@@ -43,3 +43,18 @@ body {
   background: var(--muted-foreground);
   background-clip: padding-box;
 }
+
+/* Compact button utility */
+.btn-compact {
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11px;
+  gap: 4px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}

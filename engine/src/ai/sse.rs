@@ -2,8 +2,9 @@
 //!
 //! Provider adapters feed raw network bytes into an [`SseDecoder`] and get back
 //! complete [`SseEvent`]s. The decoder is provider-neutral: it only frames
-//! events (handling `\n`/`\r\n`, comment lines, multi-`data:` joining, and
-//! `event:` names). Interpreting an event's JSON payload is the adapter's job.
+//! events (handling `\n`/`\r\n`, comment lines, multi-`data:` joining,
+//! `event:` names, and optional `id:` values). Interpreting an event's JSON
+//! payload is the adapter's job.
 //!
 //! Byte-level buffering (rather than `from_utf8_lossy` per network chunk) is
 //! deliberate: a chunk boundary can fall in the middle of a multi-byte UTF-8
@@ -16,6 +17,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SseEvent {
     pub event: Option<String>,
+    pub id: Option<String>,
     pub data: String,
 }
 
@@ -25,6 +27,7 @@ pub struct SseEvent {
 pub struct SseDecoder {
     buf: Vec<u8>,
     event_name: Option<String>,
+    event_id: Option<String>,
     data_lines: Vec<String>,
 }
 
@@ -53,11 +56,13 @@ impl SseDecoder {
                 if !self.data_lines.is_empty() {
                     events.push(SseEvent {
                         event: self.event_name.take(),
+                        id: self.event_id.take(),
                         data: self.data_lines.join("\n"),
                     });
                     self.data_lines.clear();
                 }
                 self.event_name = None;
+                self.event_id = None;
                 continue;
             }
 
@@ -72,8 +77,10 @@ impl SseDecoder {
                     .push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
             } else if let Some(rest) = line.strip_prefix("event:") {
                 self.event_name = Some(rest.strip_prefix(' ').unwrap_or(rest).trim().to_string());
+            } else if let Some(rest) = line.strip_prefix("id:") {
+                self.event_id = Some(rest.strip_prefix(' ').unwrap_or(rest).to_string());
             }
-            // `id:`, `retry:`, and unknown fields are intentionally ignored.
+            // `retry:` and unknown fields are intentionally ignored.
         }
 
         events
@@ -99,7 +106,28 @@ mod tests {
         let evs = d.push(b"event: content_block_delta\r\ndata: {\"x\":1}\r\n\r\n");
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].event.as_deref(), Some("content_block_delta"));
+        assert_eq!(evs[0].id, None);
         assert_eq!(evs[0].data, "{\"x\":1}");
+    }
+
+    #[test]
+    fn captures_id_and_done_payload() {
+        let mut d = SseDecoder::new();
+        let evs = d.push(b"id: event-42\ndata: [DONE]\n\n");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].id.as_deref(), Some("event-42"));
+        assert_eq!(evs[0].event, None);
+        assert_eq!(evs[0].data, "[DONE]");
+    }
+
+    #[test]
+    fn id_without_data_does_not_leak_to_next_event() {
+        let mut d = SseDecoder::new();
+        assert!(d.push(b"id: stale\n\n").is_empty());
+        let evs = d.push(b"data: fresh\n\n");
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].id, None);
+        assert_eq!(evs[0].data, "fresh");
     }
 
     #[test]

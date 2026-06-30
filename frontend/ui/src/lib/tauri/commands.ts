@@ -25,6 +25,11 @@ export function openFolderDialog(): Promise<string> {
   return invoke<string>('open_folder_dialog')
 }
 
+/** Open a fully isolated second editor window. Resolves to its Tauri window label. */
+export function openNewWindow(): Promise<string> {
+  return invoke<string>('open_new_window')
+}
+
 /**
  * Lists the immediate children of `path`. The Rust side already returns
  * directories first, then files, each group ascending case-insensitively —
@@ -556,12 +561,20 @@ export interface LanguageServerSettings {
   args: string[]
 }
 
+export interface LspOnboardingSettings {
+  rust: boolean
+  typescript: boolean
+  javascript: boolean
+  python: boolean
+}
+
 /** The `[lsp]` settings section (mirrors `LspSettings`). TS/JS share the
  *  `typescript` bucket. Never stores secrets. */
 export interface LspSettings {
   rust: LanguageServerSettings
   typescript: LanguageServerSettings
   python: LanguageServerSettings
+  onboarding: LspOnboardingSettings
 }
 
 export interface EngineSettings {
@@ -896,6 +909,11 @@ export function gitDiffFile(root: string, path: string, untracked: boolean): Pro
   return invoke<string>('git_diff_file', { root, path, untracked })
 }
 
+/** Run the active BYOK provider against one exact file diff and return Markdown review text. */
+export function aiReviewDiff(root: string, path: string, untracked: boolean): Promise<string> {
+  return invoke<string>('ai_review_diff', { root, path, untracked })
+}
+
 /** All local branch names. */
 export function gitListBranches(root: string): Promise<string[]> {
   return invoke<string[]>('git_list_branches', { root })
@@ -1070,6 +1088,7 @@ export function lspHover(
 export const LSP_DIAGNOSTICS_EVENT = 'lsp://diagnostics'
 export const LSP_STATUS_EVENT = 'lsp://status'
 export const LSP_MESSAGE_EVENT = 'lsp://message'
+export const LSP_SERVER_NOT_FOUND_EVENT = 'lsp://server-not-found'
 export const WORKSPACE_SEARCH_RESULT_EVENT = 'search:result'
 export const WORKSPACE_SEARCH_DONE_EVENT = 'search:done'
 
@@ -1097,6 +1116,11 @@ export interface LspMessageEvent {
   message: string
 }
 
+export type LspServerNotFoundEvent = Extract<LspStatus, { state: 'missing_server' }> & {
+  language: LspLanguage
+  workspace_root: string | null
+}
+
 /**
  * Subscribe to diagnostics updates across all documents. The handler routes by
  * `path`/`uri`. Returns the unlisten function.
@@ -1122,6 +1146,15 @@ export async function onLspMessage(
   handler: (event: LspMessageEvent) => void
 ): Promise<UnlistenFn> {
   return listen<LspMessageEvent>(LSP_MESSAGE_EVENT, (event) => handler(event.payload))
+}
+
+/** Subscribe to missing-server onboarding triggers. Returns the unlisten function. */
+export async function onLspServerNotFound(
+  handler: (event: LspServerNotFoundEvent) => void
+): Promise<UnlistenFn> {
+  return listen<LspServerNotFoundEvent>(LSP_SERVER_NOT_FOUND_EVENT, (event) =>
+    handler(event.payload)
+  )
 }
 
 export async function onWorkspaceSearchResult(

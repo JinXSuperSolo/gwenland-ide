@@ -14,7 +14,8 @@
   import { languageIdForFilename } from '../editor/language-detect'
   import { safetyEvaluate, type SafetyDecision } from '../tauri/commands'
   import { editorPreferences } from '../stores/editor-preferences'
-  import { openSettings } from '../stores/ui'
+  import { overwriteMode } from '../editor/overwrite-mode'
+  import { openPalette, openSettings } from '../stores/ui'
   import Icon from './Icon.svelte'
   import LspStatusIndicator from './LspStatusIndicator.svelte'
   import GitStatusBar from './GitStatusBar.svelte'
@@ -190,8 +191,15 @@
     {#if activePath}
       <button type="button" class="status-btn" onclick={openLanguagePicker}>{language}</button>
     {/if}
+    {#if $overwriteMode}
+      <!-- Safety net (M-keynav §6): only appears if overwrite mode is somehow
+           activated. Insert is hard-blocked, so this should normally never show;
+           if it does, the user has visible feedback that something unexpected
+           happened. -->
+      <span class="status-item ovr" title="Overwrite mode is active (unexpected — Insert is blocked)">OVR</span>
+    {/if}
     {#if $cursor}
-      <button type="button" class="status-btn" onclick={editorGoToLine}>
+      <button type="button" class="status-btn" onclick={() => openPalette(':')}>
         Ln {$cursor.line}, Col {$cursor.col}
       </button>
       <span class="status-item">UTF-8</span>
@@ -306,6 +314,16 @@
   }
   .protected {
     color: var(--foreground);
+  }
+  /* OVR safety-net indicator: distinct, warning-toned, monospace badge. */
+  .ovr {
+    padding: 0 5px;
+    font-family: var(--font-mono);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--primary-foreground);
+    background: var(--destructive);
+    border-radius: var(--radius-sm);
   }
   .risk-low,
   .risk-medium {

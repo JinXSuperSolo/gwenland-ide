@@ -164,8 +164,13 @@ fn bound_str(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_string();
     }
-    let truncated: String = s.chars().take(max_chars).collect();
-    format!("{truncated}…")
+    const SUFFIX: &str = "...";
+    let suffix_chars = SUFFIX.chars().count();
+    if max_chars <= suffix_chars {
+        return s.chars().take(max_chars).collect();
+    }
+    let truncated: String = s.chars().take(max_chars - suffix_chars).collect();
+    format!("{truncated}{SUFFIX}")
 }
 
 fn now_rfc3339() -> String {
@@ -204,8 +209,8 @@ mod tests {
     fn workspace_logs_dir_is_under_gwenland() {
         let dir = tempdir().unwrap();
         let logs = workspace_logs_dir(dir.path());
-        assert!(logs.starts_with(dir.path().join(".gwenland")));
-        assert!(logs.to_string_lossy().contains("logs"));
+
+        assert_eq!(logs, dir.path().join(".gwenland").join("logs"));
     }
 
     // 7.1 — workspace crash dir is under logs/crash
@@ -213,8 +218,11 @@ mod tests {
     fn workspace_crash_dir_is_under_logs() {
         let dir = tempdir().unwrap();
         let crash = workspace_crash_dir(dir.path());
-        assert!(crash.ends_with(std::path::Path::new("crash")));
-        assert!(crash.to_string_lossy().contains("logs"));
+
+        assert_eq!(
+            crash,
+            dir.path().join(".gwenland").join("logs").join("crash")
+        );
     }
 
     // 7.2 — crash report is created with correct fields
@@ -223,9 +231,11 @@ mod tests {
         let r = CrashReport::new("1.0.0", "NullPointerException in foo()", "at bar:42");
         assert!(!r.id.is_empty());
         assert!(!r.timestamp.is_empty());
-        assert!(!r.app_version.is_empty());
-        assert!(!r.platform.is_empty());
-        assert!(!r.error_summary.is_empty());
+        assert_eq!(r.app_version, "1.0.0");
+        assert_eq!(r.error_summary, "NullPointerException in foo()");
+        assert_eq!(r.stack_excerpt, "at bar:42");
+        assert!(r.platform.contains(std::env::consts::OS));
+        assert!(r.platform.contains(std::env::consts::ARCH));
     }
 
     // 7.2 — crash report bounds long strings
@@ -233,9 +243,11 @@ mod tests {
     fn crash_report_bounds_long_strings() {
         let long = "x".repeat(10_000);
         let r = CrashReport::new("1.0.0", &long, &long);
-        // summary bounded to 512, stack to 2048 (chars + trailing ellipsis)
-        assert!(r.error_summary.chars().count() <= 513);
-        assert!(r.stack_excerpt.chars().count() <= 2049);
+
+        assert_eq!(r.error_summary.chars().count(), 512);
+        assert_eq!(r.stack_excerpt.chars().count(), 2048);
+        assert!(r.error_summary.ends_with("..."));
+        assert!(r.stack_excerpt.ends_with("..."));
     }
 
     // 7.2 — crash report redacts secrets
@@ -288,13 +300,26 @@ mod tests {
         assert_eq!(reports.len(), 1, "only the valid line should be read");
     }
 
-    // 7.3 — no network call from this module (compile-level; the module has
-    // no reqwest/hyper/tokio::net dependency)
     #[test]
-    fn no_network_dependency_in_module() {
-        // If this test compiles, the module has no auto-sending behavior.
-        // The upload-is-opt-in invariant is enforced by code review + this doc test.
-        let _r = CrashReport::new("1.0.0", "test", "stack");
+    fn record_crash_writes_redacted_workspace_report() {
+        let dir = tempdir().unwrap();
+        let path = record_crash(
+            Some(dir.path()),
+            "1.2.3",
+            "failed with api_key=sk-ant-abcdefghijklmnopqrstuvwxyz01234",
+            "stack saw api_key=sk-ant-abcdefghijklmnopqrstuvwxyz56789\nframe",
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let reports = read_crash_reports(&workspace_crash_dir(dir.path()));
+
+        assert_eq!(path, workspace_crash_dir(dir.path()).join("crashes.jsonl"));
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].app_version, "1.2.3");
+        assert!(reports[0].error_summary.contains("[REDACTED]"));
+        assert!(reports[0].stack_excerpt.contains("[REDACTED]"));
+        assert!(!raw.contains("sk-ant-abcdefghijklmnopqrstuvwxyz01234"));
+        assert!(!raw.contains("sk-ant-abcdefghijklmnopqrstuvwxyz56789"));
     }
 
     // record_crash helper stores in workspace crash dir

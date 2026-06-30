@@ -87,7 +87,9 @@ const DEFAULT_EXCLUDES: &[&str] = &[
 ];
 
 fn is_excluded_name(name: &str) -> bool {
-    DEFAULT_EXCLUDES.iter().any(|excluded| name == *excluded)
+    DEFAULT_EXCLUDES
+        .iter()
+        .any(|excluded| name.eq_ignore_ascii_case(excluded))
 }
 
 /// Returns `true` if `path` lives inside a default excluded component. Used both
@@ -210,7 +212,7 @@ impl FsWatcher {
         let thread_running = running.clone();
         let handle = std::thread::spawn(move || {
             while thread_running.load(Ordering::Relaxed) {
-                std::thread::sleep(interval);
+                std::thread::park_timeout(interval);
                 if !thread_running.load(Ordering::Relaxed) {
                     break;
                 }
@@ -267,6 +269,7 @@ impl Drop for FsWatcher {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
+            handle.thread().unpark();
             let _ = handle.join();
         }
     }
@@ -630,6 +633,26 @@ mod tests {
         watcher.watch("/some/repo/node_modules/react");
         watcher.watch("/some/repo/target/debug");
         assert_eq!(watcher.watched_count(), 0);
+    }
+
+    #[test]
+    fn excludes_are_case_insensitive() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_string();
+        let state = snap_state(&root);
+
+        fs::create_dir(dir.path().join("Node_Modules")).unwrap();
+        fs::write(dir.path().join("Node_Modules").join("pkg.js"), b"x").unwrap();
+
+        let patches = poll_once(&state);
+        assert!(patches.is_empty());
+    }
+
+    #[test]
+    fn drop_wakes_long_interval_watcher() {
+        let watcher = FsWatcher::start_with_interval(Duration::from_secs(3600), |_| {});
+        std::thread::sleep(Duration::from_millis(10));
+        drop(watcher);
     }
 
     // 1.13 — end-to-end: the live thread delivers a coalesced patch via callback.

@@ -281,15 +281,18 @@ pub fn should_block_on_audit_failure(risk: RiskLevel) -> bool {
 // ---------------------------------------------------------------------------
 
 fn bound_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        let mut end = max;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}…", &s[..end])
+    if s.chars().count() <= max {
+        return s.to_string();
     }
+
+    const SUFFIX: &str = "...";
+    let suffix_len = SUFFIX.chars().count();
+    if max <= suffix_len {
+        return s.chars().take(max).collect();
+    }
+
+    let truncated: String = s.chars().take(max - suffix_len).collect();
+    format!("{truncated}{SUFFIX}")
 }
 
 // ---------------------------------------------------------------------------
@@ -464,9 +467,10 @@ mod tests {
             .unwrap();
         let events = writer.read_all(AuditCategory::Safety);
         assert!(
-            events[0].target_summary.len() <= AuditEvent::MAX_SUMMARY + 3,
+            events[0].target_summary.chars().count() <= AuditEvent::MAX_SUMMARY,
             "target_summary must be bounded"
         );
+        assert!(events[0].target_summary.ends_with("..."));
     }
 
     // 3.6.7 — each category uses a separate file

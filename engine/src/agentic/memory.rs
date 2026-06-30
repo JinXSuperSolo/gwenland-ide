@@ -98,7 +98,7 @@ pub fn memory_project_dir(workspace_root: &Path, project_name: &str) -> PathBuf 
         .join(".gwenland")
         .join("agent")
         .join("memory")
-        .join(project_name)
+        .join(sanitize_segment(project_name, "project"))
 }
 
 /// Return the conversation-scoped memory directory.
@@ -107,7 +107,8 @@ pub fn memory_conversation_dir(
     project_name: &str,
     conversation_name: &str,
 ) -> PathBuf {
-    memory_project_dir(workspace_root, project_name).join(conversation_name)
+    memory_project_dir(workspace_root, project_name)
+        .join(sanitize_segment(conversation_name, "conversation"))
 }
 
 /// Derive the project name segment from the workspace root folder name.
@@ -674,6 +675,16 @@ mod tests {
     }
 
     #[test]
+    fn memory_dirs_sanitize_untrusted_segments() {
+        let root = Path::new("/workspace");
+        let conv_dir = memory_conversation_dir(root, "../My Project", "conv/../abc");
+        assert!(conv_dir.starts_with(root));
+        let rendered = conv_dir.to_string_lossy().replace('\\', "/");
+        assert!(rendered.ends_with(".gwenland/agent/memory/my-project/conv-abc"));
+        assert!(!rendered.contains(".."));
+    }
+
+    #[test]
     fn project_name_from_root_sanitizes() {
         let root = Path::new("/home/user/My Project!");
         let name = project_name_from_root(root);
@@ -886,6 +897,25 @@ mod tests {
         assert!(content.contains("First"));
         assert!(content.contains("Second"));
         assert!(content.contains("---"));
+    }
+
+    #[test]
+    fn write_sanitizes_target_segments_and_filename() {
+        let dir = tempdir().unwrap();
+        let target = MemoryWriteTarget {
+            project_name: "../Project".into(),
+            conversation_name: "conv/one".into(),
+            filename: "../escape".into(),
+        };
+        let note = MemoryNote {
+            filename: "ignored.md".into(),
+            content: "# Safe\n- content\n".into(),
+        };
+        let path = write_memory_note(dir.path(), &target, &note).unwrap();
+        assert!(path.starts_with(dir.path()));
+        let rendered = path.to_string_lossy().replace('\\', "/");
+        assert!(rendered.ends_with(".gwenland/agent/memory/project/conv-one/escape.md"));
+        assert!(!rendered.contains(".."));
     }
 
     #[test]

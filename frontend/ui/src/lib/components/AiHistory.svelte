@@ -214,7 +214,9 @@
     white-space: nowrap;
   }
   .hi-act {
-    display: none;
+    opacity: 0;
+    pointer-events: none;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 22px;
@@ -227,7 +229,8 @@
     flex-shrink: 0;
   }
   .hist-item:hover .hi-act {
-    display: inline-flex;
+    opacity: 1;
+    pointer-events: auto;
   }
   .hi-act:hover {
     color: var(--ai-text-primary);

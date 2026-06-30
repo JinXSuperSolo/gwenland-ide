@@ -11,7 +11,7 @@ path = "src/main.rs"
 tauri = { version = "2", default-features = false, features = ["wry", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 # `rt` provides task::AbortHandle, used by AiManager to cancel active AI streams.
-tokio = { version = "1", features = ["sync", "rt"] }
+tokio = { version = "1", features = ["sync", "rt", "time"] }
 gwenland-engine = { path = "../engine" }
 serde = { workspace = true }
 serde_json = { workspace = true }

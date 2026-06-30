@@ -1,4 +1,5 @@
 import { writable, get } from 'svelte/store'
+import { collapseSidebar, showAgentTab } from './sidebar'
 import type {
   AiError,
   ContextAttachment,
@@ -133,11 +134,22 @@ export const aiChat = writable<AiChatState>(initial)
 
 /** Toggle panel visibility (bound to the status-bar AI button). */
 export function toggleAiChat(): void {
-  aiChat.update((s) => ({ ...s, isOpen: !s.isOpen }))
+  if (get(aiChat).isOpen) {
+    collapseSidebar()
+    aiChat.update((s) => ({ ...s, isOpen: false }))
+  } else {
+    showAgentTab()
+    aiChat.update((s) => ({ ...s, isOpen: true }))
+  }
 }
 
 /** Alias matching the design doc's name. */
 export const toggleAiPanel = toggleAiChat
+
+export function openAiChat(): void {
+  showAgentTab()
+  aiChat.update((s) => ({ ...s, isOpen: true }))
+}
 
 // --- Streaming mutations ---------------------------------------------------
 

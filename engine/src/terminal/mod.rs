@@ -486,7 +486,6 @@ impl Drop for PtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
 
     /// Runs `body` on a worker thread and fails fast if it does not finish
@@ -495,25 +494,28 @@ mod tests {
     /// failing; here it aborts with a labelled message so the culprit is
     /// obvious. Run tests with `--test-threads=1` to keep the label unambiguous.
     fn with_timeout(label: &'static str, limit: Duration, body: impl FnOnce() + Send + 'static) {
-        let done = Arc::new(AtomicBool::new(false));
-        let done_worker = Arc::clone(&done);
+        let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            body();
-            done_worker.store(true, std::sync::atomic::Ordering::SeqCst);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+            let _ = tx.send(result);
         });
 
-        let start = Instant::now();
-        while start.elapsed() < limit {
-            if done.load(std::sync::atomic::Ordering::SeqCst) {
-                // Propagate any panic from the body as a test failure.
-                worker.join().expect("test body panicked");
-                return;
+        match rx.recv_timeout(limit) {
+            Ok(Ok(())) => {
+                worker.join().expect("test worker should join cleanly");
             }
-            std::thread::sleep(Duration::from_millis(20));
+            Ok(Err(panic)) => {
+                let _ = worker.join();
+                std::panic::resume_unwind(panic);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("test {label:?} exceeded {limit:?} — likely PTY teardown deadlock");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = worker.join();
+                panic!("test {label:?} worker disconnected before reporting result");
+            }
         }
-        // Deadline blown: almost certainly a teardown deadlock. Abort with a
-        // clear label rather than letting the harness hang for minutes.
-        panic!("test {label:?} exceeded {limit:?} — likely PTY teardown deadlock");
     }
 
     /// Blocks until `f` returns true or `timeout` elapses. Returns whether the
@@ -629,6 +631,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn spawn_invalid_command_returns_spawn_error() {
+        let cmd = CommandBuilder::new("gwenland-command-that-should-not-exist-xyz");
+
+        assert!(matches!(
+            PtySession::spawn_command(cmd, 24, 80),
+            Err(TerminalError::Spawn(_))
+        ));
+    }
+
     // Mitigation #2 / #3: dropping a still-running session must not leak the
     // child or hang. A long-running command is spawned and then dropped without
     // an explicit kill; Drop must kill+reap and detach the reader. The test
@@ -644,6 +656,45 @@ mod tests {
                 // Give the child a moment to actually start, then drop it.
                 std::thread::sleep(Duration::from_millis(100));
                 drop(session); // Must return promptly via kill+wait, not hang.
+            },
+        );
+    }
+
+    #[test]
+    fn multi_session_output_is_isolated() {
+        with_timeout(
+            "multi_session_output_is_isolated",
+            Duration::from_secs(40),
+            || {
+                let marker_a = "gwen_session_a_marker";
+                let marker_b = "gwen_session_b_marker";
+                let mut session_a = PtySession::spawn(24, 80, None).expect("spawn session A");
+                let mut session_b = PtySession::spawn(24, 80, None).expect("spawn session B");
+
+                answer_startup_dsr_then(&mut session_a, format!("echo {marker_a}\r\n").as_bytes());
+                answer_startup_dsr_then(&mut session_b, format!("echo {marker_b}\r\n").as_bytes());
+
+                let captured = wait_until(Duration::from_secs(10), || {
+                    session_a.output_string().contains(marker_a)
+                        && session_b.output_string().contains(marker_b)
+                });
+                assert!(
+                    captured,
+                    "expected each session to capture its own marker; A={:?}; B={:?}",
+                    session_a.output_string(),
+                    session_b.output_string()
+                );
+                assert!(
+                    !session_a.output_string().contains(marker_b),
+                    "session A leaked session B output"
+                );
+                assert!(
+                    !session_b.output_string().contains(marker_a),
+                    "session B leaked session A output"
+                );
+
+                session_a.kill().expect("kill session A");
+                session_b.kill().expect("kill session B");
             },
         );
     }

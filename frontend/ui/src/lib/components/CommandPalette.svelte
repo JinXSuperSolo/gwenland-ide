@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { paletteOpen, closePalette } from '../stores/ui'
+  import { paletteOpen, paletteInitialQuery, closePalette } from '../stores/ui'
   import {
     commandCategory,
     filterCommands,
     keybindingsFor,
     type Command,
   } from '../commands/registry'
+  import { revealLine } from '../editor/active-editor'
   import Icon from './Icon.svelte'
 
   let query = $state('')
@@ -13,12 +14,32 @@
   let inputEl = $state<HTMLInputElement>()
 
   // Recompute matches whenever the query or open-state changes.
-  const matches = $derived($paletteOpen ? filterCommands(query) : [])
+  const matches = $derived.by(() => {
+    if (!$paletteOpen) return []
+    if (query.startsWith(':')) {
+      const lineStr = query.slice(1)
+      const lineNo = parseInt(lineStr, 10)
+      const isNumber = !isNaN(lineNo)
+      return [
+        {
+          id: 'goto-line',
+          title: isNumber ? `Go to Line ${lineNo}` : 'Type a line number to navigate to...',
+          category: 'Navigation',
+          handler: () => {
+            if (isNumber) {
+              revealLine(lineNo)
+            }
+          },
+        },
+      ]
+    }
+    return filterCommands(query)
+  })
 
   // Reset + focus when the palette opens.
   $effect(() => {
     if ($paletteOpen) {
-      query = ''
+      query = $paletteInitialQuery
       selected = 0
       // Focus after the input is in the DOM.
       queueMicrotask(() => inputEl?.focus())
@@ -37,10 +58,9 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      closePalette()
-    } else if (e.key === 'ArrowDown') {
+    // Escape is owned by the centralized overlay stack (App.svelte → closeTopmost);
+    // letting it bubble keeps "one press = one layer" consistent.
+    if (e.key === 'ArrowDown') {
       e.preventDefault()
       selected = Math.min(selected + 1, matches.length - 1)
     } else if (e.key === 'ArrowUp') {
@@ -72,7 +92,7 @@
           class="palette-input"
           bind:this={inputEl}
           bind:value={query}
-          placeholder="Type a command…"
+          placeholder={query.startsWith(':') ? 'Type line number...' : 'Type a command…'}
           aria-label="Command search"
           onkeydown={onKeydown}
         />
@@ -88,7 +108,7 @@
             onmousemove={() => (selected = i)}
             onclick={() => run(cmd)}
           >
-            <span class="palette-cat">{commandCategory(cmd.id)}</span>
+            <span class="palette-cat">{cmd.id === 'goto-line' ? 'Navigation' : commandCategory(cmd.id)}</span>
             <span class="palette-label">{cmd.title}</span>
             <span class="palette-keys">
               {#each keyChips(keybindingsFor(cmd)[0] ?? '') as k}
@@ -112,8 +132,7 @@
     z-index: 100;
     display: flex;
     justify-content: center;
-    align-items: flex-start;
-    padding-top: 12vh;
+    align-items: center;
     background-color: rgba(0, 0, 0, 0.4);
   }
   .palette {

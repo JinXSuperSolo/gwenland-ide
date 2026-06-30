@@ -29,7 +29,7 @@
     { id: 'theme', title: 'Appearance — Theme', keywords: 'appearance theme preset accent color dark swatch' },
     { id: 'font', title: 'Editor — Font', keywords: 'editor font monospace family typeface code' },
     { id: 'ai', title: 'AI', keywords: 'ai provider model api key anthropic openai assistant training' },
-    { id: 'lsp', title: 'Language Servers', keywords: 'lsp language server rust typescript python diagnostics completion' },
+    { id: 'lsp', title: 'Language Servers', keywords: 'lsp language server rust typescript python diagnostics completion onboarding install guide' },
     { id: 'performance', title: 'Performance', keywords: 'performance low-end mode lag slow hardware minimap animations git badges icons indent guides smooth scroll' },
   ] as const
 
@@ -42,12 +42,8 @@
   }
   const anyMatch = $derived(SECTIONS.some((s) => matches(s.id)))
 
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      closeSettings()
-    }
-  }
+  // Escape is owned by the centralized overlay stack (App.svelte → closeTopmost)
+  // so stacked overlays close one layer per press. No local Escape handler here.
 
   // Focus the search box and reset the query whenever the panel opens.
   $effect(() => {
@@ -57,8 +53,6 @@
     }
   })
 </script>
-
-<svelte:window onkeydown={(e) => $settingsOpen && onKeydown(e)} />
 
 {#if $settingsOpen}
   <!-- Scrim: click outside the panel dismisses (GWEN-323). -->

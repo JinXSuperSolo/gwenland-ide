@@ -6,6 +6,7 @@
     type EngineSettings,
     type LanguageServerSettings,
   } from '../tauri/commands'
+  import { normalizeLspOnboarding, resetLspOnboarding } from '../stores/lsp-onboarding'
   import Checkbox from './Checkbox.svelte'
 
   /**
@@ -32,7 +33,7 @@
 
   onMount(async () => {
     try {
-      settings = await loadEngineSettings()
+      settings = normalizeLspOnboarding(await loadEngineSettings())
     } catch {
       settings = null
     }
@@ -67,6 +68,17 @@
     if (!settings) return
     settings.lsp[key].args = (e.target as HTMLInputElement).value.split(/\s+/).filter(Boolean)
     void persist()
+  }
+
+  async function resetOnboarding() {
+    if (!settings) return
+    try {
+      settings = await resetLspOnboarding()
+      savedNote = 'Onboarding notices reset'
+      setTimeout(() => (savedNote = ''), 1800)
+    } catch (e) {
+      savedNote = String(e)
+    }
   }
 </script>
 
@@ -111,6 +123,12 @@
       </div>
     {/if}
   {/each}
+
+  <div class="lsp-reset">
+    <button type="button" class="lsp-reset-btn" onclick={resetOnboarding}>
+      Reset LSP onboarding notices
+    </button>
+  </div>
 
   {#if savedNote}<div class="lsp-saved">{savedNote}</div>{/if}
 {:else}
@@ -173,5 +191,23 @@
     font-size: 11px;
     color: var(--chart-2, #3fb950);
     margin-top: 6px;
+  }
+  .lsp-reset {
+    margin-top: 4px;
+  }
+  .lsp-reset-btn {
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--secondary);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .lsp-reset-btn:hover {
+    border-color: var(--primary);
   }
 </style>

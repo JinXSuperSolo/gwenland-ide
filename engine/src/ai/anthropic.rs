@@ -7,11 +7,12 @@
 //! `text_delta` produce tokens; ping/keepalive and structural events are
 //! ignored; `message_stop` ends the stream cleanly.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::ai::curl_client::{CurlStream, curl_post_stream};
 use crate::ai::error::AiError;
 use crate::ai::keychain;
 use crate::ai::provider::{
@@ -121,7 +122,7 @@ fn map_error_event(v: &Value) -> AiError {
 /// Live token stream over a Messages API response.
 struct AnthropicStream {
     stream_id: String,
-    response: reqwest::Response,
+    response: CurlStream,
     decoder: SseDecoder,
     pending: VecDeque<TokenChunk>,
     done: bool,
@@ -156,7 +157,7 @@ impl ChunkSource for AnthropicStream {
             if self.done {
                 return Ok(None);
             }
-            match self.response.chunk().await {
+            match self.response.next_bytes().await {
                 Ok(Some(bytes)) => {
                     let events = self.decoder.push(&bytes);
                     for ev in events {
@@ -251,31 +252,27 @@ impl AiProvider for AnthropicAdapter {
             body["system"] = Value::String(system_parts.join("\n\n"));
         }
 
-        let response = reqwest::Client::new()
-            .post(API_URL)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", API_VERSION)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AiError::Network(e.to_string()))?;
+        let body = serde_json::to_string(&body)
+            .map_err(|_| AiError::ProviderError("failed to serialize Anthropic request".into()))?;
+        let mut headers = HashMap::new();
+        headers.insert("x-api-key".to_string(), api_key);
+        headers.insert("anthropic-version".to_string(), API_VERSION.to_string());
+        headers.insert("content-type".to_string(), "application/json".to_string());
 
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = crate::ai::http::retry_after_secs(response.headers());
-            let body = response.text().await.unwrap_or_default();
-            return Err(crate::ai::http::map_status(
-                status,
-                retry_after,
-                &body,
+        let response = curl_post_stream(API_URL, &headers, body).await?;
+        if !(200..300).contains(&response.status) {
+            return Err(crate::ai::http::map_stream_error(
+                response.status,
+                &response.headers,
+                response.body,
                 "Anthropic",
-            ));
+            )
+            .await);
         }
 
         Ok(Box::new(AnthropicStream {
             stream_id: request.stream_id,
-            response,
+            response: response.body,
             decoder: SseDecoder::new(),
             pending: VecDeque::new(),
             done: false,
@@ -314,6 +311,7 @@ mod tests {
     fn ev(name: &str, data: &str) -> SseEvent {
         SseEvent {
             event: Some(name.to_string()),
+            id: None,
             data: data.to_string(),
         }
     }

@@ -582,6 +582,19 @@ mod tests {
     }
 
     #[test]
+    fn every_advertised_tool_has_a_complete_contract() {
+        assert_eq!(ALL_TOOLS.len(), 12);
+        let rendered = render_tool_specs();
+        for tool in ALL_TOOLS {
+            let spec = tool.spec();
+            assert_eq!(ToolKind::from_name(spec.name), Some(*tool));
+            assert!(!spec.description.trim().is_empty(), "{:?}", tool);
+            assert!(spec.args.starts_with('{'), "{:?}", tool);
+            assert!(rendered.contains(spec.name), "{:?}", tool);
+        }
+    }
+
+    #[test]
     fn sides_are_classified() {
         assert_eq!(ToolKind::ReadFile.side(), ToolSide::Read);
         assert_eq!(ToolKind::EditFile.side(), ToolSide::Mutating);
@@ -674,6 +687,26 @@ mod tests {
             execute_local_tool(dir.path(), &call(ToolKind::RunTerminalCmd, json!({}))).is_none()
         );
         assert!(execute_local_tool(dir.path(), &call(ToolKind::EditFile, json!({}))).is_none());
+    }
+
+    #[test]
+    fn local_tools_reject_missing_required_args() {
+        let dir = tempdir().unwrap();
+        for tool in [
+            ToolKind::ReadFile,
+            ToolKind::GrepSearch,
+            ToolKind::FileSearch,
+        ] {
+            let res = execute_local_tool(dir.path(), &call(tool, json!({}))).unwrap();
+            assert!(!res.ok, "{tool:?} should reject missing args");
+            assert!(
+                res.error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("missing required arg"),
+                "{tool:?} returned {res:?}"
+            );
+        }
     }
 
     #[test]

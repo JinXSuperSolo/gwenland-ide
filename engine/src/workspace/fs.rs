@@ -63,11 +63,7 @@ pub fn list_directory(path: &Path) -> Result<Vec<DirEntry>, FsError> {
         });
     }
 
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    entries.sort_by_cached_key(|entry| (!entry.is_dir, entry.name.to_lowercase()));
 
     Ok(entries)
 }
@@ -350,6 +346,24 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    #[cfg(unix)]
+    fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn try_symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[test]
+    fn list_directory_empty_dir_returns_empty() {
+        let dir = tempdir().unwrap();
+        let entries = list_directory(dir.path()).unwrap();
+
+        assert!(entries.is_empty());
+    }
+
     #[test]
     fn list_directory_on_regular_file_returns_not_a_directory() {
         let dir = tempdir().unwrap();
@@ -375,6 +389,19 @@ mod tests {
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         // Dirs first (case-insensitive), then files (case-insensitive).
         assert_eq!(names, vec!["alpha", "Zeta", "apple.txt", "Beta.txt"]);
+    }
+
+    #[test]
+    fn list_directory_preserves_unicode_filenames() {
+        let dir = tempdir().unwrap();
+        let filename = "caf\u{00e9}-\u{65e5}\u{672c}.txt";
+        fs::write(dir.path().join(filename), "hello").unwrap();
+
+        let entries = list_directory(dir.path()).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, filename);
+        assert!(entries[0].path.ends_with(filename));
     }
 
     // Property 1: list_directory sort order — dirs before files, each group
@@ -468,6 +495,19 @@ mod tests {
     }
 
     #[test]
+    fn file_meta_skips_line_count_for_large_files() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("large.log");
+        let file = fs::File::create(&f).unwrap();
+        file.set_len(LINE_COUNT_SKIP_BYTES).unwrap();
+
+        let meta = file_meta(&f).unwrap();
+
+        assert_eq!(meta.size, LINE_COUNT_SKIP_BYTES);
+        assert_eq!(meta.line_count, u64::MAX);
+    }
+
+    #[test]
     fn read_file_preserves_utf8_content() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("text.txt");
@@ -527,6 +567,16 @@ mod tests {
         let content = "line one\nline two — αβγ\n";
         write_file(&path, content).unwrap();
         assert_eq!(read_file(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn write_file_overwrites_existing_content() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("out.txt");
+        write_file(&path, "old content").unwrap();
+        write_file(&path, "new content").unwrap();
+
+        assert_eq!(read_file(&path).unwrap(), "new content");
     }
 
     #[test]
@@ -720,5 +770,22 @@ mod tests {
             Err(FsError::OutsideWorkspace)
         ));
         assert!(ws.path().exists());
+    }
+
+    #[test]
+    fn delete_path_removes_symlink_without_deleting_target() {
+        let ws = tempdir().unwrap();
+        let target = ws.path().join("target.txt");
+        let link = ws.path().join("link.txt");
+        fs::write(&target, "target content").unwrap();
+        if let Err(err) = try_symlink_file(&target, &link) {
+            eprintln!("skipping symlink assertion: {err}");
+            return;
+        }
+
+        delete_path(&link, ws.path()).unwrap();
+
+        assert!(!link.exists());
+        assert_eq!(read_file(&target).unwrap(), "target content");
     }
 }

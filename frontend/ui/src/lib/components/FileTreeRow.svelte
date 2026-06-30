@@ -33,6 +33,15 @@
       el.classList.toggle('focused', focused)
       el.dataset.active = active ? 'true' : 'false'
       el.setAttribute('aria-selected', selected ? 'true' : 'false')
+      // Keyboard navigation: when this row becomes the focused one AND focus is
+      // already inside the tree (a row or the viewport), pull DOM focus onto it
+      // so Delete and bubbling arrow keys keep working as the selection moves.
+      // Guarded by `closest('.tree-viewport')` so clicking elsewhere in the app
+      // never yanks focus back to the tree.
+      if (focused && el !== document.activeElement) {
+        const within = document.activeElement?.closest?.('.tree-viewport')
+        if (within) el.focus({ preventScroll: true })
+      }
     })
   })
 
@@ -150,22 +159,19 @@
   role="treeitem"
   aria-selected={false}
   aria-expanded={row.is_dir ? row.is_expanded : undefined}
-  tabindex="0"
+  tabindex={-1}
   onclick={() => void activate()}
   onfocus={() => focusRow(row.id)}
   ondblclick={(e) => { e.preventDefault(); e.stopPropagation() }}
   oncontextmenu={onContextMenu}
   onkeydown={(e) => {
+    // Arrows + Enter are owned by the viewport-level keyboard navigation (it
+    // survives row virtualization); the row only handles its own Delete.
     if (e.key === 'Delete') {
       e.preventDefault()
       e.stopPropagation()
       if (e.shiftKey) void deleteEntryPermanently()
       else void moveEntryToTrash()
-      return
-    }
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      void activate()
     }
   }}
 >

@@ -9,7 +9,9 @@
   import { refreshWorkspace } from '../stores/workspace'
   import { treeInput, cancelTreeInput, confirmTreeInput } from '../stores/tree-input'
   import { openFile } from '../stores/tabs'
-  import { treeRows } from '../stores/tree'
+  import { treeRows, expandRow, collapseRow, toggleRow } from '../stores/tree'
+  import { navigate, selectedIndex } from '../stores/tree-navigation'
+  import { selectRow, focusRow, treeInteraction } from '../stores/tree-interaction'
   import { optimisticCreateDir, optimisticCreateFile, undoLastFileOp } from '../stores/file-ops'
   import FileTreeRow from './FileTreeRow.svelte'
   import Icon from './Icon.svelte'
@@ -149,7 +151,10 @@
       e.preventDefault()
       confirmTreeInput(inputValue)
     } else if (e.key === 'Escape') {
+      // Cancel locally and stop here so the app-level Escape handler (centralized
+      // overlay stack) doesn't also fire and peel a second layer.
       e.preventDefault()
+      e.stopPropagation()
       cancelTreeInput()
     }
   }
@@ -159,11 +164,92 @@
     cancelTreeInput()
   }
 
+  // Bring the row at flat index `i` fully into the virtual viewport. The list is
+  // virtualized (only visible rows + overscan are in the DOM), so we can't rely
+  // on a row element existing to call .scrollIntoView — instead we nudge the
+  // viewport's scrollTop based on the row's known pixel offset.
+  function scrollIndexIntoView(i: number) {
+    if (!viewport || i < 0) return
+    const top = i * ROW_HEIGHT
+    const bottom = top + ROW_HEIGHT
+    if (top < viewport.scrollTop) {
+      viewport.scrollTop = top
+    } else if (bottom > viewport.scrollTop + viewport.clientHeight) {
+      viewport.scrollTop = bottom - viewport.clientHeight
+    }
+  }
+
+  // Move keyboard selection (and focus) to the row with id, scrolling it in.
+  function selectAndReveal(id: string) {
+    selectRow(id)
+    focusRow(id)
+    const i = $treeRows.findIndex((r) => r.id === id)
+    scrollIndexIntoView(i)
+  }
+
+  // Open a file / toggle a folder from keyboard selection.
+  async function activateById(id: string) {
+    const target = $treeRows.find((r) => r.id === id)
+    if (!target) return
+    selectRow(target.id)
+    focusRow(target.id)
+    if (target.is_dir) {
+      await toggleRow(target)
+      return
+    }
+    const res = await openFile(target.path)
+    if (!res.ok && res.error) console.error(res.error)
+  }
+
+  // Full VS Code-style arrow/enter navigation for the tree. Focus stays trapped
+  // in the viewport (we preventDefault on every handled key) so arrows never
+  // scroll the page or leak to sibling panes.
   function onTreeKeydown(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
       e.preventDefault()
       e.stopPropagation()
       void undoLastFileOp()
+      return
+    }
+
+    if (
+      e.key !== 'ArrowUp' &&
+      e.key !== 'ArrowDown' &&
+      e.key !== 'ArrowLeft' &&
+      e.key !== 'ArrowRight' &&
+      e.key !== 'Enter'
+    ) {
+      return
+    }
+
+    const rows = $treeRows
+    // Seed selection from focus if a row was clicked but nothing is "selected".
+    const state = $treeInteraction
+    const selectedId =
+      selectedIndex(rows, state.selectedId) !== -1 ? state.selectedId : state.focusedId
+    const action = navigate(rows, selectedId, e.key)
+    if (action.kind === 'none') {
+      // Still trap arrow keys so the viewport never page-scrolls on the edges.
+      if (e.key !== 'Enter') e.preventDefault()
+      return
+    }
+
+    e.preventDefault()
+    e.stopPropagation()
+
+    switch (action.kind) {
+      case 'select':
+        selectAndReveal(action.id)
+        break
+      case 'expand':
+        void expandRow(action.path)
+        break
+      case 'collapse':
+        void collapseRow(action.path)
+        break
+      case 'activate':
+        void activateById(action.id)
+        break
     }
   }
 </script>
@@ -269,7 +355,7 @@
         onscroll={onTreeScroll}
         onkeydown={onTreeKeydown}
         role="tree"
-        tabindex="-1"
+        tabindex="0"
       >
         <div class="tree-spacer" style={`height: ${totalHeight}px`}>
           <div class="tree-rows" style={`transform: translateY(${offsetY}px)`}>
@@ -304,9 +390,9 @@
   .panel-title {
     font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: var(--tracking-wider);
+    letter-spacing: 0.04em;
     color: var(--muted-foreground);
-    font-weight: 700;
+    font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

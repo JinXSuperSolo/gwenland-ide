@@ -9,11 +9,12 @@
 //! ([`OpenAiStream`]) are `pub(crate)` so the Generic OpenAI-compatible adapter
 //! can reuse them verbatim (Requirement 7.9).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::ai::curl_client::{CurlStream, curl_get, curl_post_stream};
 use crate::ai::error::AiError;
 use crate::ai::keychain;
 use crate::ai::provider::{
@@ -163,7 +164,7 @@ pub(crate) fn build_chat_body(model: &str, request: &MessageRequest) -> Value {
 /// Live token stream over a Chat Completions response (OpenAI / Generic).
 pub(crate) struct OpenAiStream {
     pub(crate) stream_id: String,
-    pub(crate) response: reqwest::Response,
+    pub(crate) response: CurlStream,
     pub(crate) decoder: SseDecoder,
     pub(crate) pending: VecDeque<TokenChunk>,
     pub(crate) done: bool,
@@ -172,7 +173,7 @@ pub(crate) struct OpenAiStream {
 }
 
 impl OpenAiStream {
-    pub(crate) fn new(stream_id: String, response: reqwest::Response) -> Self {
+    pub(crate) fn new(stream_id: String, response: CurlStream) -> Self {
         Self {
             stream_id,
             response,
@@ -209,7 +210,7 @@ impl ChunkSource for OpenAiStream {
             if self.done {
                 return Ok(None);
             }
-            match self.response.chunk().await {
+            match self.response.next_bytes().await {
                 Ok(Some(bytes)) => {
                     let events: Vec<_> = self.decoder.push(&bytes);
                     for ev in events {
@@ -272,56 +273,45 @@ impl AiProvider for OpenAiAdapter {
     async fn send_message(&self, request: MessageRequest) -> Result<TokenStream, AiError> {
         let api_key = keychain::get_api_key(KEYCHAIN_ACCOUNT)?;
         let body = build_chat_body(&request.model, &request);
+        let body = serde_json::to_string(&body)
+            .map_err(|_| AiError::ProviderError("failed to serialize OpenAI request".into()))?;
+        let mut headers = HashMap::new();
+        headers.insert("authorization".to_string(), format!("Bearer {api_key}"));
+        headers.insert("content-type".to_string(), "application/json".to_string());
 
-        let response = reqwest::Client::new()
-            .post(CHAT_URL)
-            .bearer_auth(api_key)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AiError::Network(e.to_string()))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = crate::ai::http::retry_after_secs(response.headers());
-            let body = response.text().await.unwrap_or_default();
-            return Err(crate::ai::http::map_status(
-                status,
-                retry_after,
-                &body,
+        let response = curl_post_stream(CHAT_URL, &headers, body).await?;
+        if !(200..300).contains(&response.status) {
+            return Err(crate::ai::http::map_stream_error(
+                response.status,
+                &response.headers,
+                response.body,
                 "OpenAI",
-            ));
+            )
+            .await);
         }
 
-        Ok(Box::new(OpenAiStream::new(request.stream_id, response)))
+        Ok(Box::new(OpenAiStream::new(
+            request.stream_id,
+            response.body,
+        )))
     }
 
     async fn list_models(&self) -> Result<Option<Vec<ModelInfo>>, AiError> {
         let api_key = keychain::get_api_key(KEYCHAIN_ACCOUNT)?;
-        let response = reqwest::Client::new()
-            .get(MODELS_URL)
-            .bearer_auth(api_key)
-            .send()
-            .await
-            .map_err(|e| AiError::Network(e.to_string()))?;
+        let mut headers = HashMap::new();
+        headers.insert("authorization".to_string(), format!("Bearer {api_key}"));
+        let response = curl_get(MODELS_URL, &headers).await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = crate::ai::http::retry_after_secs(response.headers());
-            let body = response.text().await.unwrap_or_default();
+        if !(200..300).contains(&response.status) {
+            let retry_after = crate::ai::http::retry_after_secs(&response.headers);
             return Err(crate::ai::http::map_status(
-                status,
+                response.status,
                 retry_after,
-                &body,
+                &response.body,
                 "OpenAI",
             ));
         }
-        let body = response
-            .text()
-            .await
-            .map_err(|e| AiError::Network(e.to_string()))?;
-        Ok(Some(parse_models(&body)?))
+        Ok(Some(parse_models(&response.body)?))
     }
 
     fn provider_name(&self) -> &'static str {

@@ -1,6 +1,6 @@
 import { mount } from 'svelte'
 import './styles/tokens.css'
-import './styles/base.css'
+import './styles/global.css'
 import './styles/animations.css'
 import './styles/editor.css'
 import { initSettings } from './lib/stores/settings'

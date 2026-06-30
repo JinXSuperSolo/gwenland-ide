@@ -41,15 +41,32 @@ fn dir_has_marker(dir: &Path, lang: LanguageId) -> bool {
 /// 3. Return the first ancestor containing a marker for `lang`.
 /// 4. Otherwise return `workspace_root` if provided.
 /// 5. Otherwise return the file's parent directory.
+/// Normalize a path for case-insensitive and separator-insensitive systems (like Windows).
+/// On Windows, this:
+/// 1. Converts backslashes to forward slashes.
+/// 2. Lowercases the drive letter (e.g. "C:/" -> "c:/").
+/// On POSIX, it just returns the path as-is (with forward slashes).
+pub fn normalize_path(path: &Path) -> PathBuf {
+    let mut s = path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows)
+        && s.len() >= 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic() {
+            let drive = s.as_bytes()[0].to_ascii_lowercase() as char;
+            s = format!("{}{}", drive, &s[1..]);
+        }
+    PathBuf::from(s)
+}
+
 pub fn detect_root(file_path: &Path, lang: LanguageId, workspace_root: Option<&Path>) -> PathBuf {
-    let start = file_path.parent().unwrap_or(file_path);
+    let file_path = normalize_path(file_path);
+    let workspace_root = workspace_root.map(normalize_path);
+    let start = file_path.parent().unwrap_or(&file_path);
 
     for dir in start.ancestors() {
         if dir_has_marker(dir, lang) {
             return dir.to_path_buf();
         }
         // Do not climb above the open workspace root.
-        if let Some(ws) = workspace_root
+        if let Some(ref ws) = workspace_root
             && dir == ws
         {
             break;
@@ -109,13 +126,14 @@ fn percent_decode(s: &str) -> String {
 /// Convert an absolute filesystem path into a `file://` URI for LSP payloads
 /// (Requirement 5.7). Backslashes are normalized to forward slashes.
 pub fn path_to_file_uri(path: &Path) -> String {
-    let normalized = path.to_string_lossy().replace('\\', "/");
+    let normalized_path = normalize_path(path);
+    let normalized = normalized_path.to_string_lossy().to_string();
     let encoded = percent_encode_path(&normalized);
     if encoded.starts_with('/') {
         // POSIX: "/home/x" -> "file:///home/x"
         format!("file://{encoded}")
     } else {
-        // Windows: "C:/Users/x" -> "file:///C:/Users/x"
+        // Windows: "c:/Users/x" -> "file:///c:/Users/x"
         format!("file:///{encoded}")
     }
 }
@@ -132,11 +150,12 @@ pub fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
         && trimmed.as_bytes()[1] == b':'
         && trimmed.as_bytes()[0].is_ascii_alphabetic();
 
-    if looks_like_drive {
-        Some(PathBuf::from(trimmed))
+    let path = if looks_like_drive {
+        PathBuf::from(trimmed)
     } else {
-        Some(PathBuf::from(decoded))
-    }
+        PathBuf::from(decoded)
+    };
+    Some(normalize_path(&path))
 }
 
 #[cfg(test)]
@@ -263,7 +282,7 @@ mod tests {
     #[test]
     fn windows_path_to_uri() {
         let uri = path_to_file_uri(Path::new("C:\\Users\\foo\\main.rs"));
-        assert_eq!(uri, "file:///C:/Users/foo/main.rs");
+        assert_eq!(uri, "file:///c:/Users/foo/main.rs");
     }
 
     #[test]
@@ -278,7 +297,7 @@ mod tests {
     fn uri_round_trips_windows_drive() {
         let uri = "file:///C:/Users/foo/main.rs";
         let back = file_uri_to_path(uri).unwrap();
-        assert_eq!(back, PathBuf::from("C:/Users/foo/main.rs"));
+        assert_eq!(back, PathBuf::from("c:/Users/foo/main.rs"));
     }
 
     #[test]

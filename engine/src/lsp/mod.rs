@@ -58,7 +58,7 @@ pub use client::{
     MessageCallback, MessageUpdate, StatusCallback, StatusUpdate,
 };
 pub use completion::LspCompletionOption;
-pub use config::{LanguageServerSettings, LspSettings};
+pub use config::{LanguageServerSettings, LspOnboardingSettings, LspSettings};
 pub use definition::LspDefinitionLocation;
 pub use diagnostics::{DiagnosticSeverity, LspDiagnostic, LspRange};
 pub use error::LspError;

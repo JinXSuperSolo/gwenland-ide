@@ -304,7 +304,7 @@
     border-bottom: 1px solid var(--border);
     background-color: var(--background);
   }
-  .group-tabs-row :global(.tabs-bar) {
+  .group-tabs-row :global(.tabs-container) {
     flex: 1;
     border-bottom: none;
   }

@@ -35,7 +35,7 @@ export const lsp = writable<LspStoreState>({ status: {}, diagnostics: {} })
  *  The frontend file tree uses OS-native separators (backslashes on Windows).
  *  Keying both sides through this helper makes lookups separator-agnostic. */
 export function normPath(p: string): string {
-  return p.replace(/\\/g, '/')
+  return p.replace(/\\/g, '/').toLowerCase()
 }
 
 /** Monotonic document versions per path (Requirement 9.4). UI-generated so Rust

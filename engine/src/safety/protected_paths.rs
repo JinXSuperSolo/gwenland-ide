@@ -367,8 +367,9 @@ fn glob_segs(pat: &[&str], path: &str) -> bool {
     let (component, tail) = match path.find('/') {
         Some(i) => (&path[..i], &path[i + 1..]),
         None => {
-            // No more slashes — path has one component left.
-            return rest.is_empty() && glob_seg(head, path);
+            // No more slashes: path has one component left. A trailing `/**`
+            // also matches the directory itself, so `.git/**` covers `.git`.
+            return (rest.is_empty() || rest == ["**"]) && glob_seg(head, path);
         }
     };
 
@@ -449,7 +450,9 @@ mod tests {
     #[test]
     fn defaults_cover_gwenland_and_git() {
         let reg = ProtectedPathRegistry::defaults();
+        assert!(reg.find_match(".gwenland").is_some());
         assert!(reg.find_match(".gwenland/settings.json").is_some());
+        assert!(reg.find_match(".git").is_some());
         assert!(reg.find_match(".git/config").is_some());
         assert!(reg.find_match(".git/COMMIT_EDITMSG").is_some());
     }

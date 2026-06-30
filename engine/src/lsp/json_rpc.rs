@@ -159,11 +159,10 @@ impl FrameDecoder {
 
         let mut content_length: Option<usize> = None;
         for line in header_str.split("\r\n") {
-            if let Some(rest) = line
-                .strip_prefix("Content-Length:")
-                .or_else(|| line.strip_prefix("content-length:"))
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
             {
-                content_length = rest.trim().parse::<usize>().ok();
+                content_length = value.trim().parse::<usize>().ok();
             }
             // Other headers (e.g. Content-Type) are accepted and ignored.
         }
@@ -372,6 +371,19 @@ mod tests {
         dec.push(b"X-Header: 1\r\n\r\nbody");
         let err = dec.next_frame().unwrap_err();
         assert!(matches!(err, LspError::Protocol(_)));
+    }
+
+    #[test]
+    fn content_length_header_name_is_case_insensitive() {
+        let body = br#"{"jsonrpc":"2.0","method":"x","params":{}}"#;
+        let mut frame = format!("cOnTeNt-LeNgTh: {}\r\n\r\n", body.len()).into_bytes();
+        frame.extend_from_slice(body);
+
+        let mut dec = FrameDecoder::new();
+        dec.push(&frame);
+        let decoded = dec.next_frame().unwrap().unwrap();
+        let msg = parse_message(&decoded).unwrap();
+        assert!(matches!(msg, Incoming::Notification { method, .. } if method == "x"));
     }
 
     #[test]

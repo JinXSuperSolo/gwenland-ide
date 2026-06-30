@@ -56,7 +56,10 @@ export const contextMenuKeyNav: Action<HTMLElement> = (node) => {
         break
       }
       case 'Escape': {
+        // Close locally and stop here so the app-level Escape handler (the
+        // centralized overlay stack) doesn't also fire and peel a second layer.
         e.preventDefault()
+        e.stopPropagation()
         closeContextMenu()
         break
       }

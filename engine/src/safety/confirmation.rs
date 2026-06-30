@@ -523,6 +523,19 @@ mod tests {
     }
 
     #[test]
+    fn destructive_terminal_command_blocks_in_paranoid() {
+        let d = eval(
+            SafetyActionKind::TerminalCommand {
+                command: "rm -rf .".into(),
+            },
+            SafetyStrictness::Paranoid,
+        );
+
+        assert_eq!(d.verdict, SafetyVerdict::Block);
+        assert_eq!(d.risk, RiskLevel::Destructive);
+    }
+
+    #[test]
     fn ai_context_with_secret_is_blocked() {
         let d = eval(
             SafetyActionKind::AiContextInclude {

@@ -10,11 +10,12 @@
 //! Gemini roles differ from ChatML: `assistant` maps to `model`; the system
 //! prompt goes in a dedicated `systemInstruction` field.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::ai::curl_client::{CurlStream, curl_get, curl_post_stream};
 use crate::ai::error::AiError;
 use crate::ai::keychain;
 use crate::ai::provider::{
@@ -125,7 +126,7 @@ fn build_contents(request: &MessageRequest) -> Vec<Value> {
 
 struct GeminiStream {
     stream_id: String,
-    response: reqwest::Response,
+    response: CurlStream,
     decoder: SseDecoder,
     pending: VecDeque<TokenChunk>,
     done: bool,
@@ -141,7 +142,7 @@ impl ChunkSource for GeminiStream {
             if self.done {
                 return Ok(None);
             }
-            match self.response.chunk().await {
+            match self.response.next_bytes().await {
                 Ok(Some(bytes)) => {
                     for ev in self.decoder.push(&bytes) {
                         match interpret_event(&ev.data) {
@@ -193,30 +194,26 @@ impl AiProvider for GeminiAdapter {
             body["generationConfig"] = json!({ "maxOutputTokens": max });
         }
 
-        let response = reqwest::Client::new()
-            .post(&url)
-            .header("x-goog-api-key", api_key)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AiError::Network(e.to_string()))?;
+        let body = serde_json::to_string(&body)
+            .map_err(|_| AiError::ProviderError("failed to serialize Gemini request".into()))?;
+        let mut headers = HashMap::new();
+        headers.insert("x-goog-api-key".to_string(), api_key);
+        headers.insert("content-type".to_string(), "application/json".to_string());
 
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = crate::ai::http::retry_after_secs(response.headers());
-            let body = response.text().await.unwrap_or_default();
-            return Err(crate::ai::http::map_status(
-                status,
-                retry_after,
-                &body,
+        let response = curl_post_stream(&url, &headers, body).await?;
+        if !(200..300).contains(&response.status) {
+            return Err(crate::ai::http::map_stream_error(
+                response.status,
+                &response.headers,
+                response.body,
                 "Gemini",
-            ));
+            )
+            .await);
         }
 
         Ok(Box::new(GeminiStream {
             stream_id: request.stream_id,
-            response,
+            response: response.body,
             decoder: SseDecoder::new(),
             pending: VecDeque::new(),
             done: false,
@@ -225,29 +222,20 @@ impl AiProvider for GeminiAdapter {
 
     async fn list_models(&self) -> Result<Option<Vec<ModelInfo>>, AiError> {
         let api_key = keychain::get_api_key(KEYCHAIN_ACCOUNT)?;
-        let response = reqwest::Client::new()
-            .get(format!("{BASE}/models"))
-            .header("x-goog-api-key", api_key)
-            .send()
-            .await
-            .map_err(|e| AiError::Network(e.to_string()))?;
+        let mut headers = HashMap::new();
+        headers.insert("x-goog-api-key".to_string(), api_key);
+        let response = curl_get(&format!("{BASE}/models"), &headers).await?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = crate::ai::http::retry_after_secs(response.headers());
-            let body = response.text().await.unwrap_or_default();
+        if !(200..300).contains(&response.status) {
+            let retry_after = crate::ai::http::retry_after_secs(&response.headers);
             return Err(crate::ai::http::map_status(
-                status,
+                response.status,
                 retry_after,
-                &body,
+                &response.body,
                 "Gemini",
             ));
         }
-        let body = response
-            .text()
-            .await
-            .map_err(|e| AiError::Network(e.to_string()))?;
-        Ok(Some(parse_models(&body)))
+        Ok(Some(parse_models(&response.body)))
     }
 
     fn provider_name(&self) -> &'static str {

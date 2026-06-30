@@ -23,6 +23,7 @@
   --accent-foreground: #1f1e1e;
   --destructive: #af5d5d;
   --destructive-foreground: #ffffff;
+  --hover-bg: color-mix(in srgb, var(--primary) 15%, transparent);
   --border: #282625;
   --input: #282625;
   --ring: #c28a64;

@@ -438,9 +438,17 @@ fn is_newer_version(prev: Option<i32>, next: i32) -> bool {
 }
 
 fn document_key_from_uri(uri: &str) -> String {
-    file_uri_to_path(uri)
-        .map(|path| document_key_from_path(&path))
-        .unwrap_or_else(|| document_key_from_raw(uri))
+    // Try path-based key first (most reliable, handles drive casing)
+    if let Some(path) = file_uri_to_path(uri) {
+        return document_key_from_path(&path);
+    }
+    // Fallback: normalize URI directly
+    // Strip file:/// prefix, decode percent-encoding, normalize separators
+    let stripped = uri
+        .strip_prefix("file:///")
+        .or_else(|| uri.strip_prefix("file://"))
+        .unwrap_or(uri);
+    document_key_from_raw(stripped)
 }
 
 fn document_key_from_path(path: &Path) -> String {
@@ -520,7 +528,10 @@ fn initialize_params(root: &Path) -> Value {
                     }
                 }
             },
-            "workspace": { "workspaceFolders": true }
+            "workspace": {
+                "workspaceFolders": true,
+                "didChangeWatchedFiles": { "dynamicRegistration": false }
+            }
         },
         "workspaceFolders": [ { "uri": root_uri, "name": name } ],
     })
@@ -1108,12 +1119,22 @@ mod tests {
     #[test]
     fn change_and_close_unopened_document_are_noops() {
         let mgr = noop_manager();
+        let path = Path::new("src/main.rs");
+        let uri = path_to_file_uri(path);
         // No document opened, no client: these must succeed without error.
+        mgr.change_document(path, "x", 2)
+            .expect("change on unopened document should be a no-op");
+        mgr.close_document(path)
+            .expect("close on unopened document should be a no-op");
+
+        assert_eq!(mgr.client_count(), 0);
         assert!(
-            mgr.change_document(Path::new("src/main.rs"), "x", 2)
-                .is_ok()
+            !mgr.doc_index
+                .lock()
+                .expect("doc_index poisoned")
+                .contains_key(&uri),
+            "unopened document must not be indexed"
         );
-        assert!(mgr.close_document(Path::new("src/main.rs")).is_ok());
     }
 
     #[test]
