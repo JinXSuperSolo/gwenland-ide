@@ -20,6 +20,17 @@ pub struct TokenChunk {
     pub text: String,
 }
 
+/// Token accounting for one completed request, when the provider reports it
+/// (GWEN-457). Captured by the adapter as it reads terminal stream metadata
+/// (Anthropic's `message_start`/`message_delta` usage fields, OpenAI's
+/// `stream_options.include_usage` final chunk, Gemini's `usageMetadata`) and
+/// retrieved via [`ChunkSource::usage`] once the stream is exhausted.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
 /// A pull-based stream of tokens.
 ///
 /// We model the stream as a boxed trait object with an async `next_chunk`
@@ -36,6 +47,14 @@ pub trait ChunkSource: Send {
     /// normalized [`AiError`]. After `Ok(None)` or `Err(..)`, callers must not
     /// call again.
     async fn next_chunk(&mut self) -> Result<Option<TokenChunk>, AiError>;
+
+    /// Token usage for this request, if the provider reported it. Only
+    /// meaningful after `next_chunk` has returned `Ok(None)` — usage arrives as
+    /// terminal stream metadata, not a chunk of its own. Adapters that don't
+    /// capture usage (or providers that never return it) default to `None`.
+    fn usage(&self) -> Option<TokenUsage> {
+        None
+    }
 }
 
 /// Boxed token stream returned by [`AiProvider::send_message`].

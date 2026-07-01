@@ -85,4 +85,20 @@
   --explorer-width: 260px;
   --ai-dock-width: 360px;
   --status-height: 24px;
+
+  /* Diff colors (GWEN-459) — single source of truth for every diff surface.
+     Green/red is kept as the near-universal add/remove signal, but tuned to sit
+     comfortably against the warm #1f1e1e dark base rather than GitHub's exact
+     hex. `-line` = row background, `-gutter` = the accent stripe / sign color,
+     `-num` = line-number text. */
+  --diff-add-line: rgba(64, 160, 90, 0.14);
+  --diff-add-gutter: rgba(64, 160, 90, 0.42);
+  --diff-add-text: #6cc487;
+  --diff-del-line: rgba(198, 74, 84, 0.14);
+  --diff-del-gutter: rgba(198, 74, 84, 0.42);
+  --diff-del-text: #e0707c;
+  --diff-hunk-bg: var(--secondary);
+  --diff-num: color-mix(in srgb, var(--muted-foreground) 80%, transparent);
+  --diff-num-bg: rgba(255, 255, 255, 0.015);
+  --diff-divider: var(--border);
 }

@@ -1,5 +1,8 @@
 import { writable } from 'svelte/store'
 
+/** Diff viewer layout (GWEN-459): one column with +/- signs, or side-by-side. */
+export type DiffViewMode = 'unified' | 'split'
+
 export interface EditorPreferences {
   previewEditors: boolean
   editorMinimap: boolean
@@ -8,6 +11,8 @@ export interface EditorPreferences {
   /** M19 Wave 5 — Low-End Mode: disables expensive visual features for smoother
    *  performance on older hardware. See stores/performance.ts for the effects. */
   lowEndMode: boolean
+  /** GWEN-459 — last-used diff viewer layout, shared by every diff surface. */
+  diffViewMode: DiffViewMode
 }
 
 const STORAGE_KEY = 'gwen.editor.preferences.v1'
@@ -17,6 +22,7 @@ const DEFAULTS: EditorPreferences = {
   terminalMinimap: false,
   markdownPreview: false,
   lowEndMode: false,
+  diffViewMode: 'unified',
 }
 
 function load(): EditorPreferences {
@@ -42,6 +48,10 @@ function load(): EditorPreferences {
           : DEFAULTS.markdownPreview,
       lowEndMode:
         typeof saved.lowEndMode === 'boolean' ? saved.lowEndMode : DEFAULTS.lowEndMode,
+      diffViewMode:
+        saved.diffViewMode === 'split' || saved.diffViewMode === 'unified'
+          ? saved.diffViewMode
+          : DEFAULTS.diffViewMode,
     }
   } catch {
     return { ...DEFAULTS }
@@ -98,4 +108,8 @@ export function toggleLowEndMode(): void {
 
 export function setLowEndMode(on: boolean): void {
   editorPreferences.update((value) => ({ ...value, lowEndMode: on }))
+}
+
+export function setDiffViewMode(mode: DiffViewMode): void {
+  editorPreferences.update((value) => ({ ...value, diffViewMode: mode }))
 }

@@ -1,21 +1,16 @@
 <script lang="ts">
-  import { aiReviewDiff, gitDiffFile } from '../tauri/commands'
+  import { aiReviewDiff, gitDiffFile, parseDiff, type DiffFile } from '../tauri/commands'
   import { renderMarkdown } from '../preview/markdown'
   import Icon from './Icon.svelte'
+  import DiffView from './DiffView.svelte'
 
-  // GWEN-330: read-only unified-diff viewer for one file. Rendered in a normal
-  // editor tab; closing it touches no git state. Added lines green, removed red,
-  // with old/new line numbers in the gutter.
+  // GWEN-330 / GWEN-459: read-only diff viewer for one file. Rendered in a
+  // normal editor tab; closing it touches no git state. Parsing is done by the
+  // engine (`parse_unified_diff` via `parseDiff`) and rendering is delegated to
+  // the shared `DiffView` component (Unified/Split, token colors, line numbers).
   let { root, path, untracked }: { root: string; path: string; untracked: boolean } = $props()
 
-  interface Row {
-    kind: 'add' | 'del' | 'ctx' | 'hunk' | 'meta'
-    text: string
-    oldNo: number | null
-    newNo: number | null
-  }
-
-  let rows = $state<Row[]>([])
+  let files = $state<DiffFile[]>([])
   let loading = $state(true)
   let error = $state<string | null>(null)
   let reviewOpen = $state(false)
@@ -25,41 +20,7 @@
   let reviewHtml = $state('')
   let reviewNonce = 0
 
-  function parse(diff: string): Row[] {
-    const out: Row[] = []
-    let oldNo = 0
-    let newNo = 0
-    for (const line of diff.split('\n')) {
-      if (line.startsWith('@@')) {
-        const m = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line)
-        if (m) {
-          oldNo = parseInt(m[1], 10)
-          newNo = parseInt(m[2], 10)
-        }
-        out.push({ kind: 'hunk', text: line, oldNo: null, newNo: null })
-      } else if (
-        line.startsWith('diff ') ||
-        line.startsWith('index ') ||
-        line.startsWith('--- ') ||
-        line.startsWith('+++ ') ||
-        line.startsWith('new file') ||
-        line.startsWith('deleted file') ||
-        line.startsWith('similarity ') ||
-        line.startsWith('rename ')
-      ) {
-        out.push({ kind: 'meta', text: line, oldNo: null, newNo: null })
-      } else if (line.startsWith('+')) {
-        out.push({ kind: 'add', text: line.slice(1), oldNo: null, newNo: newNo++ })
-      } else if (line.startsWith('-')) {
-        out.push({ kind: 'del', text: line.slice(1), oldNo: oldNo++, newNo: null })
-      } else if (line.startsWith('\\')) {
-        out.push({ kind: 'meta', text: line, oldNo: null, newNo: null })
-      } else {
-        out.push({ kind: 'ctx', text: line.slice(1), oldNo: oldNo++, newNo: newNo++ })
-      }
-    }
-    return out
-  }
+  const hasChanges = $derived(files.some((f) => f.hunks.length > 0))
 
   $effect(() => {
     loading = true
@@ -72,21 +33,19 @@
     const currentRoot = root
     const currentPath = path
     const currentUntracked = untracked
+    const stale = () =>
+      currentRoot !== root || currentPath !== path || currentUntracked !== untracked
 
     gitDiffFile(root, path, untracked)
-      .then((diff) => {
-        if (currentRoot !== root || currentPath !== path || currentUntracked !== untracked) return
-        rows = diff.trim() ? parse(diff) : []
+      .then(async (diff) => {
+        if (stale()) return
+        files = diff.trim() ? await parseDiff(diff) : []
       })
       .catch((e) => {
-        if (currentRoot === root && currentPath === path && currentUntracked === untracked) {
-          error = String(e)
-        }
+        if (!stale()) error = String(e)
       })
       .finally(() => {
-        if (currentRoot === root && currentPath === path && currentUntracked === untracked) {
-          loading = false
-        }
+        if (!stale()) loading = false
       })
   })
 
@@ -108,7 +67,7 @@
   }
 
   async function startReview(): Promise<void> {
-    if (loading || reviewLoading || rows.length === 0) return
+    if (loading || reviewLoading || !hasChanges) return
     const nonce = ++reviewNonce
     reviewOpen = true
     reviewLoading = true
@@ -149,7 +108,7 @@
     <button
       type="button"
       class="review-btn"
-      disabled={loading || reviewLoading || !!error || rows.length === 0}
+      disabled={loading || reviewLoading || !!error || !hasChanges}
       aria-busy={reviewLoading}
       onclick={startReview}
     >
@@ -167,21 +126,10 @@
       <div class="diff-info">Loading diff...</div>
     {:else if error}
       <div class="diff-info error">{error}</div>
-    {:else if rows.length === 0}
+    {:else if !hasChanges}
       <div class="diff-info">No changes to display.</div>
     {:else}
-      <div class="diff-grid" role="table">
-        {#each rows as row}
-          <div class="diff-row {row.kind}" role="row">
-            <span class="ln old">{row.oldNo ?? ''}</span>
-            <span class="ln new">{row.newNo ?? ''}</span>
-            <span class="sign">
-              {row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ''}
-            </span>
-            <span class="code">{row.text}</span>
-          </div>
-        {/each}
-      </div>
+      <DiffView {files} />
     {/if}
   </div>
 
@@ -306,13 +254,12 @@
     cursor: default;
   }
 
+  /* Diff rendering (grid/rows/colors) now lives in the shared DiffView
+     component; this viewer only owns the surrounding chrome + AI review drawer. */
   .diff-viewer {
     flex: 1;
     min-height: 0;
     overflow: auto;
-    font-family: var(--font-mono);
-    font-size: 12.5px;
-    line-height: 1.5;
   }
 
   .diff-info {
@@ -324,75 +271,6 @@
 
   .diff-info.error {
     color: var(--destructive);
-  }
-
-  .diff-grid {
-    display: table;
-    width: 100%;
-    border-collapse: collapse;
-  }
-
-  .diff-row {
-    display: table-row;
-    white-space: pre;
-  }
-
-  .diff-row > span {
-    display: table-cell;
-    vertical-align: top;
-  }
-
-  .ln {
-    width: 1%;
-    min-width: 38px;
-    padding: 0 8px;
-    text-align: right;
-    color: var(--muted-foreground);
-    opacity: 0.6;
-    user-select: none;
-    border-right: 1px solid var(--border);
-  }
-
-  .sign {
-    width: 14px;
-    text-align: center;
-    user-select: none;
-    color: var(--muted-foreground);
-  }
-
-  .code {
-    padding-right: 16px;
-    width: 100%;
-  }
-
-  .diff-row.add {
-    background-color: rgba(40, 167, 69, 0.14);
-  }
-
-  .diff-row.add .sign {
-    color: #5fb572;
-  }
-
-  .diff-row.del {
-    background-color: rgba(220, 53, 69, 0.14);
-  }
-
-  .diff-row.del .sign {
-    color: #e0707c;
-  }
-
-  .diff-row.hunk {
-    background-color: var(--secondary);
-    color: var(--primary);
-  }
-
-  .diff-row.hunk .code {
-    color: var(--primary);
-  }
-
-  .diff-row.meta {
-    color: var(--muted-foreground);
-    opacity: 0.7;
   }
 
   .review-drawer {

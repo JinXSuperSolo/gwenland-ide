@@ -168,9 +168,13 @@ struct AiChunkEvent {
 }
 
 /// `ai://done` — successful completion (exactly one per stream, terminal).
+/// `usage` is present when the provider reported token counts (GWEN-457) —
+/// absent for providers/streams where it never arrived.
 #[derive(Clone, Serialize)]
 struct AiDoneEvent {
     stream_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<gwenland_engine::ai::TokenUsage>,
 }
 
 /// `ai://error` — normalized failure or cancellation (terminal). The `error`
@@ -770,6 +774,15 @@ async fn ai_list_models(
     adapter.list_models().await.map_err(|e| e.to_string())
 }
 
+/// The full static model catalog (Milestone 26): every model GwenLand knows
+/// about across all providers, with pricing and reasoning capability. Pure
+/// data, no I/O — used by the model selector, effort toggle, and token
+/// tracker.
+#[tauri::command]
+fn ai_model_catalog() -> Vec<gwenland_engine::ai::ModelEntry> {
+    gwenland_engine::ai::all_models()
+}
+
 // --- Conversation commands (Milestone 4, Wave 3) ---------------------------
 // Thin wrappers over `gwenland_engine::ai::conversation`; errors stringified at
 // the boundary.
@@ -903,6 +916,12 @@ async fn run_stream(
     };
 
     let mut assistant = String::new();
+    // Token usage for the completed request (GWEN-457), taken from whichever
+    // stream actually finished — the continuation stream's usage supersedes
+    // the original's if an M13 search round-trip occurred (the original was
+    // dropped mid-read at that point, so its own usage would be incomplete).
+    // Every loop exit that reaches the code below sets this before use.
+    let usage: Option<gwenland_engine::ai::TokenUsage>;
 
     loop {
         match stream.next_chunk().await {
@@ -1004,12 +1023,16 @@ async fn run_stream(
                             Err(e) => return emit_ai_error(&app, &stream_id, e),
                         }
                     }
+                    usage = cont_stream.usage();
 
                     // Fall through to persist + done below.
                     break;
                 }
             }
-            Ok(None) => break,
+            Ok(None) => {
+                usage = stream.usage();
+                break;
+            }
             Err(e) => return emit_ai_error(&app, &stream_id, e),
         }
     }
@@ -1021,11 +1044,13 @@ async fn run_stream(
         &assistant,
         &provider_id,
         &model_id,
+        usage,
     );
     let _ = app.emit(
         "ai://done",
         AiDoneEvent {
             stream_id: stream_id.clone(),
+            usage,
         },
     );
     // M13: memory write-back — best-effort, silent on failure.
@@ -4984,6 +5009,7 @@ fn main() {
             ai_delete_key,
             ai_check_key,
             ai_list_models,
+            ai_model_catalog,
             ai_send,
             ai_cancel,
             ai_search_result,

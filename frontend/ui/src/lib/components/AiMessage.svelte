@@ -12,6 +12,15 @@
   import { startReview, diffReview } from '../stores/diff-review'
   import { projectRoot, editAndResubmit } from '../ai/ai-chat-setup'
   import { aiChat } from '../stores/ai-chat'
+  import type { ModelEntry } from '../tauri/commands'
+  import { cachedModelCatalog } from '../ai/model-catalog-cache'
+  import { usageSummary } from '../ai/usage'
+  import FileAttachment from './FileAttachment.svelte'
+
+  /** Basename of a path for the attachment chip (handles both separators). */
+  function baseName(path: string): string {
+    return path.split(/[\\/]/).filter(Boolean).pop() || path
+  }
 
   function reviewThis() {
     if (message.diff) startReview(message.id, message.diff.files, projectRoot())
@@ -86,6 +95,15 @@
   const totalAdded = $derived(fileStats.reduce((n, f) => n + f.added, 0))
   const totalRemoved = $derived(fileStats.reduce((n, f) => n + f.removed, 0))
   const reviewing = $derived($diffReview.proposalId === message.id)
+
+  // GWEN-457: per-message token usage + cost footer, once the turn is done.
+  let catalog = $state<ModelEntry[]>([])
+  $effect(() => {
+    if (message.usage) cachedModelCatalog().then((c) => (catalog = c))
+  })
+  const usageLine = $derived(
+    message.usage ? usageSummary(message.usage, message.provider, message.model, catalog) : null
+  )
 </script>
 
 <div class="ai-msg" class:user={isUser} class:assistant={!isUser}>
@@ -133,13 +151,16 @@
   {#if message.attachments && message.attachments.length > 0}
     <div class="ai-msg-attachments">
       {#each message.attachments as att}
-        <span class="chip">
-          {att.type === 'file'
-            ? att.path
-            : att.type === 'selection'
-              ? `selection · ${att.path}`
-              : att.label}
-        </span>
+        {#if att.type === 'file'}
+          <FileAttachment
+            variant="sm"
+            attachment={{ kind: 'path', name: baseName(att.path), path: att.path, size: att.size }}
+          />
+        {:else}
+          <span class="chip">
+            {att.type === 'selection' ? `selection · ${att.path}` : att.label}
+          </span>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -166,6 +187,10 @@
     {/each}
     {#if message.streaming}<span class="ai-cursor" aria-hidden="true"></span>{/if}
   </div>
+
+  {#if !isUser && usageLine}
+    <div class="ai-msg-usage">{usageLine}</div>
+  {/if}
 
   {#if message.diff}
     <div class="diff-card" class:reviewing>
@@ -347,6 +372,12 @@
   }
   .ai-msg-text {
     word-break: break-word;
+  }
+  /* GWEN-457: subtle per-message token/cost footer. */
+  .ai-msg-usage {
+    font-size: 10.5px;
+    color: var(--ai-text-muted, var(--muted-foreground));
+    font-variant-numeric: tabular-nums;
   }
   /* Rendered Markdown (md.ts escapes HTML first). Tight, chat-friendly spacing. */
   .ai-msg-text.md :global(.md-p) {

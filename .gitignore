@@ -7,7 +7,7 @@ node_modules/
 /frontend/ui/dist/
 /frontend/ui/.svelte-kit/
 /frontend/gen/
-
+DOCS.md
 # Editor / IDE / OS / Agents
 .DS_Store
 Thumbs.db

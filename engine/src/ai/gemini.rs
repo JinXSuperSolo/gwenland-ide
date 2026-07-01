@@ -19,7 +19,7 @@ use crate::ai::curl_client::{CurlStream, curl_get, curl_post_stream};
 use crate::ai::error::AiError;
 use crate::ai::keychain;
 use crate::ai::provider::{
-    AiProvider, ChunkSource, MessageRequest, ModelInfo, TokenChunk, TokenStream,
+    AiProvider, ChunkSource, MessageRequest, ModelInfo, TokenChunk, TokenStream, TokenUsage,
 };
 use crate::ai::sse::SseDecoder;
 
@@ -42,10 +42,14 @@ impl Default for GeminiAdapter {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum GeminiAction {
-    /// Text from this event, plus whether a finish reason ended the turn.
+    /// Text from this event, plus whether a finish reason ended the turn, plus
+    /// usage counters if this event's `usageMetadata` reported them (GWEN-457
+    /// — Gemini reports cumulative totals on each chunk, so later values
+    /// supersede earlier ones rather than summing).
     Chunk {
         text: String,
         finished: bool,
+        usage: Option<TokenUsage>,
     },
     Ignore,
     Error(AiError),
@@ -80,7 +84,21 @@ pub(crate) fn interpret_event(data: &str) -> GeminiAction {
                 .get("finishReason")
                 .and_then(Value::as_str)
                 .is_some();
-            GeminiAction::Chunk { text, finished }
+            let usage = match (
+                v["usageMetadata"]["promptTokenCount"].as_u64(),
+                v["usageMetadata"]["candidatesTokenCount"].as_u64(),
+            ) {
+                (Some(input_tokens), Some(output_tokens)) => Some(TokenUsage {
+                    input_tokens: input_tokens as u32,
+                    output_tokens: output_tokens as u32,
+                }),
+                _ => None,
+            };
+            GeminiAction::Chunk {
+                text,
+                finished,
+                usage,
+            }
         }
         Err(_) => GeminiAction::Error(AiError::ProviderError(
             "malformed Gemini stream chunk".into(),
@@ -130,6 +148,7 @@ struct GeminiStream {
     decoder: SseDecoder,
     pending: VecDeque<TokenChunk>,
     done: bool,
+    usage: Option<TokenUsage>,
 }
 
 #[async_trait]
@@ -146,12 +165,19 @@ impl ChunkSource for GeminiStream {
                 Ok(Some(bytes)) => {
                     for ev in self.decoder.push(&bytes) {
                         match interpret_event(&ev.data) {
-                            GeminiAction::Chunk { text, finished } => {
+                            GeminiAction::Chunk {
+                                text,
+                                finished,
+                                usage,
+                            } => {
                                 if !text.is_empty() {
                                     self.pending.push_back(TokenChunk {
                                         stream_id: self.stream_id.clone(),
                                         text,
                                     });
+                                }
+                                if usage.is_some() {
+                                    self.usage = usage;
                                 }
                                 if finished {
                                     self.done = true;
@@ -172,6 +198,10 @@ impl ChunkSource for GeminiStream {
                 }
             }
         }
+    }
+
+    fn usage(&self) -> Option<TokenUsage> {
+        self.usage
     }
 }
 
@@ -217,6 +247,7 @@ impl AiProvider for GeminiAdapter {
             decoder: SseDecoder::new(),
             pending: VecDeque::new(),
             done: false,
+            usage: None,
         }))
     }
 
@@ -286,7 +317,8 @@ mod tests {
             interpret_event(data),
             GeminiAction::Chunk {
                 text: "Hello".into(),
-                finished: false
+                finished: false,
+                usage: None,
             }
         );
     }
@@ -298,7 +330,24 @@ mod tests {
             interpret_event(data),
             GeminiAction::Chunk {
                 text: ".".into(),
-                finished: true
+                finished: true,
+                usage: None,
+            }
+        );
+    }
+
+    #[test]
+    fn reports_usage_from_usage_metadata() {
+        let data = r#"{"candidates":[{"content":{"parts":[{"text":"."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":22,"totalTokenCount":33}}"#;
+        assert_eq!(
+            interpret_event(data),
+            GeminiAction::Chunk {
+                text: ".".into(),
+                finished: true,
+                usage: Some(TokenUsage {
+                    input_tokens: 11,
+                    output_tokens: 22,
+                }),
             }
         );
     }

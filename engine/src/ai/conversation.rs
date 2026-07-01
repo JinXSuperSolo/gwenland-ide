@@ -19,6 +19,7 @@ use std::sync::{LazyLock, Mutex};
 use serde::{Deserialize, Serialize};
 
 use crate::ai::error::AiError;
+use crate::ai::provider::TokenUsage;
 
 /// Current manifest schema version.
 pub const MANIFEST_VERSION: u32 = 1;
@@ -38,6 +39,11 @@ pub struct ConversationTurn {
     pub timestamp: String,
     pub provider: String,
     pub model: String,
+    /// Token usage for this turn, when the provider reported it (GWEN-457).
+    /// `#[serde(default)]` so JSONL lines written before this field existed
+    /// still deserialize cleanly (they just load as `None`).
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
 }
 
 /// Manifest metadata for one conversation (no message content).
@@ -302,6 +308,7 @@ pub fn record_turn(
     assistant_content: &str,
     provider: &str,
     model: &str,
+    usage: Option<TokenUsage>,
 ) -> Result<(), AiError> {
     let turn = ConversationTurn {
         messages: vec![
@@ -317,6 +324,7 @@ pub fn record_turn(
         timestamp: now_rfc3339(),
         provider: provider.to_string(),
         model: model.to_string(),
+        usage,
     };
     append_turn(conversation_id, &turn)
 }
@@ -385,6 +393,7 @@ mod tests {
                 timestamp: "2026-06-20T00:00:00Z".into(),
                 provider: "anthropic".into(),
                 model: "claude-opus-4-8".into(),
+                usage: Some(TokenUsage { input_tokens: 10, output_tokens: 20 }),
             };
             let line = serde_json::to_string(&turn).unwrap();
             prop_assert!(!line.contains('\n'), "compact JSON must be single-line");
@@ -439,6 +448,7 @@ mod tests {
             timestamp: "2026-06-20T00:00:00Z".into(),
             provider: "anthropic".into(),
             model: "claude-opus-4-8".into(),
+            usage: None,
         }
     }
 
@@ -553,5 +563,47 @@ mod tests {
             load_turns(&meta.id),
             Err(AiError::StorageError(_))
         ));
+    }
+
+    /// GWEN-457: JSONL lines written before `usage` existed have no such key at
+    /// all — `#[serde(default)]` must let them deserialize as `usage: None`
+    /// instead of failing to parse.
+    #[test]
+    fn load_turns_tolerates_missing_usage_field_from_old_jsonl() {
+        let env = TestEnv::new();
+        let meta = new_conversation(env.root(), "t", "openai", "gpt-4o").unwrap();
+        let old_line = r#"{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"}],"timestamp":"2026-01-01T00:00:00Z","provider":"openai","model":"gpt-4o"}"#;
+        fs::write(&meta.jsonl_path, format!("{old_line}\n")).unwrap();
+
+        let turns = load_turns(&meta.id).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].usage, None);
+    }
+
+    #[test]
+    fn record_turn_persists_usage_when_present() {
+        let env = TestEnv::new();
+        let meta = new_conversation(env.root(), "t", "anthropic", "claude-opus-4-8").unwrap();
+        record_turn(
+            &meta.id,
+            "hi",
+            "hello",
+            "anthropic",
+            "claude-opus-4-8",
+            Some(TokenUsage {
+                input_tokens: 15,
+                output_tokens: 30,
+            }),
+        )
+        .unwrap();
+
+        let turns = load_turns(&meta.id).unwrap();
+        assert_eq!(
+            turns[0].usage,
+            Some(TokenUsage {
+                input_tokens: 15,
+                output_tokens: 30,
+            })
+        );
     }
 }

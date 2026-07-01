@@ -57,10 +57,20 @@ export function currentFilePath(): string | null {
   return t && isEditorTab(t) && t.path ? t.path : null
 }
 
-/** Attach the current file (only when it has a saved path). */
+/** Attach the current file (only when it has a saved path). Includes the
+ *  in-memory byte size as a display hint for the attachment chip (GWEN-460),
+ *  best-effort — omitted if the doc isn't readily available. */
 export function currentFileAttachment(): ContextAttachment | null {
-  const path = currentFilePath()
-  return path ? { type: 'file', path } : null
+  const s = get(tabs)
+  const t = s.tabs.find((tab) => tab.id === s.activeId)
+  if (!t || !isEditorTab(t) || !t.path) return null
+  let size: number | undefined
+  try {
+    size = new TextEncoder().encode(t.state.doc.toString()).length
+  } catch {
+    /* size is just a hint; skip on any failure */
+  }
+  return { type: 'file', path: t.path, size }
 }
 
 /** Attach the current selection (needs a saved path + non-empty selection). */
@@ -205,6 +215,9 @@ export async function selectConversation(id: string): Promise<void> {
             thinking: thinking
               ? { content: thinking, streaming: false, startedAt: null, endedAt: null, collapsed: true }
               : undefined,
+            usage: turn.usage,
+            provider: turn.provider,
+            model: turn.model,
           })
         }
       }
@@ -352,7 +365,15 @@ export async function sendMessage(
         attachments,
         images: images.length ? images : undefined,
       },
-      { id: asstMsgId, role: 'assistant', content: '', streaming: true, timestamp: now },
+      {
+        id: asstMsgId,
+        role: 'assistant',
+        content: '',
+        streaming: true,
+        timestamp: now,
+        provider: state.activeProvider,
+        model: state.activeModel,
+      },
     ],
   }))
 
@@ -369,11 +390,11 @@ export async function sendMessage(
     if (thinking) appendThinking(streamId, thinking)
     if (answer) appendToken(streamId, answer)
   })
-  unlistenDone = await cmd.onAiDone(streamId, () => {
+  unlistenDone = await cmd.onAiDone(streamId, (usage) => {
     const tail = thinkParser?.flush()
     if (tail?.thinking) appendThinking(streamId, tail.thinking)
     if (tail?.answer) appendToken(streamId, tail.answer)
-    finaliseStream(streamId)
+    finaliseStream(streamId, usage)
     teardownListeners()
     // Refresh the manifest so updated_at ordering reflects this turn, then
     // auto-name the conversation from the first turn (GWEN-324).

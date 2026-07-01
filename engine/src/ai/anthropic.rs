@@ -16,7 +16,7 @@ use crate::ai::curl_client::{CurlStream, curl_post_stream};
 use crate::ai::error::AiError;
 use crate::ai::keychain;
 use crate::ai::provider::{
-    AiProvider, ChunkSource, MessageRequest, ModelInfo, TokenChunk, TokenStream,
+    AiProvider, ChunkSource, MessageRequest, ModelInfo, TokenChunk, TokenStream, TokenUsage,
 };
 use crate::ai::sse::{SseDecoder, SseEvent};
 
@@ -40,16 +40,28 @@ impl Default for AnthropicAdapter {
 }
 
 /// What a single parsed SSE event means to the Anthropic stream.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum Action {
     Text(String),
     /// Extended-thinking text (`thinking_delta`), delimited as `<think>...
     /// </think>` in the unified text stream so the frontend separates it
     /// (Requirement 7.5).
     Thinking(String),
+    /// Partial or updated usage counters (GWEN-457). `message_start` reports
+    /// input tokens (and an initial output count); each `message_delta`
+    /// reports the cumulative output count so far — later values supersede
+    /// earlier ones rather than summing.
+    Usage(PartialUsage),
     Stop,
     Ignore,
     Error(AiError),
+}
+
+/// Usage fields as reported by one event; either half may be absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct PartialUsage {
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
 }
 
 /// Pure interpretation of one framed SSE event — kept separate from the network
@@ -95,7 +107,24 @@ fn interpret_event(ev: &SseEvent) -> Action {
                 "malformed Anthropic content_block_delta".into(),
             )),
         },
-        // message_start, content_block_start/stop, message_delta, unknown.
+        Some("message_start") => match serde_json::from_str::<Value>(&ev.data) {
+            Ok(v) => {
+                let usage = &v["message"]["usage"];
+                Action::Usage(PartialUsage {
+                    input_tokens: usage["input_tokens"].as_u64().map(|n| n as u32),
+                    output_tokens: usage["output_tokens"].as_u64().map(|n| n as u32),
+                })
+            }
+            Err(_) => Action::Ignore,
+        },
+        Some("message_delta") => match serde_json::from_str::<Value>(&ev.data) {
+            Ok(v) => Action::Usage(PartialUsage {
+                input_tokens: v["usage"]["input_tokens"].as_u64().map(|n| n as u32),
+                output_tokens: v["usage"]["output_tokens"].as_u64().map(|n| n as u32),
+            }),
+            Err(_) => Action::Ignore,
+        },
+        // content_block_start/stop, unknown.
         _ => Action::Ignore,
     }
 }
@@ -128,6 +157,11 @@ struct AnthropicStream {
     done: bool,
     /// True while inside an extended-thinking `<think>` span.
     in_thinking: bool,
+    /// Usage accumulated across `message_start`/`message_delta` events
+    /// (GWEN-457); `output_tokens` is overwritten (not summed) since Anthropic
+    /// reports it cumulatively.
+    usage_input: Option<u32>,
+    usage_output: Option<u32>,
 }
 
 impl AnthropicStream {
@@ -178,6 +212,14 @@ impl ChunkSource for AnthropicStream {
                                     self.push(format!("<think>{text}"));
                                 }
                             }
+                            Action::Usage(u) => {
+                                if let Some(i) = u.input_tokens {
+                                    self.usage_input = Some(i);
+                                }
+                                if let Some(o) = u.output_tokens {
+                                    self.usage_output = Some(o);
+                                }
+                            }
                             Action::Stop => {
                                 self.close_thinking();
                                 self.done = true;
@@ -200,6 +242,16 @@ impl ChunkSource for AnthropicStream {
                     return Err(AiError::Network(e.to_string()));
                 }
             }
+        }
+    }
+
+    fn usage(&self) -> Option<TokenUsage> {
+        match (self.usage_input, self.usage_output) {
+            (Some(input_tokens), Some(output_tokens)) => Some(TokenUsage {
+                input_tokens,
+                output_tokens,
+            }),
+            _ => None,
         }
     }
 }
@@ -277,6 +329,8 @@ impl AiProvider for AnthropicAdapter {
             pending: VecDeque::new(),
             done: false,
             in_thinking: false,
+            usage_input: None,
+            usage_output: None,
         }))
     }
 
@@ -381,13 +435,70 @@ mod tests {
     #[test]
     fn ignores_structural_events() {
         assert_eq!(
-            interpret_event(&ev("message_start", r#"{"type":"message_start"}"#)),
-            Action::Ignore
-        );
-        assert_eq!(
             interpret_event(&ev("content_block_start", "{}")),
             Action::Ignore
         );
+    }
+
+    #[test]
+    fn message_start_reports_input_and_output_tokens() {
+        let e = ev(
+            "message_start",
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":123,"output_tokens":1}}}"#,
+        );
+        assert_eq!(
+            interpret_event(&e),
+            Action::Usage(PartialUsage {
+                input_tokens: Some(123),
+                output_tokens: Some(1),
+            })
+        );
+    }
+
+    #[test]
+    fn message_start_without_usage_reports_none() {
+        let e = ev("message_start", r#"{"type":"message_start"}"#);
+        assert_eq!(interpret_event(&e), Action::Usage(PartialUsage::default()));
+    }
+
+    #[test]
+    fn message_delta_reports_cumulative_output_tokens() {
+        let e = ev(
+            "message_delta",
+            r#"{"delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}"#,
+        );
+        assert_eq!(
+            interpret_event(&e),
+            Action::Usage(PartialUsage {
+                input_tokens: None,
+                output_tokens: Some(42),
+            })
+        );
+    }
+
+    #[test]
+    fn full_stream_captures_final_usage() {
+        let raw = concat!(
+            "event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":1}}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n",
+            "event: message_delta\ndata: {\"usage\":{\"output_tokens\":9}}\n\n",
+            "event: message_stop\ndata: {}\n\n",
+        );
+        let mut decoder = SseDecoder::new();
+        let mut usage_input = None;
+        let mut usage_output = None;
+        for e in decoder.push(raw.as_bytes()) {
+            if let Action::Usage(u) = interpret_event(&e) {
+                if let Some(i) = u.input_tokens {
+                    usage_input = Some(i);
+                }
+                if let Some(o) = u.output_tokens {
+                    usage_output = Some(o);
+                }
+            }
+        }
+        assert_eq!(usage_input, Some(50));
+        assert_eq!(usage_output, Some(9));
     }
 
     #[test]
@@ -440,6 +551,7 @@ mod tests {
             match interpret_event(&e) {
                 Action::Text(t) => out.push_str(&t),
                 Action::Thinking(t) => out.push_str(&t),
+                Action::Usage(_) => {}
                 Action::Stop => stopped = true,
                 Action::Ignore => {}
                 Action::Error(e) => panic!("unexpected error: {e:?}"),

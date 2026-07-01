@@ -20,6 +20,13 @@
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* Springy overshoot pop for playful composer menus (+/model/effort). */
+@keyframes gw-pop-in-bounce {
+  0% { opacity: 0; transform: translateY(6px) scale(0.9); }
+  60% { opacity: 1; transform: translateY(-2px) scale(1.03); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 /* Slide down for menu dropdowns / submenus. */
 @keyframes gw-slide-down {
   from { opacity: 0; transform: translateY(-6px); }
@@ -37,6 +44,10 @@
 }
 .gw-anim-pop {
   animation: gw-pop-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.gw-anim-pop-bounce {
+  animation: gw-pop-in-bounce 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: bottom left;
 }
 .gw-anim-slide-down {
   animation: gw-slide-down 0.14s ease-out;
@@ -62,6 +73,7 @@
 @media (prefers-reduced-motion: reduce) {
   .gw-anim-overlay,
   .gw-anim-pop,
+  .gw-anim-pop-bounce,
   .gw-anim-slide-down,
   .gw-anim-fade,
   .gw-anim-rise {

@@ -16,6 +16,7 @@ pub mod gemini;
 pub mod generic;
 pub mod http;
 pub mod keychain;
+pub mod model_catalog;
 pub mod openai;
 pub mod provider;
 pub mod registry;
@@ -23,7 +24,8 @@ pub mod sse;
 
 pub use diff::{DiffFile, DiffHunk, DiffLine, DiffParseError, looks_like_diff, parse_unified_diff};
 pub use error::AiError;
+pub use model_catalog::{ModelEntry, Pricing, Provider, ReasoningConfig, ReasoningMode, all_models};
 pub use provider::{
     AiProvider, ChatMessage, ChunkSource, ContextAttachment, ImageAttachment, MessageRequest,
-    ModelInfo, TokenChunk, TokenStream,
+    ModelInfo, TokenChunk, TokenStream, TokenUsage,
 };

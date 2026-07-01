@@ -35,9 +35,9 @@
   import SlashCommandMenu from './SlashCommandMenu.svelte'
   import Checkbox from './Checkbox.svelte'
   import AgentMessage from './agent/AgentMessage.svelte'
-  import AgentTierMenu from './agent/AgentTierMenu.svelte'
-  import AssistantModeMenu from './AssistantModeMenu.svelte'
+  import ComposerActionsMenu from './ComposerActionsMenu.svelte'
   import ComposerModelMenu from './ComposerModelMenu.svelte'
+  import ReasoningMenu from './ReasoningMenu.svelte'
   import DiffReviewPanel from './DiffReviewPanel.svelte'
   import Icon from './Icon.svelte'
   import {
@@ -409,7 +409,6 @@
 
   // Pending attachments for the next message (Requirement 14.9).
   let attachments = $state<ContextAttachment[]>([])
-  let attachMenuOpen = $state(false)
 
   onMount(() => {
     void initAiChat()
@@ -519,7 +518,6 @@
     const input = e.currentTarget as HTMLInputElement
     if (input.files) void addImageFiles(Array.from(input.files))
     input.value = '' // allow re-picking the same file
-    attachMenuOpen = false
   }
   function openImagePicker() {
     imageInputEl?.click()
@@ -585,12 +583,10 @@
   function attachFile() {
     const a = currentFileAttachment()
     if (a) attachments = [...attachments, a]
-    attachMenuOpen = false
   }
   function attachSelection() {
     const a = currentSelectionAttachment()
     if (a) attachments = [...attachments, a]
-    attachMenuOpen = false
   }
   function removeAttachment(i: number) {
     attachments = attachments.filter((_, idx) => idx !== i)
@@ -881,33 +877,20 @@
       {/if}
 
       <div class="ai-composer-actions">
-        {#if isChatLike}
-          <div class="attach-wrap composer-attach">
-            <button
-              class="icon-btn"
-              title="Attach context"
-              aria-label="Attach context"
-              disabled={!hasProject || streaming}
-              onclick={() => (attachMenuOpen = !attachMenuOpen)}
-            >
-              <Icon name="attachment" size={15} />
-            </button>
-            {#if attachMenuOpen}
-              <div class="attach-menu" role="menu">
-                <button role="menuitem" onclick={attachFile}>Current file</button>
-                <button role="menuitem" onclick={attachSelection}>Current selection</button>
-                <button role="menuitem" onclick={openImagePicker}>Image…</button>
-              </div>
-            {/if}
-          </div>
-        {/if}
+        <ComposerActionsMenu
+          {isChatLike}
+          {isAgent}
+          {agentStreaming}
+          attachDisabled={!hasProject || streaming}
+          {surfaceEl}
+          onAttachFile={attachFile}
+          onAttachSelection={attachSelection}
+          onUploadImage={openImagePicker}
+        />
 
         <div class="composer-controls">
-          <AssistantModeMenu placement="up" />
           <ComposerModelMenu placement="up" />
-          {#if isAgent}
-            <AgentTierMenu disabled={agentStreaming} />
-          {/if}
+          <ReasoningMenu placement="up" />
         </div>
 
         {#if isAgent}
@@ -1267,43 +1250,9 @@
     container-type: inline-size;
   }
   @container (max-width: 280px) {
-    .composer-controls :global(.mode-trigger-label),
-    .composer-controls :global(.cm-label),
-    .composer-controls :global(.tier-trigger-label) {
+    .composer-controls :global(.cm-label) {
       display: none;
     }
-  }
-  .composer-attach {
-    flex-shrink: 0;
-  }
-  .attach-wrap {
-    position: relative;
-  }
-  .attach-menu {
-    position: absolute;
-    bottom: 30px;
-    left: 0;
-    z-index: 20;
-    min-width: 150px;
-    background-color: var(--ai-bg-surface);
-    border: 1px solid var(--ai-border-subtle);
-    border-radius: 12px;
-    box-shadow: var(--shadow-lg, 0 4px 14px rgba(0, 0, 0, 0.4));
-    overflow: hidden;
-  }
-  .attach-menu button {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 7px 10px;
-    font-size: 12px;
-    color: var(--ai-text-primary);
-    background: transparent;
-    border: none;
-    cursor: pointer;
-  }
-  .attach-menu button:hover {
-    background-color: var(--ai-bg-hover);
   }
   .attach-chips {
     display: flex;

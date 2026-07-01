@@ -469,9 +469,14 @@ export interface ModelInfo {
 }
 
 /** Extra context attached to a prompt (mirrors `ContextAttachment`). Serde
- *  tagged by `type` with snake_case names. */
+ *  tagged by `type` with snake_case names.
+ *
+ *  `size` on the `file` variant is an optional client-side display hint
+ *  (GWEN-460) populated by the composer at attach time. The engine neither
+ *  needs nor persists it — it only reads file content for context expansion —
+ *  so it lives on the TS mirror only and is harmlessly ignored on the wire. */
 export type ContextAttachment =
-  | { type: 'file'; path: string }
+  | { type: 'file'; path: string; size?: number }
   | { type: 'selection'; path: string; content: string }
   | { type: 'terminal_error'; label: string; line: string }
 
@@ -494,12 +499,22 @@ export interface TurnMessage {
   content: string
 }
 
+/** Token counts for one completed request (mirrors `TokenUsage`), when the
+ *  provider reported them (GWEN-457). */
+export interface TokenUsage {
+  input_tokens: number
+  output_tokens: number
+}
+
 /** One persisted exchange (mirrors `ConversationTurn`). */
 export interface ConversationTurn {
   messages: TurnMessage[]
   timestamp: string
   provider: string
   model: string
+  /** Absent on turns persisted before usage tracking existed, or when the
+   *  provider never reported it. */
+  usage?: TokenUsage
 }
 
 // --- Unified diff parsing (Milestone 8, Wave 5) ----------------------------
@@ -616,13 +631,68 @@ export function aiListModels(provider: string): Promise<ModelInfo[] | null> {
   return invoke<ModelInfo[] | null>('ai_list_models', { provider })
 }
 
+// --- Model catalog (Milestone 26) -------------------------------------------
+// Static registry of every model GwenLand supports across all providers, with
+// pricing and reasoning capability (mirrors `model_catalog::ModelEntry` and
+// friends). Feeds the model selector, effort toggle, and token tracker.
+
+export type ModelProvider =
+  | 'anthropic'
+  | 'open_ai'
+  | 'google'
+  | 'x_ai'
+  | 'deep_seek'
+  | 'zhipu_glm'
+  | 'moonshot'
+  | 'qwen'
+  | 'mistral'
+
+export type ReasoningMode = 'effort' | 'binary' | 'budget_tokens' | 'none'
+
+/** Mirrors `Pricing`: USD per 1M tokens, input/output tracked separately. */
+export interface ModelPricing {
+  input_per_m: number
+  output_per_m: number
+}
+
+/** Mirrors `ReasoningConfig`. */
+export interface ReasoningConfig {
+  supported: boolean
+  param_name: string | null
+  levels: string[]
+  default: string | null
+  mode: ReasoningMode
+}
+
+/** One catalog entry (mirrors `ModelEntry`). */
+export interface ModelEntry {
+  id: string
+  name: string
+  provider: ModelProvider
+  tier: string
+  context_window: number
+  pricing: ModelPricing
+  reasoning: ReasoningConfig
+}
+
+/** The full static model catalog across all providers. */
+export function aiModelCatalog(): Promise<ModelEntry[]> {
+  return invoke<ModelEntry[]>('ai_model_catalog')
+}
+
 // --- Streaming -------------------------------------------------------------
 
 /** An image attached to the current turn (mirrors engine `ImageAttachment`).
- *  `data` is base64 (no `data:` prefix). Not persisted to conversation JSONL. */
+ *  `data` is base64 (no `data:` prefix). Not persisted to conversation JSONL.
+ *
+ *  `name`/`size` are optional client-side display hints (GWEN-460) set by the
+ *  composer when the image came from a picked file; TS-mirror-only (the engine
+ *  ignores them). */
 export interface ImageAttachment {
   mime: string
   data: string
+  name?: string
+  size?: number
 }
 
 export interface AiSendArgs {
@@ -753,6 +823,7 @@ interface AiChunkPayload {
 }
 interface AiDonePayload {
   stream_id: string
+  usage?: TokenUsage
 }
 interface AiErrorPayload {
   stream_id: string
@@ -769,10 +840,14 @@ export async function onAiChunk(
   })
 }
 
-/** Subscribe to successful completion of `streamId` (terminal). */
-export async function onAiDone(streamId: string, handler: () => void): Promise<UnlistenFn> {
+/** Subscribe to successful completion of `streamId` (terminal). `usage` is
+ *  present when the provider reported token counts (GWEN-457). */
+export async function onAiDone(
+  streamId: string,
+  handler: (usage?: TokenUsage) => void
+): Promise<UnlistenFn> {
   return listen<AiDonePayload>(AI_DONE_EVENT, (event) => {
-    if (event.payload.stream_id === streamId) handler()
+    if (event.payload.stream_id === streamId) handler(event.payload.usage)
   })
 }
 

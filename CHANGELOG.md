@@ -31,6 +31,54 @@ All notable changes to GwenLand IDE are documented here.
 
 ---
 
+## [0.1.22] — 2026-07-01 (AI Diff & Attachment UI)
+
+Two display-layer follow-ups to the M26 AI work, both presentation-only (no new engine logic, no new dependencies). The diff viewer gained a Unified ↔ Split toggle extracted into a single reusable component shared by every diff surface, and files referenced in AI Chat now render as a proper attachment chip instead of a raw path.
+
+### Added
+- **Unified/Split diff view (GWEN-459)** — new reusable `DiffView.svelte` renders a parsed diff (`DiffFile[]`) as either a unified column or a side-by-side split, with a borderless view toggle, per-file header (filename + extension badge + `+N −N` stats), and old/new line numbers tracked independently. The split-pairing algorithm lives in pure, unit-tested `lib/ai/diff-rows.ts` (removed lines pair index-by-index with the following added lines; the shorter side gets blank filler cells so uneven blocks stay aligned).
+- **File attachment chip (GWEN-460)** — new `FileAttachment.svelte` renders an attached/referenced file as a chip: icon by MIME/extension, truncated filename (extension stays visible), human-readable size, and a download (data-bearing) / open-in-editor (path ref) action. `sm` inline and `card` standalone variants, styled with GwenUI tokens to match the AI panel. Pure helpers (`attachmentIconSvg`, `formatFileSize`, `truncateFileName`) in `lib/ai/file-attachment.ts`, unit-tested.
+- **Global diff color tokens** — `--diff-add-*` / `--diff-del-*` / `--diff-num` / `--diff-divider` added to `tokens.css` (green/red tuned to the warm `#1f1e1e` base, not GitHub hex), shared by all diff surfaces.
+- **Persisted diff view mode** — `diffViewMode` added to `editor-preferences.ts` (localStorage), shared across surfaces.
+- **`download` icon** added to `gwenland-icons.ts`.
+
+### Changed
+- **`GitDiffViewer.svelte` and `GitCommitDiffViewer.svelte`** both dropped their duplicate TS diff parsers + inline rendering and now parse via the engine (`parseDiff` → existing `parse_unified_diff`) and render through the shared `DiffView` — one source of truth, so the commit diff gets Unified/Split too.
+- **`AiMessage.svelte`** renders user `file` attachments via `FileAttachment` (icon + name + size + open) instead of a plain path-text chip; selection/terminal-error chips and image thumbnails unchanged.
+- **`ContextAttachment` / `ImageAttachment` TS types** extended with optional display-only fields (`size?`, `name?`) on the TypeScript mirror only — the Rust structs were left untouched since the engine neither needs nor persists them.
+
+### Infrastructure
+- Zero new Rust crates, zero new npm packages. Both tasks are frontend-only (no engine changes; GWEN-459 reuses the existing diff parser).
+- `pnpm test`: 207 passed (2 pre-existing, unrelated `actionRegistry` failures), including 10 new `diff-rows` + 15 new `file-attachment` tests. `svelte-check`: 0 errors.
+- The M23 AI accept/reject editor overlay was deliberately left untouched (it's a live-editor overlay, not a standalone renderer) — no regression to the accept/reject-per-hunk flow.
+- Version bumped `0.1.21` → `0.1.22` across `frontend/tauri.conf.json`, `frontend/Cargo.toml`, `frontend/ui/package.json`.
+
+---
+
+## [0.1.21] — 2026-07-01 (M26 — Model Selector & AI UI Enhancements)
+
+Foundational model-registry work plus a composer redesign. A single static catalog now covers all 9 AI providers with real brand icons, pricing, and per-model reasoning-effort metadata; the model picker and reasoning control were rebuilt against it; token usage is now tracked end-to-end and shown as a per-message cost line; and the composer toolbar was consolidated behind a single "+" button.
+
+### Added
+- **Model registry (GWEN-454)** — `engine/src/ai/model_catalog.rs`: `ModelEntry`/`Provider`/`Pricing`/`ReasoningConfig` schema, 39 seeded models across Anthropic/OpenAI/Google/xAI/DeepSeek/Z.AI/Moonshot/Qwen/Mistral, exposed via a new `ai_model_catalog` Tauri command. Unverifiable pricing is marked `// TODO: verify pricing` rather than guessed.
+- **Provider brand icons (GWEN-455)** — real logomarks (not placeholders), sourced from `simple-icons` (CC0) and Wikimedia Commons, rendered in each provider's actual brand color/gradient.
+- **Model selector UI (GWEN-456)** — `ComposerModelMenu.svelte` rebuilt as a flat, borderless, compact dropdown listing every catalog model with icon, name, context window, and $/1M pricing, sized to match the composer's own width.
+- **Reasoning/effort control (GWEN-458)** — new `ReasoningMenu.svelte`, separate from the model picker since levels are per-model (Anthropic offers low/medium/high/xhigh/max, Grok offers none/low/medium/high, several models offer none at all).
+- **Token usage tracking (GWEN-457)** — all 4 provider adapters now report input/output token counts (OpenAI required a new `stream_options.include_usage` request field to unlock this); persisted to conversation history (backward-compatible with old JSONL); shown as a per-message `"1.2K in · 340 out · $0.008"` footer, priced using the model that actually generated that reply.
+- **Composer "+" menu** — new `ComposerActionsMenu.svelte` consolidates context-attach, image upload, assistant mode (Ask/Edit/Agent), and agent approval tier behind one button.
+
+### Changed
+- Composer toolbar reduced from `[attach] [Mode] [Model] [Effort] [Tier] [send]` to `[+] [Model] [Effort] [send]`.
+- Composer dropdowns are now borderless with rounded corners, compact padding, and a springy pop-in animation instead of bordered boxes with a flat fade.
+- `lib/ai/reasoning.ts` rewritten from hardcoded model-name regex heuristics to pure catalog lookups.
+
+### Infrastructure
+- Zero new Rust crates, zero new npm packages.
+- `cargo test -p gwenland-engine`: 574 passed (1 pre-existing, unrelated LSP smoke-test failure). `pnpm test`: 182 passed (2 pre-existing, unrelated failures). `svelte-check`: 0 errors.
+- Version bumped `0.1.14` → `0.1.21` across `frontend/tauri.conf.json`, `frontend/Cargo.toml`, `frontend/ui/package.json`.
+
+---
+
 ## [0.1.14] — 2026-06-27 (M19 — Performance & Scalability)
 
 Eight waves of performance work under a hard **zero new Rust crates / zero new npm packages** rule — everything from scratch. Theme: Rust owns state, Svelte renders diffs (the UI never receives [...]

@@ -126,8 +126,11 @@ function scheduleLayoutSave(): void {
   }, SAVE_DELAY_MS)
 }
 
+// Levels are per-model (catalog-driven, GWEN-458) rather than a fixed enum;
+// the composer clamps to the active model's actual levels when it renders, so
+// restoring any non-empty string here is safe.
 function validReasoning(value: unknown): value is ReasoningLevel {
-  return value === 'low' || value === 'medium' || value === 'high' || value === 'extra_high'
+  return typeof value === 'string' && value.length > 0
 }
 
 function restoreConversation(state: PersistedConversationState | null | undefined): void {

@@ -9,6 +9,7 @@ import type {
   ImageAttachment,
   ModelInfo,
   TerminalError,
+  TokenUsage,
 } from '../tauri/commands'
 import type { ToolLogEntry } from './agentic'
 
@@ -26,8 +27,14 @@ import type { ToolLogEntry } from './agentic'
 
 export type MessageRole = 'user' | 'assistant'
 
-/** Reasoning effort for thinking-capable models (Requirement 6.1). */
-export type ReasoningLevel = 'low' | 'medium' | 'high' | 'extra_high'
+/**
+ * Reasoning effort for thinking-capable models (Requirement 6.1). Per-model
+ * catalog-driven (GWEN-458): the set of valid values is whatever
+ * `ModelEntry.reasoning.levels` lists for the active model (e.g. Anthropic's
+ * `low`/`medium`/`high`/`xhigh`/`max` vs. Grok's `none`/`low`/`medium`/`high`),
+ * not a fixed enum — see `lib/ai/reasoning.ts`.
+ */
+export type ReasoningLevel = string
 
 /**
  * Runtime thinking/reasoning trace for an assistant message (Requirement 8).
@@ -89,6 +96,13 @@ export interface ChatMessage {
   diffError?: string
   /** Present when this assistant turn is an agent run (M8 unified history). */
   agent?: AgentRunRef
+  /** Token usage for this turn, when the provider reported it (GWEN-457). */
+  usage?: TokenUsage
+  /** The provider/model that generated this specific assistant reply — kept
+   *  per-message (not read from the currently active model) so displayed
+   *  cost stays correct for older turns after switching models mid-conversation. */
+  provider?: string
+  model?: string
 }
 
 export interface AiChatState {
@@ -121,7 +135,7 @@ const initial: AiChatState = {
   activeStreamId: null,
   activeProvider: 'anthropic',
   activeModel: '',
-  reasoningLevel: 'medium',
+  reasoningLevel: '',
   genericProviders: [],
   models: null,
   hasKey: false,
@@ -198,12 +212,14 @@ export function appendToken(streamId: string, text: string): void {
   })
 }
 
-/** Mark the stream complete (clears the streaming flag + active stream id). */
-export function finaliseStream(streamId: string): void {
+/** Mark the stream complete (clears the streaming flag + active stream id).
+ *  `usage` is stamped onto the finished assistant message when the provider
+ *  reported token counts (GWEN-457). */
+export function finaliseStream(streamId: string, usage?: TokenUsage): void {
   aiChat.update((s) => {
     if (s.activeStreamId !== streamId) return s
     const msgs = s.messages.map((m) =>
-      m.streaming ? { ...m, streaming: false, thinking: closeThinking(m.thinking) } : m
+      m.streaming ? { ...m, streaming: false, thinking: closeThinking(m.thinking), usage } : m
     )
     return { ...s, messages: msgs, activeStreamId: null }
   })

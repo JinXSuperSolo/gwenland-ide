@@ -18,7 +18,7 @@ use crate::ai::curl_client::{CurlStream, curl_get, curl_post_stream};
 use crate::ai::error::AiError;
 use crate::ai::keychain;
 use crate::ai::provider::{
-    AiProvider, ChunkSource, MessageRequest, ModelInfo, TokenChunk, TokenStream,
+    AiProvider, ChunkSource, MessageRequest, ModelInfo, TokenChunk, TokenStream, TokenUsage,
 };
 use crate::ai::sse::SseDecoder;
 
@@ -41,13 +41,18 @@ impl Default for OpenAiAdapter {
 }
 
 /// What one Chat Completions SSE event means.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum ChatAction {
     Text(String),
     /// Structured reasoning text (DeepSeek `reasoning_content`, some Ollama /
     /// OpenAI-compatible `thinking`). Delimited as `<think>...</think>` in the
     /// unified text stream so the frontend separates it (Requirement 7.4).
     Thinking(String),
+    /// The usage-only terminal chunk sent when the request includes
+    /// `stream_options.include_usage: true` (GWEN-457): empty `choices`, a
+    /// top-level `usage.{prompt_tokens,completion_tokens}`, arriving just
+    /// before `[DONE]`.
+    Usage(TokenUsage),
     Done,
     Ignore,
     Error(AiError),
@@ -69,6 +74,19 @@ pub(crate) fn interpret_chat_event(data: &str) -> ChatAction {
                     .unwrap_or("provider error")
                     .to_string();
                 return ChatAction::Error(AiError::ProviderError(msg));
+            }
+            // The usage-only terminal chunk has no (or empty) `choices`.
+            if v["choices"].as_array().is_none_or(|c| c.is_empty())
+                && let Some(usage) = v.get("usage")
+                && let (Some(input_tokens), Some(output_tokens)) = (
+                    usage["prompt_tokens"].as_u64(),
+                    usage["completion_tokens"].as_u64(),
+                )
+            {
+                return ChatAction::Usage(TokenUsage {
+                    input_tokens: input_tokens as u32,
+                    output_tokens: output_tokens as u32,
+                });
             }
             let delta = &v["choices"][0]["delta"];
             // Structured reasoning fields, when the endpoint exposes them.
@@ -154,6 +172,9 @@ pub(crate) fn build_chat_body(model: &str, request: &MessageRequest) -> Value {
         "model": model,
         "messages": messages,
         "stream": true,
+        // Ask for a terminal usage-only chunk (GWEN-457) — without this,
+        // streaming responses never report token counts at all.
+        "stream_options": { "include_usage": true },
     });
     if let Some(max) = request.max_tokens {
         body["max_tokens"] = json!(max);
@@ -170,6 +191,11 @@ pub(crate) struct OpenAiStream {
     pub(crate) done: bool,
     /// True while inside a structured `<think>` reasoning span.
     pub(crate) in_thinking: bool,
+    /// Set from the usage-only terminal chunk, when the endpoint honors
+    /// `stream_options.include_usage` (GWEN-457). Generic OpenAI-compatible
+    /// endpoints that ignore the option simply never send this chunk, so this
+    /// stays `None` — no special-casing needed here.
+    pub(crate) usage: Option<TokenUsage>,
 }
 
 impl OpenAiStream {
@@ -181,6 +207,7 @@ impl OpenAiStream {
             pending: VecDeque::new(),
             done: false,
             in_thinking: false,
+            usage: None,
         }
     }
 
@@ -222,6 +249,7 @@ impl ChunkSource for OpenAiStream {
                                     self.push(text);
                                 }
                             }
+                            ChatAction::Usage(u) => self.usage = Some(u),
                             ChatAction::Done => {
                                 self.close_thinking();
                                 self.done = true;
@@ -244,6 +272,10 @@ impl ChunkSource for OpenAiStream {
                 }
             }
         }
+    }
+
+    fn usage(&self) -> Option<TokenUsage> {
+        self.usage
     }
 }
 
@@ -433,6 +465,7 @@ mod tests {
             match interpret_chat_event(c) {
                 ChatAction::Text(t) => out.push_str(&t),
                 ChatAction::Thinking(t) => out.push_str(&t),
+                ChatAction::Usage(_) => {}
                 ChatAction::Done => done = true,
                 ChatAction::Ignore => {}
                 ChatAction::Error(e) => panic!("{e:?}"),
@@ -440,6 +473,38 @@ mod tests {
         }
         assert_eq!(out, "Hello");
         assert!(done);
+    }
+
+    #[test]
+    fn usage_only_chunk_with_empty_choices_reports_usage() {
+        let data = r#"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34,"total_tokens":46}}"#;
+        assert_eq!(
+            interpret_chat_event(data),
+            ChatAction::Usage(TokenUsage {
+                input_tokens: 12,
+                output_tokens: 34,
+            })
+        );
+    }
+
+    #[test]
+    fn usage_only_chunk_without_choices_field_reports_usage() {
+        let data = r#"{"usage":{"prompt_tokens":5,"completion_tokens":7}}"#;
+        assert_eq!(
+            interpret_chat_event(data),
+            ChatAction::Usage(TokenUsage {
+                input_tokens: 5,
+                output_tokens: 7,
+            })
+        );
+    }
+
+    #[test]
+    fn normal_chunk_with_usage_null_is_not_misread_as_usage() {
+        // Regular content chunks always carry `"usage":null` unless this is the
+        // terminal chunk — must not be misread as a (bogus) usage report.
+        let data = r#"{"choices":[{"delta":{"content":"Hi"},"index":0}],"usage":null}"#;
+        assert_eq!(interpret_chat_event(data), ChatAction::Text("Hi".into()));
     }
 
     #[test]
@@ -468,6 +533,21 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "be terse");
         assert_eq!(body["messages"][1]["role"], "user");
+    }
+
+    #[test]
+    fn build_chat_body_requests_usage_in_stream() {
+        let req = MessageRequest {
+            stream_id: "s".into(),
+            messages: vec![ChatMessage::user("hi")],
+            system: None,
+            attachments: vec![],
+            images: vec![],
+            model: "gpt-4o".into(),
+            max_tokens: None,
+        };
+        let body = build_chat_body("gpt-4o", &req);
+        assert_eq!(body["stream_options"]["include_usage"], true);
     }
 
     #[test]
